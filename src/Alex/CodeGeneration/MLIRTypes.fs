@@ -91,10 +91,13 @@ module Serialize =
         | "index" -> Index
         // Native string type: fat pointer {ptr, len}
         | "!llvm.struct<(!llvm.ptr, i64)>" -> Struct [Pointer; Integer I64]
+        // DU type: tag (i32) + payload (i64)
+        | "!llvm.struct<(i32, i64)>" -> Struct [Integer I32; Integer I64]
         | _ when s.StartsWith("!llvm.ptr") -> Pointer  // Handle opaque pointer variations
         | _ when s.StartsWith("!llvm.struct") -> 
-            // Generic struct - parse inner types
-            // For now, default to NativeStr if it looks like a struct
+            // Generic struct - attempt to parse, but warn this is incomplete
+            // TODO: Proper struct parsing for arbitrary layouts
+            eprintfn "WARNING: deserializeType falling back for struct type: %s" s
             Struct [Pointer; Integer I64]
         | _ -> Pointer  // Default to pointer for unknown types (conservative)
 

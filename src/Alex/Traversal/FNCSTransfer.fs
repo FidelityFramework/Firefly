@@ -234,6 +234,15 @@ let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper)
             // Variable not yet bound - this might happen for patterns not yet implemented
             zipper, TRError (sprintf "PatternBinding '%s' not found in bindings" name)
 
+    // Union case construction (discriminated union value creation)
+    | SemanticKind.UnionCase (caseName, caseIndex, payloadOpt) ->
+        let zipper', result = MemWitness.witnessUnionCase caseName caseIndex payloadOpt node zipper
+        match result with
+        | TRValue (ssa, ty) ->
+            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
+            zipper'', result
+        | _ -> zipper', result
+
     // Error nodes
     | SemanticKind.Error msg ->
         zipper, TRError msg

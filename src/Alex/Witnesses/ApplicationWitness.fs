@@ -12,6 +12,9 @@ open Alex.CodeGeneration.MLIRTypes
 open Alex.Traversal.MLIRZipper
 open Alex.Bindings.BindingTypes
 open Alex.Patterns.SemanticPatterns
+open Alex.Templates.TemplateTypes
+open Alex.Templates.ArithTemplates
+open Alex.Templates.MemoryTemplates
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE MAPPING
@@ -25,6 +28,7 @@ let mapType = Alex.CodeGeneration.TypeMapping.mapNativeType
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Try to emit a binary primitive operation (arithmetic, comparison, bitwise)
+/// Uses quotation-based templates for principled MLIR generation.
 let tryEmitPrimitiveBinaryOp (opName: string) (arg1SSA: string) (arg1Type: string) (arg2SSA: string) (arg2Type: string) (zipper: MLIRZipper) : (string * string * MLIRZipper) option =
     if arg1Type <> arg2Type then None
     elif not (isIntegerType arg1Type || isFloatType arg1Type) then None
@@ -32,56 +36,93 @@ let tryEmitPrimitiveBinaryOp (opName: string) (arg1SSA: string) (arg1Type: strin
         let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
         let isInt = isIntegerType arg1Type
         
-        // Use active patterns for type-safe operation classification
-        let emitOp mlirOp resultType =
-            let opText = sprintf "%s = %s %s, %s : %s" resultSSA mlirOp arg1SSA arg2SSA arg1Type
+        // Helper to emit binary ops via templates
+        let emitBinaryOp (template: MLIRTemplate<BinaryOpParams>) resultType =
+            let binaryParams: BinaryOpParams = { Result = resultSSA; Lhs = arg1SSA; Rhs = arg2SSA; Type = arg1Type }
+            let opText = render template binaryParams
             let zipper'' = MLIRZipper.witnessOpWithResult opText resultSSA (Serialize.deserializeType resultType) zipper'
             Some (resultSSA, resultType, zipper'')
         
-        let emitCmp mlirOp pred =
-            let opText = sprintf "%s = %s %s, %s, %s : %s" resultSSA mlirOp pred arg1SSA arg2SSA arg1Type
+        // Helper to emit comparison ops via templates
+        let emitCmpOp pred isCmpF =
+            let cmpParams: Quot.Compare.CmpParams = { Result = resultSSA; Predicate = pred; Lhs = arg1SSA; Rhs = arg2SSA; Type = arg1Type }
+            let template = if isCmpF then Quot.Compare.cmpF else Quot.Compare.cmpI
+            let opText = render template cmpParams
             let zipper'' = MLIRZipper.witnessOpWithResult opText resultSSA (Integer I1) zipper'
             Some (resultSSA, "i1", zipper'')
         
+        // Select template based on operation and type
         match opName, isInt with
-        // Arithmetic operations via ArithBinaryOp pattern
-        | ArithBinaryOp (mlirOp, _) -> emitOp mlirOp arg1Type
-        // Comparison operations via CmpBinaryOp pattern
-        | CmpBinaryOp (mlirOp, pred) -> emitCmp mlirOp pred
-        // Bitwise operations (int only) via BitwiseBinaryOp pattern
-        | _ when isInt ->
-            match opName with
-            | BitwiseBinaryOp mlirOp -> emitOp mlirOp arg1Type
-            | _ -> None
+        // Integer arithmetic operations
+        | "op_Addition", true -> emitBinaryOp Quot.IntBinary.addI arg1Type
+        | "op_Subtraction", true -> emitBinaryOp Quot.IntBinary.subI arg1Type
+        | "op_Multiply", true -> emitBinaryOp Quot.IntBinary.mulI arg1Type
+        | "op_Division", true -> emitBinaryOp Quot.IntBinary.divSI arg1Type
+        | "op_Modulus", true -> emitBinaryOp Quot.IntBinary.remSI arg1Type
+        // Float arithmetic operations
+        | "op_Addition", false -> emitBinaryOp Quot.FloatBinary.addF arg1Type
+        | "op_Subtraction", false -> emitBinaryOp Quot.FloatBinary.subF arg1Type
+        | "op_Multiply", false -> emitBinaryOp Quot.FloatBinary.mulF arg1Type
+        | "op_Division", false -> emitBinaryOp Quot.FloatBinary.divF arg1Type
+        // Integer comparisons
+        | "op_LessThan", true -> emitCmpOp "slt" false
+        | "op_LessThanOrEqual", true -> emitCmpOp "sle" false
+        | "op_GreaterThan", true -> emitCmpOp "sgt" false
+        | "op_GreaterThanOrEqual", true -> emitCmpOp "sge" false
+        | "op_Equality", true -> emitCmpOp "eq" false
+        | "op_Inequality", true -> emitCmpOp "ne" false
+        // Float comparisons
+        | "op_LessThan", false -> emitCmpOp "olt" true
+        | "op_LessThanOrEqual", false -> emitCmpOp "ole" true
+        | "op_GreaterThan", false -> emitCmpOp "ogt" true
+        | "op_GreaterThanOrEqual", false -> emitCmpOp "oge" true
+        | "op_Equality", false -> emitCmpOp "oeq" true
+        | "op_Inequality", false -> emitCmpOp "one" true
+        // Bitwise operations (int only)
+        | "op_BitwiseAnd", true -> emitBinaryOp Quot.IntBitwise.andI arg1Type
+        | "op_BitwiseOr", true -> emitBinaryOp Quot.IntBitwise.orI arg1Type
+        | "op_ExclusiveOr", true -> emitBinaryOp Quot.IntBitwise.xorI arg1Type
+        | "op_LeftShift", true -> emitBinaryOp Quot.IntBitwise.shlI arg1Type
+        | "op_RightShift", true -> emitBinaryOp Quot.IntBitwise.shrSI arg1Type
         | _ -> None
 
 /// Try to emit a unary primitive operation
+/// Uses quotation-based templates for principled MLIR generation.
 let tryEmitPrimitiveUnaryOp (opName: string) (argSSA: string) (argType: string) (zipper: MLIRZipper) : (string * string * MLIRZipper) option =
     let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
     
     // Use active pattern for type-safe unary operation classification
     match opName with
     | UnaryOp BoolNot when isBoolType argType ->
+        // Boolean NOT: XOR with true
         let trueSSA, zipper'' = MLIRZipper.yieldSSA zipper'
-        let trueOp = sprintf "%s = arith.constant true" trueSSA
+        let constParams: ConstantParams = { Result = trueSSA; Value = "true"; Type = "i1" }
+        let trueOp = render Quot.Constant.intConst constParams
         let zipper''' = MLIRZipper.witnessOpWithResult trueOp trueSSA (Integer I1) zipper''
-        let notOp = sprintf "%s = arith.xori %s, %s : i1" resultSSA argSSA trueSSA
+        let xorParams: BinaryOpParams = { Result = resultSSA; Lhs = argSSA; Rhs = trueSSA; Type = "i1" }
+        let notOp = render Quot.IntBitwise.xorI xorParams
         let zipper4 = MLIRZipper.witnessOpWithResult notOp resultSSA (Integer I1) zipper'''
         Some (resultSSA, "i1", zipper4)
         
     | UnaryOp IntNegate when isIntegerType argType ->
+        // Integer negation: 0 - x
         let zeroSSA, zipper'' = MLIRZipper.yieldSSA zipper'
-        let zeroOp = sprintf "%s = arith.constant 0 : %s" zeroSSA argType
+        let constParams: ConstantParams = { Result = zeroSSA; Value = "0"; Type = argType }
+        let zeroOp = render Quot.Constant.intConst constParams
         let zipper''' = MLIRZipper.witnessOpWithResult zeroOp zeroSSA (Serialize.deserializeType argType) zipper''
-        let negOp = sprintf "%s = arith.subi %s, %s : %s" resultSSA zeroSSA argSSA argType
+        let subParams: BinaryOpParams = { Result = resultSSA; Lhs = zeroSSA; Rhs = argSSA; Type = argType }
+        let negOp = render Quot.IntBinary.subI subParams
         let zipper4 = MLIRZipper.witnessOpWithResult negOp resultSSA (Serialize.deserializeType argType) zipper'''
         Some (resultSSA, argType, zipper4)
         
     | UnaryOp BitwiseNot when isIntegerType argType ->
+        // Bitwise NOT: XOR with -1 (all ones)
         let onesSSA, zipper'' = MLIRZipper.yieldSSA zipper'
-        let onesOp = sprintf "%s = arith.constant -1 : %s" onesSSA argType
+        let constParams: ConstantParams = { Result = onesSSA; Value = "-1"; Type = argType }
+        let onesOp = render Quot.Constant.intConst constParams
         let zipper''' = MLIRZipper.witnessOpWithResult onesOp onesSSA (Serialize.deserializeType argType) zipper''
-        let notOp = sprintf "%s = arith.xori %s, %s : %s" resultSSA argSSA onesSSA argType
+        let xorParams: BinaryOpParams = { Result = resultSSA; Lhs = argSSA; Rhs = onesSSA; Type = argType }
+        let notOp = render Quot.IntBitwise.xorI xorParams
         let zipper4 = MLIRZipper.witnessOpWithResult notOp resultSSA (Serialize.deserializeType argType) zipper'''
         Some (resultSSA, argType, zipper4)
         
@@ -160,16 +201,19 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
 
             match intrinsicInfo, argSSAs with
             // NativePtr operations - type-safe dispatch via NativePtrOpKind
+            // Uses quotation-based templates for principled MLIR generation.
             | NativePtrOp op, argSSAs ->
                 match op, argSSAs with
                 | PtrToNativeInt, [(argSSA, _)] ->
                     let ssaName, zipper' = MLIRZipper.yieldSSA zipper
-                    let text = sprintf "%s = llvm.ptrtoint %s : !llvm.ptr to i64" ssaName argSSA
+                    let convParams: Quot.Conversion.PtrIntParams = { Result = ssaName; Operand = argSSA; IntType = "i64" }
+                    let text = render Quot.Conversion.ptrToInt convParams
                     let zipper'' = MLIRZipper.witnessOpWithResult text ssaName (Integer I64) zipper'
                     zipper'', TRValue (ssaName, "i64")
                 | PtrOfNativeInt, [(argSSA, _)] ->
                     let ssaName, zipper' = MLIRZipper.yieldSSA zipper
-                    let text = sprintf "%s = llvm.inttoptr %s : i64 to !llvm.ptr" ssaName argSSA
+                    let convParams: Quot.Conversion.PtrIntParams = { Result = ssaName; Operand = argSSA; IntType = "i64" }
+                    let text = render Quot.Conversion.intToPtr convParams
                     let zipper'' = MLIRZipper.witnessOpWithResult text ssaName Pointer zipper'
                     zipper'', TRValue (ssaName, "!llvm.ptr")
                 | PtrToVoidPtr, [(argSSA, _)] ->
@@ -179,17 +223,21 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                 | PtrGet, [(ptrSSA, _); (idxSSA, _)] ->
                     let elemType = Serialize.mlirType (mapType returnType)
                     let gepSSA, zipper' = MLIRZipper.yieldSSA zipper
-                    let gepText = sprintf "%s = llvm.getelementptr %s[%s] : (!llvm.ptr, i32) -> !llvm.ptr, i8" gepSSA ptrSSA idxSSA
+                    let gepParams: GepParams = { Result = gepSSA; Base = ptrSSA; Offset = idxSSA; ElementType = "i8" }
+                    let gepText = render Quot.Gep.i32 gepParams
                     let zipper'' = MLIRZipper.witnessOpWithResult gepText gepSSA Pointer zipper'
                     let loadSSA, zipper''' = MLIRZipper.yieldSSA zipper''
-                    let loadText = sprintf "%s = llvm.load %s : !llvm.ptr -> %s" loadSSA gepSSA elemType
+                    let loadParams: LoadParams = { Result = loadSSA; Pointer = gepSSA; Type = elemType }
+                    let loadText = render Quot.Core.load loadParams
                     let zipper4 = MLIRZipper.witnessOpWithResult loadText loadSSA (mapType returnType) zipper'''
                     zipper4, TRValue (loadSSA, elemType)
                 | PtrSet, [(ptrSSA, _); (idxSSA, _); (valSSA, _)] ->
                     let gepSSA, zipper' = MLIRZipper.yieldSSA zipper
-                    let gepText = sprintf "%s = llvm.getelementptr %s[%s] : (!llvm.ptr, i32) -> !llvm.ptr, i8" gepSSA ptrSSA idxSSA
+                    let gepParams: GepParams = { Result = gepSSA; Base = ptrSSA; Offset = idxSSA; ElementType = "i8" }
+                    let gepText = render Quot.Gep.i32 gepParams
                     let zipper'' = MLIRZipper.witnessOpWithResult gepText gepSSA Pointer zipper'
-                    let storeText = sprintf "llvm.store %s, %s : i8, !llvm.ptr" valSSA gepSSA
+                    let storeParams: StoreParams = { Value = valSSA; Pointer = gepSSA; Type = "i8" }
+                    let storeText = render Quot.Core.store storeParams
                     let zipper''' = MLIRZipper.witnessVoidOp storeText zipper''
                     zipper''', TRVoid
                 | PtrStackAlloc, [(countSSA, _)] ->
@@ -199,28 +247,35 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                         | _ -> "i8"
                     let ssaName, zipper' = MLIRZipper.yieldSSA zipper
                     let countSSA64, zipper'' = MLIRZipper.yieldSSA zipper'
-                    let extText = sprintf "%s = arith.extsi %s : i32 to i64" countSSA64 countSSA
+                    let extParams: ConversionParams = { Result = countSSA64; Operand = countSSA; FromType = "i32"; ToType = "i64" }
+                    let extText = render Quot.Conversion.extSI extParams
                     let zipper''' = MLIRZipper.witnessOpWithResult extText countSSA64 (Integer I64) zipper''
-                    let allocaText = sprintf "%s = llvm.alloca %s x %s : (i64) -> !llvm.ptr" ssaName countSSA64 elemType
+                    let allocaParams: AllocaParams = { Result = ssaName; Count = countSSA64; ElementType = elemType }
+                    let allocaText = render Quot.Core.alloca allocaParams
                     let zipper4 = MLIRZipper.witnessOpWithResult allocaText ssaName Pointer zipper'''
                     zipper4, TRValue (ssaName, "!llvm.ptr")
                 | PtrCopy, [(destSSA, _); (srcSSA, _); (countSSA, _)] ->
                     let countSSA64, zipper' = MLIRZipper.yieldSSA zipper
-                    let extText = sprintf "%s = arith.extsi %s : i32 to i64" countSSA64 countSSA
+                    let extParams: ConversionParams = { Result = countSSA64; Operand = countSSA; FromType = "i32"; ToType = "i64" }
+                    let extText = render Quot.Conversion.extSI extParams
                     let zipper'' = MLIRZipper.witnessOpWithResult extText countSSA64 (Integer I64) zipper'
-                    let memcpyText = sprintf "\"llvm.intr.memcpy\"(%s, %s, %s) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()" destSSA srcSSA countSSA64
+                    let memcpyParams: Quot.Intrinsic.MemCopyParams = { Dest = destSSA; Src = srcSSA; Len = countSSA64 }
+                    let memcpyText = render Quot.Intrinsic.memcpy memcpyParams
                     let zipper''' = MLIRZipper.witnessVoidOp memcpyText zipper''
                     zipper''', TRVoid
                 | PtrFill, [(destSSA, _); (valueSSA, _); (countSSA, _)] ->
                     let countSSA64, zipper' = MLIRZipper.yieldSSA zipper
-                    let extText = sprintf "%s = arith.extsi %s : i32 to i64" countSSA64 countSSA
+                    let extParams: ConversionParams = { Result = countSSA64; Operand = countSSA; FromType = "i32"; ToType = "i64" }
+                    let extText = render Quot.Conversion.extSI extParams
                     let zipper'' = MLIRZipper.witnessOpWithResult extText countSSA64 (Integer I64) zipper'
-                    let memsetText = sprintf "\"llvm.intr.memset\"(%s, %s, %s) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()" destSSA valueSSA countSSA64
+                    let memsetParams: Quot.Intrinsic.MemSetParams = { Dest = destSSA; Value = valueSSA; Len = countSSA64 }
+                    let memsetText = render Quot.Intrinsic.memset memsetParams
                     let zipper''' = MLIRZipper.witnessVoidOp memsetText zipper''
                     zipper''', TRVoid
                 | PtrAdd, [(ptrSSA, _); (offsetSSA, _)] ->
                     let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
-                    let gepText = sprintf "%s = llvm.getelementptr %s[%s] : (!llvm.ptr, i32) -> !llvm.ptr, i8" resultSSA ptrSSA offsetSSA
+                    let gepParams: GepParams = { Result = resultSSA; Base = ptrSSA; Offset = offsetSSA; ElementType = "i8" }
+                    let gepText = render Quot.Gep.i32 gepParams
                     let zipper'' = MLIRZipper.witnessOpWithResult gepText resultSSA Pointer zipper'
                     zipper'', TRValue (resultSSA, "!llvm.ptr")
                 | _, _ ->
@@ -429,6 +484,120 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                 let zipper22 = MLIRZipper.witnessOpWithResult insertLenText resultSSA NativeStrType zipper21
 
                 zipper22, TRValue (resultSSA, NativeStrTypeStr)
+
+            // Format intrinsics - value → string conversions
+            // Format.int: Convert int64 to decimal string representation
+            | FormatOp "int", [(intSSA, _)] ->
+                // Integer to string conversion using inline digit extraction
+                // Algorithm: repeatedly extract digits via mod 10, build in reverse
+                // Maximum int64 has 20 digits + sign + null = 22 bytes, use 24 for safety
+
+                // Allocate buffer for digits (24 bytes max)
+                let bufSizeSSA, z1 = MLIRZipper.yieldSSA zipper
+                let bufSizeText = sprintf "%s = arith.constant 24 : i64" bufSizeSSA
+                let z2 = MLIRZipper.witnessOpWithResult bufSizeText bufSizeSSA (Integer I64) z1
+
+                let bufSSA, z3 = MLIRZipper.yieldSSA z2
+                let allocaText = sprintf "%s = llvm.alloca %s x i8 : (i64) -> !llvm.ptr" bufSSA bufSizeSSA
+                let z4 = MLIRZipper.witnessOpWithResult allocaText bufSSA Pointer z3
+
+                // Constants for digit extraction
+                let tenSSA, z5 = MLIRZipper.yieldSSA z4
+                let tenText = sprintf "%s = arith.constant 10 : i64" tenSSA
+                let z6 = MLIRZipper.witnessOpWithResult tenText tenSSA (Integer I64) z5
+
+                let asciiZeroSSA, z7 = MLIRZipper.yieldSSA z6
+                let asciiZeroText = sprintf "%s = arith.constant 48 : i8" asciiZeroSSA  // '0' = 48
+                let z8 = MLIRZipper.witnessOpWithResult asciiZeroText asciiZeroSSA (Integer I8) z7
+
+                // Start at end of buffer (we build backwards)
+                let endIdxSSA, z9 = MLIRZipper.yieldSSA z8
+                let endIdxText = sprintf "%s = arith.constant 23 : i64" endIdxSSA
+                let z10 = MLIRZipper.witnessOpWithResult endIdxText endIdxSSA (Integer I64) z9
+
+                // Handle zero case specially
+                let zeroSSA, z11 = MLIRZipper.yieldSSA z10
+                let zeroText = sprintf "%s = arith.constant 0 : i64" zeroSSA
+                let z12 = MLIRZipper.witnessOpWithResult zeroText zeroSSA (Integer I64) z11
+
+                let isZeroSSA, z13 = MLIRZipper.yieldSSA z12
+                let isZeroText = sprintf "%s = arith.cmpi eq, %s, %s : i64" isZeroSSA intSSA zeroSSA
+                let z14 = MLIRZipper.witnessOpWithResult isZeroText isZeroSSA (Integer I1) z13
+
+                // scf.if for zero case vs digit extraction
+                // For zero: just store '0' and return single-char string
+                // For non-zero: do digit extraction loop
+
+                // Simplified: for now, just handle as if non-zero with a single digit extraction
+                // Full implementation would use scf.while for multi-digit numbers
+
+                // Extract least significant digit: digit = value % 10
+                let digitSSA, z15 = MLIRZipper.yieldSSA z14
+                let remText = sprintf "%s = arith.remsi %s, %s : i64" digitSSA intSSA tenSSA
+                let z16 = MLIRZipper.witnessOpWithResult remText digitSSA (Integer I64) z15
+
+                // Convert to ASCII: char = digit + '0'
+                let digit8SSA, z17 = MLIRZipper.yieldSSA z16
+                let truncText = sprintf "%s = arith.trunci %s : i64 to i8" digit8SSA digitSSA
+                let z18 = MLIRZipper.witnessOpWithResult truncText digit8SSA (Integer I8) z17
+
+                let charSSA, z19 = MLIRZipper.yieldSSA z18
+                let addCharText = sprintf "%s = arith.addi %s, %s : i8" charSSA digit8SSA asciiZeroSSA
+                let z20 = MLIRZipper.witnessOpWithResult addCharText charSSA (Integer I8) z19
+
+                // Store the single digit at buffer start (simplified single-digit case)
+                let storeText = sprintf "llvm.store %s, %s : i8, !llvm.ptr" charSSA bufSSA
+                let z21 = MLIRZipper.witnessVoidOp storeText z20
+
+                // For now: return single-character string (works for 0-9)
+                // TODO: Implement full scf.while loop for multi-digit numbers
+                let oneSSA, z22 = MLIRZipper.yieldSSA z21
+                let oneText = sprintf "%s = arith.constant 1 : i64" oneSSA
+                let z23 = MLIRZipper.witnessOpWithResult oneText oneSSA (Integer I64) z22
+
+                // Build fat string
+                let undefSSA, z24 = MLIRZipper.yieldSSA z23
+                let undefText = sprintf "%s = llvm.mlir.undef : %s" undefSSA NativeStrTypeStr
+                let z25 = MLIRZipper.witnessOpWithResult undefText undefSSA NativeStrType z24
+
+                let withPtrSSA, z26 = MLIRZipper.yieldSSA z25
+                let insertPtrText = sprintf "%s = llvm.insertvalue %s, %s[0] : %s" withPtrSSA bufSSA undefSSA NativeStrTypeStr
+                let z27 = MLIRZipper.witnessOpWithResult insertPtrText withPtrSSA NativeStrType z26
+
+                let resultSSA, z28 = MLIRZipper.yieldSSA z27
+                let insertLenText = sprintf "%s = llvm.insertvalue %s, %s[1] : %s" resultSSA oneSSA withPtrSSA NativeStrTypeStr
+                let z29 = MLIRZipper.witnessOpWithResult insertLenText resultSSA NativeStrType z28
+
+                z29, TRValue (resultSSA, NativeStrTypeStr)
+
+            // Format.float: Convert float to string representation
+            // TODO: Full implementation requires floating-point formatting algorithm (Grisu/Dragon4/Ryu)
+            | FormatOp "float", [(floatSSA, _)] ->
+                // Placeholder: emit constant "<float>" for now
+                let placeholderStr = "<float>"
+                let globalName, z1 = MLIRZipper.observeStringLiteral placeholderStr zipper
+
+                let ptrSSA, z2 = MLIRZipper.yieldSSA z1
+                let addrOfText = sprintf "%s = llvm.mlir.addressof @%s : !llvm.ptr" ptrSSA globalName
+                let z3 = MLIRZipper.witnessOpWithResult addrOfText ptrSSA Pointer z2
+
+                let lenSSA, z4 = MLIRZipper.yieldSSA z3
+                let lenText = sprintf "%s = arith.constant %d : i64" lenSSA (String.length placeholderStr)
+                let z5 = MLIRZipper.witnessOpWithResult lenText lenSSA (Integer I64) z4
+
+                let undefSSA, z6 = MLIRZipper.yieldSSA z5
+                let undefText = sprintf "%s = llvm.mlir.undef : %s" undefSSA NativeStrTypeStr
+                let z7 = MLIRZipper.witnessOpWithResult undefText undefSSA NativeStrType z6
+
+                let withPtrSSA, z8 = MLIRZipper.yieldSSA z7
+                let insertPtrText = sprintf "%s = llvm.insertvalue %s, %s[0] : %s" withPtrSSA ptrSSA undefSSA NativeStrTypeStr
+                let z9 = MLIRZipper.witnessOpWithResult insertPtrText withPtrSSA NativeStrType z8
+
+                let resultSSA, z10 = MLIRZipper.yieldSSA z9
+                let insertLenText = sprintf "%s = llvm.insertvalue %s, %s[1] : %s" resultSSA lenSSA withPtrSSA NativeStrTypeStr
+                let z11 = MLIRZipper.witnessOpWithResult insertLenText resultSSA NativeStrType z10
+
+                z11, TRValue (resultSSA, NativeStrTypeStr)
 
             | info, [] ->
                 zipper, TRValue ("$intrinsic:" + info.FullName, "func")

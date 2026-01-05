@@ -365,7 +365,7 @@ let oneConstant (mlirType: string) : string =
 /// This is the canonical conversion used throughout Alex
 let rec mapNativeType (ty: NativeType) : MLIRType =
     match ty with
-    // Applied types - match on type constructor name
+    // Applied types - match on type constructor name and layout
     | NativeType.TApp(tycon, _args) ->
         match tycon.Name with
         | "unit" -> Unit
@@ -388,7 +388,16 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
         | "array" -> Pointer
         | "list" -> Pointer
         | "option" | "voption" -> Pointer  // TODO: Value type layout
-        | _ -> Pointer  // Default to pointer for unknown applied types
+        | _ ->
+            // Check if this is a user-defined discriminated union
+            // DUs have Layout.Inline with size > word size (tag + payload)
+            // For now, detect by Inline layout pattern (9, 8) = 1-byte tag + 8-byte payload
+            match tycon.Layout with
+            | TypeLayout.Inline (size, _align) when size > 8 ->
+                // User-defined DU - use tagged union struct
+                // We use i32 for tag (for easier comparison) and i64 for payload
+                Struct [Integer I32; Integer I64]
+            | _ -> Pointer  // Default to pointer for other unknown types
 
     // Function types
     | NativeType.TFun _ -> Pointer  // Function pointer + closure
@@ -411,8 +420,8 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
     // Record types
     | NativeType.TRecord _ -> Pointer
 
-    // Union types
-    | NativeType.TUnion _ -> Pointer
+    // Union types - tagged union struct (tag: i32, payload: i64)
+    | NativeType.TUnion _ -> Struct [Integer I32; Integer I64]
 
     // Anonymous record types
     | NativeType.TAnon _ -> Pointer

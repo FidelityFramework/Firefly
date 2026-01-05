@@ -169,7 +169,61 @@ let emitPatternBindings
     | Pattern.Const _ ->
         // Constant pattern - no bindings needed
         zipper
-    
+
+    | Pattern.Union (_caseName, payloadOpt, _unionType) ->
+        // DU pattern: IntVal x or FloatVal x
+        // FNCS wraps single-field payloads in a Tuple: Union(caseName, Some(Tuple [Var(name, ty)]))
+        // 1. Extract payload from union struct at index 1
+        // 2. Convert to appropriate type based on pattern variable type
+        // 3. Bind to pattern variable
+        
+        // Helper to bind a single variable from i64 payload
+        let bindSingleVar name varTy z =
+            // Extract payload i64 from struct
+            let payload64SSA, z1 = MLIRZipper.yieldSSA z
+            let extractText = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(i32, i64)>" payload64SSA scrutineeSSA
+            let z2 = MLIRZipper.witnessOpWithResult extractText payload64SSA (Integer I64) z1
+
+            // Convert payload to target type based on pattern variable type
+            let mlirTy = mapType varTy
+            let payloadSSA, z3 =
+                match mlirTy with
+                | Integer I32 ->
+                    // i64 -> i32: truncate
+                    let truncSSA, z = MLIRZipper.yieldSSA z2
+                    let truncText = sprintf "%s = arith.trunci %s : i64 to i32" truncSSA payload64SSA
+                    let z' = MLIRZipper.witnessOpWithResult truncText truncSSA (Integer I32) z
+                    truncSSA, z'
+                | Float F64 ->
+                    // i64 -> f64: bitcast
+                    let castSSA, z = MLIRZipper.yieldSSA z2
+                    let castText = sprintf "%s = llvm.bitcast %s : i64 to f64" castSSA payload64SSA
+                    let z' = MLIRZipper.witnessOpWithResult castText castSSA (Float F64) z
+                    castSSA, z'
+                | _ ->
+                    // Keep as i64
+                    payload64SSA, z2
+
+            // Bind the variable
+            let ty = Serialize.mlirType mlirTy
+            MLIRZipper.bindVar name payloadSSA ty z3
+        
+        match payloadOpt with
+        | Some (Pattern.Tuple [Pattern.Var (name, varTy)]) ->
+            // Single-field case wrapped in Tuple (common case from FNCS)
+            bindSingleVar name varTy zipper
+        | Some (Pattern.Var (name, varTy)) ->
+            // Direct var (shouldn't happen but handle anyway)
+            bindSingleVar name varTy zipper
+        | Some (Pattern.Tuple _patterns) ->
+            // Multi-field case - TODO
+            zipper
+        | None ->
+            // No payload (like None in Option)
+            zipper
+        | _ ->
+            zipper
+
     | _ ->
         // TODO: Other patterns (multi-element tuple, union, etc.)
         zipper
@@ -510,7 +564,77 @@ let witnessMatch
                 zipper1, TRError "Match: no captured regions"
         | None ->
             zipper, TRError "Match: scrutinee not computed"
-    
+
+    // Two-case DU match: both cases are Union patterns
+    | [case0; case1] when
+        (match case0.Pattern, case1.Pattern with
+         | Pattern.Union _, Pattern.Union _ -> true
+         | _ -> false) ->
+        match MLIRZipper.recallNodeSSA (string (NodeId.value scrutineeId)) zipper with
+        | Some (scrutineeSSA, _) ->
+            // Extract tag from scrutinee union struct at index 0
+            let tagSSA, zipper1 = MLIRZipper.yieldSSA zipper
+            let extractTagText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(i32, i64)>" tagSSA scrutineeSSA
+            let zipper2 = MLIRZipper.witnessOpWithResult extractTagText tagSSA (Integer I32) zipper1
+
+            // Generate constant 0 for case 0's tag (first case index)
+            let case0TagSSA, zipper3 = MLIRZipper.witnessConstant 0L I32 zipper2
+
+            // Compare: tag == 0 (matches case 0)
+            let condSSA, zipper4 = MLIRZipper.yieldSSA zipper3
+            let cmpText = sprintf "%s = arith.cmpi eq, %s, %s : i32" condSSA tagSSA case0TagSSA
+            let zipper5 = MLIRZipper.witnessOpWithResult cmpText condSSA (Integer I1) zipper4
+
+            // Get captured regions for case bodies
+            match MLIRZipper.getPendingRegions nodeIdStr zipper5 with
+            | Some regions ->
+                // Get case 0 ops (then branch)
+                let case0Ops =
+                    match Map.tryFind (SCFRegionKind.MatchCaseRegion 0) regions with
+                    | Some ops -> ops
+                    | None -> []
+
+                // Get case 1 ops (else branch)
+                let case1Ops =
+                    match Map.tryFind (SCFRegionKind.MatchCaseRegion 1) regions with
+                    | Some ops -> Some ops
+                    | None -> Some []
+
+                // Get result type
+                let resultType =
+                    match node.Type with
+                    | NativeType.TApp(tycon, _) when tycon.Name = "unit" -> None
+                    | ty -> Some (mapType ty)
+
+                // Get case body result SSAs
+                let case0ResultSSA =
+                    match MLIRZipper.recallNodeSSA (string (NodeId.value case0.Body)) zipper5 with
+                    | Some (ssa, _) -> Some ssa
+                    | None -> None
+
+                let case1ResultSSA =
+                    match MLIRZipper.recallNodeSSA (string (NodeId.value case1.Body)) zipper5 with
+                    | Some (ssa, _) -> Some ssa
+                    | None -> None
+
+                // Emit scf.if with the case bodies
+                let resultSSAOpt, zipper6 = MLIRZipper.witnessSCFIf condSSA case0Ops case0ResultSSA case1Ops case1ResultSSA resultType zipper5
+
+                // Clear pending regions
+                let zipper7 = MLIRZipper.clearPendingRegions nodeIdStr zipper6
+
+                match resultSSAOpt with
+                | Some resultSSA ->
+                    let resultTy = Serialize.mlirType (Option.get resultType)
+                    let zipper8 = MLIRZipper.bindNodeSSA nodeIdStr resultSSA resultTy zipper7
+                    zipper8, TRValue (resultSSA, resultTy)
+                | None ->
+                    zipper7, TRVoid
+            | None ->
+                zipper5, TRError "Match: no captured regions for DU match"
+        | None ->
+            zipper, TRError "Match: scrutinee not computed for DU match"
+
     | _ ->
         // TODO: Handle other match patterns (more cases, guards, etc.)
         zipper, TRError (sprintf "Match with %d cases not yet implemented" (List.length cases))

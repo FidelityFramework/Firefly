@@ -381,3 +381,66 @@ module Quot =
             IsTerminator = false
             Category = "constant"
         }
+    
+    /// Float binary operations
+    module FloatBinary =
+        let addF : MLIRTemplate<BinaryOpParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.addf %s, %s : %s" p.Result p.Lhs p.Rhs p.Type @>
+            Dialect = "arith"
+            OpName = "addf"
+            IsTerminator = false
+            Category = "binary"
+        }
+        
+        let subF : MLIRTemplate<BinaryOpParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.subf %s, %s : %s" p.Result p.Lhs p.Rhs p.Type @>
+            Dialect = "arith"
+            OpName = "subf"
+            IsTerminator = false
+            Category = "binary"
+        }
+        
+        let mulF : MLIRTemplate<BinaryOpParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.mulf %s, %s : %s" p.Result p.Lhs p.Rhs p.Type @>
+            Dialect = "arith"
+            OpName = "mulf"
+            IsTerminator = false
+            Category = "binary"
+        }
+        
+        let divF : MLIRTemplate<BinaryOpParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.divf %s, %s : %s" p.Result p.Lhs p.Rhs p.Type @>
+            Dialect = "arith"
+            OpName = "divf"
+            IsTerminator = false
+            Category = "binary"
+        }
+    
+    /// Comparison operations (both integer and float)
+    module Compare =
+        /// Parameters for comparison operations (result is always i1)
+        type CmpParams = {
+            Result: string
+            Predicate: string  // "slt", "sle", "olt", "oeq", etc.
+            Lhs: string
+            Rhs: string
+            Type: string
+        }
+        
+        /// Integer comparison
+        let cmpI : MLIRTemplate<CmpParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.cmpi %s, %s, %s : %s" p.Result p.Predicate p.Lhs p.Rhs p.Type @>
+            Dialect = "arith"
+            OpName = "cmpi"
+            IsTerminator = false
+            Category = "compare"
+        }
+        
+        /// Float comparison
+        let cmpF : MLIRTemplate<CmpParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.cmpf %s, %s, %s : %s" p.Result p.Predicate p.Lhs p.Rhs p.Type @>
+            Dialect = "arith"
+            OpName = "cmpf"
+            IsTerminator = false
+            Category = "compare"
+        }

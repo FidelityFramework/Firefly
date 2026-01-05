@@ -223,6 +223,16 @@ let (|ArrayOp|_|) (info: IntrinsicInfo) =
 let (|UncheckedOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.Unchecked then Some info.Operation else None
 
+/// Check if intrinsic is a Format operation (using IntrinsicInfo)
+/// Format module provides value → string conversions (e.g., Format.int, Format.float)
+let (|FormatOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Format then Some info.Operation else None
+
+/// Check if intrinsic is a Parse operation (using IntrinsicInfo)
+/// Parse module provides string → value conversions (e.g., Parse.int, Parse.float)
+let (|ParseOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Parse then Some info.Operation else None
+
 /// Conversion function names
 let private conversionFunctions = 
     set ["int"; "int8"; "int16"; "int32"; "int64";

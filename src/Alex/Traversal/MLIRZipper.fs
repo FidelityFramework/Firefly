@@ -1233,8 +1233,8 @@ module MLIRZipper =
                             let z'' = witnessOpWithResult convText convSSA (Serialize.deserializeType declaredTypeStr) z'
                             argsAcc @ [convSSA], typesAcc @ [declaredTypeStr], z''
                         else
-                            // Other mismatch - use actual types
-                            argsAcc @ [arg], typesAcc @ [argTypeStr], z
+                            // Type mismatch with no known conversion - this is a compiler bug
+                            failwithf "Type mismatch in call to '%s': argument has type '%s' but function expects '%s'. No conversion available." funcName argTypeStr declaredTypeStr
                     ) ([], [], zipper')
                 String.concat ", " convertedArgs, String.concat ", " convertedTypes, z
             | _ ->

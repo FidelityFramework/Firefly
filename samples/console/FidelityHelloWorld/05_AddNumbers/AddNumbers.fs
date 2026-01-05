@@ -1,23 +1,37 @@
-/// Sample 05: Add Numbers
-/// Demonstrates SRTP arithmetic and numeric-to-string conversion
-/// Tests: numeric input, arithmetic operators, string formatting
+/// Sample 05: Discriminated Union Pattern Matching
+/// Demonstrates:
+/// - Discriminated unions for runtime type representation
+/// - Pattern matching for type-aware dispatch
 module AddNumbers
 
-// Read two numbers, add them, display result
-let add() =
-    Console.write "Enter first number: "
-    let aStr = Console.readln()
-    Console.write "Enter second number: "
-    let bStr = Console.readln()
+// Discriminated union with two cases
+type Number =
+    | IntVal of int
+    | FloatVal of float
 
-    // For now, just echo back the strings since we need Int.parse and Int.toString
-    // These will be added as FNCS intrinsics
-    Console.write "You entered: "
-    Console.write aStr
-    Console.write " and "
-    Console.writeln bStr
+// Simple 2-case pattern match
+let formatNumber (n: Number) : string =
+    match n with
+    | IntVal x -> Format.int x
+    | FloatVal x -> Format.float x
+
+// Demo entry point
+let runDemo () : int =
+    Console.writeln "=== DU Pattern Match Test ==="
+
+    // Test IntVal
+    let a = IntVal 42
+    Console.write "IntVal 42 -> "
+    Console.writeln (formatNumber a)
+
+    // Test FloatVal
+    let b = FloatVal 3.14
+    Console.write "FloatVal 3.14 -> "
+    Console.writeln (formatNumber b)
+
+    Console.writeln "Done!"
+    0
 
 [<EntryPoint>]
 let main argv =
-    add()
-    0
+    runDemo ()

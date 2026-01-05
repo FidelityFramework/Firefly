@@ -327,14 +327,14 @@ let witnessFieldSet
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Witness SRTP trait call
-let witnessTraitCall 
-    (memberName: string) 
-    (typeArgs: NativeType list) 
-    (argId: NodeId) 
-    (node: SemanticNode) 
-    (zipper: MLIRZipper) 
+let witnessTraitCall
+    (memberName: string)
+    (typeArgs: NativeType list)
+    (argId: NodeId)
+    (node: SemanticNode)
+    (zipper: MLIRZipper)
     : MLIRZipper * TransferResult =
-    
+
     match MLIRZipper.recallNodeSSA (string (NodeId.value argId)) zipper with
     | Some (argSSA, argType) ->
         // For now, emit a call to the trait member name
@@ -346,3 +346,103 @@ let witnessTraitCall
         zipper''', TRValue (resultSSA, "!llvm.ptr")
     | None ->
         zipper, TRError (sprintf "TraitCall '%s': argument not computed" memberName)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Union Case Construction
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// MLIR type for discriminated unions (tag + max payload)
+let unionTypeStr = "!llvm.struct<(i32, i64)>"
+
+/// Witness union case construction: IntVal 42, FloatVal 3.14, etc.
+///
+/// DU construction pattern:
+/// 1. Create undef struct: %undef = llvm.mlir.undef : !llvm.struct<(i32, i64)>
+/// 2. Insert tag: %with_tag = llvm.insertvalue %tag_val, %undef[0] : !llvm.struct<(i32, i64)>
+/// 3. Insert payload (if any): %result = llvm.insertvalue %payload, %with_tag[1] : !llvm.struct<(i32, i64)>
+let witnessUnionCase
+    (caseName: string)
+    (caseIndex: int)
+    (payloadOpt: NodeId option)
+    (node: SemanticNode)
+    (zipper: MLIRZipper)
+    : MLIRZipper * TransferResult =
+        // Step 1: Create undef struct
+        let undefSSA, zipper1 = MLIRZipper.yieldSSA zipper
+        let undefParams : {| Result: string; Type: string |} = {| Result = undefSSA; Type = unionTypeStr |}
+        let undefText = render Quot.Aggregate.undef undefParams
+        let unionMLIRType = Struct [Integer I32; Integer I64]
+        let zipper2 = MLIRZipper.witnessOpWithResult undefText undefSSA unionMLIRType zipper1
+
+        // Step 2: Create tag constant and insert at index 0
+        let tagSSA, zipper3 = MLIRZipper.yieldSSA zipper2
+        let tagConstText = sprintf "%s = arith.constant %d : i32" tagSSA caseIndex
+        let zipper4 = MLIRZipper.witnessOpWithResult tagConstText tagSSA (Integer I32) zipper3
+
+        let withTagSSA, zipper5 = MLIRZipper.yieldSSA zipper4
+        let insertTagParams : Quot.Aggregate.InsertParams = {
+            Result = withTagSSA
+            Value = tagSSA
+            Aggregate = undefSSA
+            Index = 0
+            AggType = unionTypeStr
+        }
+        let insertTagText = render Quot.Aggregate.insertValue insertTagParams
+        let zipper6 = MLIRZipper.witnessOpWithResult insertTagText withTagSSA unionMLIRType zipper5
+
+        // Step 3: Insert payload (if present)
+        match payloadOpt with
+        | None ->
+            // No payload - just bind the result with tag only
+            let zipper7 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) withTagSSA unionTypeStr zipper6
+            zipper7, TRValue (withTagSSA, unionTypeStr)
+        | Some payloadId ->
+            match MLIRZipper.recallNodeSSA (string (NodeId.value payloadId)) zipper6 with
+            | Some (payloadSSA, payloadType) ->
+                // Convert payload to i64 for storage in union
+                // For integers, use extsi/extui; for floats use bitcast
+                let payload64SSA, zipper7 =
+                    match payloadType with
+                    | "i32" | "i64" ->
+                        // Integer - extend to i64 if needed
+                        if payloadType = "i64" then
+                            payloadSSA, zipper6
+                        else
+                            let extSSA, z = MLIRZipper.yieldSSA zipper6
+                            let extText = sprintf "%s = arith.extsi %s : i32 to i64" extSSA payloadSSA
+                            let z' = MLIRZipper.witnessOpWithResult extText extSSA (Integer I64) z
+                            extSSA, z'
+                    | "f64" ->
+                        // Double - bitcast to i64
+                        let castSSA, z = MLIRZipper.yieldSSA zipper6
+                        let castText = sprintf "%s = llvm.bitcast %s : f64 to i64" castSSA payloadSSA
+                        let z' = MLIRZipper.witnessOpWithResult castText castSSA (Integer I64) z
+                        castSSA, z'
+                    | "f32" ->
+                        // Float - extend to f64 then bitcast
+                        let extSSA, z1 = MLIRZipper.yieldSSA zipper6
+                        let extText = sprintf "%s = arith.extf %s : f32 to f64" extSSA payloadSSA
+                        let z2 = MLIRZipper.witnessOpWithResult extText extSSA (Float F64) z1
+                        let castSSA, z3 = MLIRZipper.yieldSSA z2
+                        let castText = sprintf "%s = llvm.bitcast %s : f64 to i64" castSSA extSSA
+                        let z4 = MLIRZipper.witnessOpWithResult castText castSSA (Integer I64) z3
+                        castSSA, z4
+                    | _ ->
+                        // Other types - assume they fit in i64 or are already i64
+                        payloadSSA, zipper6
+
+                // Insert payload at index 1
+                let resultSSA, zipper8 = MLIRZipper.yieldSSA zipper7
+                let insertPayloadParams : Quot.Aggregate.InsertParams = {
+                    Result = resultSSA
+                    Value = payload64SSA
+                    Aggregate = withTagSSA
+                    Index = 1
+                    AggType = unionTypeStr
+                }
+                let insertPayloadText = render Quot.Aggregate.insertValue insertPayloadParams
+                let zipper9 = MLIRZipper.witnessOpWithResult insertPayloadText resultSSA unionMLIRType zipper8
+                let zipper10 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) resultSSA unionTypeStr zipper9
+                zipper10, TRValue (resultSSA, unionTypeStr)
+            | None ->
+                zipper6, TRError (sprintf "UnionCase '%s': payload not computed" caseName)
