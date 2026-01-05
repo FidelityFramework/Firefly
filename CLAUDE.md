@@ -50,7 +50,7 @@ The correct behavior:
 - Pause and spawn agents to explore context
 - Understand WHY something works a certain way before changing it
 - Look at how similar problems are solved in reference implementations
-- Recognize when Alloy should provide native implementations (like `voption` under `Some/None`)
+- Recognize when operations need to be FNCS intrinsics (types and operations are compiler-level, not library-level)
 
 ---
 
@@ -77,7 +77,7 @@ These resources are ESSENTIAL for understanding the project architecture and mak
 
 | Resource | Path | Purpose |
 |----------|------|---------|
-| **Alloy** | `~/repos/Alloy` | Native F# library - ACTIVE TARGET. BCL-sympathetic API, native types, platform bindings (BCL-free) |
+| **Alloy** | `~/repos/Alloy` | HISTORICAL ARCHIVE - Absorbed into FNCS (January 2026). Preserved as reference for patterns it established. |
 | **BAREWire** | `~/repos/BAREWire` | Binary serialization - FUTURE. Memory-efficient wire protocol |
 | **Farscape** | `~/repos/Farscape` | Distributed compute - FUTURE. Native F# distributed processing |
 
@@ -93,24 +93,25 @@ These resources are ESSENTIAL for understanding the project architecture and mak
 - **Encountering F# AST/syntax issues**: Explore `~/repos/fsharp` for FCS implementation details
 - **Type system questions**: Reference `~/repos/fslang-spec` for language semantics
 - **MLIR dialect patterns**: Look at `~/triton-cpu` for production examples
-- **Native type implementation**: Study `~/repos/Alloy` - this is the pattern library
+- **Native type implementation**: Types are FNCS intrinsics (NTUKind), not library code. See `~/repos/fsnative/src/Compiler/Checking.Native/`
 - **Architectural decisions**: Read `/docs/Architecture_Canonical.md` first
-- **Understanding "why"**: Check `~/repos/SpeakEZ/hugo/content/blog` for philosophy
+- **Understanding "why"**: Check `~/repos/SpeakEZ/hugo/content/blog` for philosophy (including "Absorbing Alloy")
 
 ### Agent Usage Protocol
 
 Before making any non-trivial change:
 
 1. **Spawn an Explore agent** to understand the codebase area being modified
-2. **Spawn reference agents** to explore relevant reference materials (e.g., how does FCS handle this? How does Alloy implement similar functionality?)
+2. **Spawn reference agents** to explore relevant reference materials (e.g., how does FCS handle this? How do FNCS intrinsics work?)
 3. **Read documentation** in `/docs/` related to the area of change
 4. **Synthesize understanding** before proposing changes
 
 Example agent tasks:
-- "Explore how Alloy handles native string encoding in Text.UTF8"
+- "Explore how FNCS defines string intrinsics in CheckExpressions.fs"
 - "Search ~/repos/fsharp for how FCS represents extern declarations"
 - "Find examples of syscall bindings in ~/triton-cpu"
 - "Look up the F# spec section on statically resolved type parameters"
+- "Explore NTUKind type mappings in NativeTypes.fs"
 
 ---
 
@@ -174,12 +175,12 @@ Phase 5+: Enrichment Nanopasses     + def-use edges, operation classification, e
 Without the typed tree overlay, SRTP (Statically Resolved Type Parameters) cannot be resolved:
 
 ```fsharp
-// Alloy/Console.fs
-let inline Write s = WritableString $ s  // $ is SRTP-dispatched!
+// Example with SRTP constraint
+let inline write< ^T when ^T : (member Length : int)> (x: ^T) = ...
 ```
 
-- Syntax tree sees: `App [op_Dollar, WritableString, s]`
-- Typed tree knows: `TraitCall` resolving `$` to `WritableString.op_Dollar` → specific implementation
+- Syntax tree sees: `App [write, x]`
+- Typed tree knows: `TraitCall` resolving the SRTP constraint to the specific member access
 
 The typed tree zipper captures this resolution INTO the PSG. Downstream passes (including Alex) use it directly.
 
@@ -219,13 +220,14 @@ The typed tree zipper captures this resolution INTO the PSG. Downstream passes (
      - `Bindings/` - Platform-aware code generation patterns
      - `CodeGeneration/` - Type mapping, MLIR builders
 
-5. **Alloy Library** - External at `/home/hhh/repos/Alloy/src/`
-   - Self-contained F# standard library for native compilation
-   - BCL-sympathetic API without .NET runtime dependency
-   - **Platform-agnostic**: No platform-specific code (Linux/MacOS/Windows directories are WRONG)
-   - **BCL-free platform bindings**: Uses module convention (`Platform.Bindings`) instead of DllImportAttribute
-   - Alex provides platform-specific implementations of platform bindings
-   - Core modules: Core.fs, Math.fs, Memory.fs, Text.fs, Console.fs, Platform.fs
+5. **FNCS Intrinsics** - External at `~/repos/fsnative/src/Compiler/Checking.Native/`
+   - Types ARE the language: NTUKind defines the native type universe
+   - Operations ARE intrinsics: Sys.*, NativePtr.*, Array.*, String.*, Math.*, Console.*, etc.
+   - Platform resolution via quotations at compile time
+   - Key files:
+     - `NativeTypes.fs` - NTUKind enum defining all native types
+     - `NativeGlobals.fs` - Type constructors with NTU metadata
+     - `CheckExpressions.fs` - Intrinsic module definitions
 
 ## CRITICAL: The Layer Separation Principle
 
@@ -235,13 +237,13 @@ The typed tree zipper captures this resolution INTO the PSG. Downstream passes (
 
 | Layer | Responsibility | DOES NOT |
 |-------|---------------|----------|
-| **Alloy** | Provide F# implementations of library functions | Contain stubs that expect compiler magic |
+| **FNCS** | Define native types (NTUKind) and intrinsic operations | Generate code or know about targets |
 | **FCS** | Parse, type-check, resolve symbols | Transform or generate code |
 | **PSG Builder** | Construct semantic graph from FCS output | Make targeting decisions |
 | **Nanopasses** | Enrich PSG with edges, classifications | Generate MLIR or know about targets |
-| **Alex/Zipper** | Traverse PSG, generate MLIR via bindings | Pattern-match on library names |
-| **Bindings** | Platform-specific MLIR generation | Know about F# syntax or Alloy namespaces |
-| **MLIR/LLVM** | Lower and optimize IR | Know about F# or Alloy |
+| **Alex/Zipper** | Traverse PSG, generate MLIR via bindings | Pattern-match on symbol names |
+| **Bindings** | Platform-specific MLIR generation | Know about F# syntax |
+| **MLIR/LLVM** | Lower and optimize IR | Know about F# |
 
 ### The Zipper + Bindings Architecture (Non-Dispatch Model)
 
@@ -292,49 +294,48 @@ Output: Complete MLIR module
 - Type-safe MLIR construction via computation expression
 
 **MLIR generation should NEVER:**
-- Pattern-match on function names like "Alloy.Console.Write"
-- Have special cases for specific libraries
+- Pattern-match on function names or module paths
+- Have special cases for specific namespaces
 - Contain conditional logic based on symbol names
-- "Know" what Alloy is
 - Create a central dispatch/routing mechanism
+- Require knowledge of user-level module structure
 
 ## NEGATIVE EXAMPLES: What NOT To Do
 
 These are real mistakes made during development. **DO NOT REPEAT THEM.**
 
-### Mistake 1: Adding Alloy-specific logic to MLIR generation
+### Mistake 1: Adding namespace-specific logic to MLIR generation
 
 ```fsharp
-// WRONG - MLIR generation should not know about Alloy
+// WRONG - MLIR generation should not match on namespaces
 match symbolName with
-| Some name when name = "Alloy.Console.Write" ->
+| Some name when name = "MyApp.Console.Write" ->
     generateConsoleWrite psg ctx node  // Special case!
-| Some name when name = "Alloy.Console.WriteLine" ->
-    generateConsoleWriteLine psg ctx node  // Another special case!
+| Some name when name.StartsWith("SomeLib.") ->
+    generateLibraryCall psg ctx node  // Another special case!
 ```
 
-**Why this is wrong**: MLIR generation is now coupled to Alloy's namespace structure. If Alloy changes, the compiler breaks.
+**Why this is wrong**: MLIR generation is now coupled to namespace structure. The code generation should be driven by PSG node types and FNCS intrinsic markers, not symbol names.
 
-**The fix**: Alloy functions should have real implementations. The PSG should contain the full call graph. The Zipper walks the graph and Bindings generate MLIR based on node structure.
+**The fix**: Alex recognizes FNCS intrinsics (marked with `SemanticKind.Intrinsic`) and generates MLIR based on the intrinsic type, not the symbol name.
 
-### Mistake 2: Stub implementations in Alloy
+### Mistake 2: Expecting FNCS intrinsics without proper recognition
 
 ```fsharp
-// WRONG - This is a stub that expects compiler magic
-let inline WriteLine (s: string) : unit =
-    () // Placeholder - Firefly compiler handles this
+// WRONG - Calling something that looks like an intrinsic but isn't marked
+let result = Console.writeln "Hello"  // If Console.writeln isn't a recognized FNCS intrinsic...
 ```
 
-**Why this is wrong**: The PSG will show `Const:Unit` as the function body. There's no semantic structure for Alex to work with.
+**Why this is wrong**: If an operation isn't defined in FNCS CheckExpressions.fs as an intrinsic, FNCS doesn't know how to type it or mark it for Alex.
 
-**The fix**: Real implementation that decomposes to primitives:
+**The fix**: All operations that should compile to native code must be defined in FNCS as intrinsics:
 ```fsharp
-// RIGHT - Real implementation using lower-level functions
-let inline WriteLine (s: string) : unit =
-    writeln s  // Calls writeStrOut -> writeBytes (the actual syscall primitive)
+// In CheckExpressions.fs - FNCS intrinsic module
+| "Console.writeln" ->
+    NativeType.TFun(env.Globals.StringType, env.Globals.UnitType)
 ```
 
-Note: `string` has native semantics (UTF-8 fat pointer with Pointer/Length members) via FNCS. There is no separate "NativeStr" type - users write `string` and FNCS provides native semantics transparently.
+Note: `string` has native semantics (UTF-8 fat pointer with Pointer/Length members) via FNCS. Users write `string` and FNCS provides native semantics transparently.
 
 ### Mistake 3: Putting nanopass logic in MLIR generation
 
@@ -385,27 +386,26 @@ module PSGEmitter =
 
 **The fix**: No central dispatcher. The Zipper folds over PSG structure. XParsec matches locally at each node. Bindings are looked up by Platform.Bindings module structure. MLIR Builder accumulates the output.
 
-## The Platform Binding Surface (BCL-Free)
+## Platform Bindings (FNCS Intrinsics)
 
-Platform bindings use a **module convention** - NO BCL dependencies:
+Platform operations are FNCS intrinsics in the `Sys` module:
 
 ```fsharp
-// Alloy/Platform.fs - BCL-free platform bindings (OCaml-inspired module convention)
-[<Struct>]
-type PlatformProvided = PlatformProvided
+// FNCS CheckExpressions.fs - Sys intrinsic module
+| "Sys.write" ->
+    // fd:int -> buffer:nativeptr<byte> -> count:int -> int
+    NativeType.TFun(env.Globals.IntType,
+        NativeType.TFun(NativeType.TNativePtr Types.uint8Type,
+            NativeType.TFun(env.Globals.IntType, env.Globals.IntType)))
 
-module Platform.Bindings =
-    let writeBytes fd buffer count : int = Unchecked.defaultof<int>
-    let readBytes fd buffer maxCount : int = Unchecked.defaultof<int>
-    let getCurrentTicks () : int64 = Unchecked.defaultof<int64>
-    let sleep milliseconds : unit = ()
+| "Sys.clock_gettime" ->
+    // unit -> int64 (ticks since epoch)
+    NativeType.TFun(env.Globals.UnitType, env.Globals.Int64Type)
 ```
 
-The `Platform.Bindings` module structure serves as the recognition marker for Alex. Alex provides platform-specific implementations.
+Alex provides platform-specific implementations for each `Sys` intrinsic based on the target platform (Linux x86_64, ARM64, Windows, etc.).
 
-**Why BCL-free?** `DllImportAttribute` from `System.Runtime.InteropServices` is a BCL dependency. Fidelity deliberately avoids ALL BCL dependencies to maintain a clean compilation path to native code.
-
-Everything else must decompose to these platform bindings through real F# code.
+**Why intrinsics?** Following ML, Rust, and Triton-CPU patterns, platform operations belong in the compiler, not a library. FNCS defines the operation signatures; Alex provides implementations.
 
 ## Critical Working Principle: Zoom Out Before Fixing
 
@@ -418,7 +418,7 @@ Everything else must decompose to these platform bindings through real F# code.
 ### Why This Matters
 
 **DO NOT "patch in place."** The instinct to fix a problem where it manifests is almost always wrong in compiler development. A symptom appearing in MLIR generation may have its root cause in:
-- Missing or stub implementations in Alloy
+- Missing intrinsic definition in FNCS
 - Incorrect symbol capture in FCS ingestion
 - Failed correlation in PSG construction
 - Missing nanopass transformation
@@ -436,7 +436,7 @@ Everything else must decompose to these platform bindings through real F# code.
 
 2. **Trace upstream** - Walk backwards through the pipeline:
    ```
-   Native Binary ← LLVM ← MLIR ← Alex/Zipper ← Nanopasses ← PSG ← FCS ← Alloy ← F# Source
+   Native Binary ← LLVM ← MLIR ← Alex/Zipper ← Nanopasses ← PSG ← FCS ← FNCS ← F# Source
    ```
 
 3. **Find the root cause** - The fix belongs at the EARLIEST point in the pipeline where the defect exists
@@ -465,10 +465,10 @@ If you cannot confidently answer all questions, you have not yet understood the 
 
 When a non-syntax issue arises:
 
-1. **Alloy Library Level**
-   - Is the required function actually implemented (not a stub)?
-   - Does the function decompose to primitives through real F# code?
-   - Is there a full call graph, not just a placeholder?
+1. **FNCS Intrinsics Level**
+   - Is the operation defined as an intrinsic in CheckExpressions.fs?
+   - Does the intrinsic have the correct type signature?
+   - Is the NTUKind mapping correct for the types involved?
 
 2. **FCS Ingestion Level**
    - Is the symbol being captured correctly?
@@ -530,14 +530,14 @@ Bindings contain platform-specific MLIR generation:
 // WRONG - String matching on symbol names
 if symbolName.Contains("Console.Write") then ...
 
-// WRONG - Hardcoded library paths
-| Some name when name.StartsWith("Alloy.") -> ...
+// WRONG - Hardcoded namespace paths
+| Some name when name.StartsWith("MyLib.") -> ...
 
-// RIGHT - Pattern match on PSG node structure
+// RIGHT - Pattern match on PSG node structure and FNCS intrinsic markers
 match node.SyntaxKind with
 | "App:FunctionCall" -> processCall zipper bindings
+| "Intrinsic:Sys.write" -> processSysWrite zipper bindings  // FNCS intrinsic
 | "WhileLoop" -> processWhileLoop zipper bindings
-| "Binding:Mutable" -> processMutableBinding zipper bindings
 ```
 
 ## Essential Documentation
@@ -638,9 +638,9 @@ Firefly compile HelloWorld.fidproj -k
 
 ## Common Pitfalls
 
-1. **Stub Functions**: Alloy functions that compile but do nothing at runtime. Always verify the implementation decomposes to platform bindings.
+1. **Missing Intrinsics**: Operations that aren't defined in FNCS CheckExpressions.fs. If an operation should compile to native code, it must be a recognized FNCS intrinsic.
 
-2. **Library-Specific Logic**: Adding `if functionName = "Alloy.X.Y"` logic anywhere in code generation. This is ALWAYS wrong.
+2. **Namespace-Specific Logic**: Adding `if functionName = "X.Y"` logic anywhere in code generation. Alex should recognize intrinsic markers, not symbol names.
 
 3. **Symbol Correlation**: FCS symbol correlation can fail silently. Check `[BUILDER] Warning:` messages in verbose output.
 
@@ -648,11 +648,11 @@ Firefly compile HelloWorld.fidproj -k
 
 5. **Layer Violations**: Any time you find yourself importing a module from a different pipeline stage, stop and reconsider.
 
-6. **SRTP Blindness**: The syntax tree (`SynExpr`) shows SRTP operators like `$` as simple identifiers. Only the typed tree (`FSharpExpr.TraitCall`) knows the resolution. If your code doesn't have SRTP info, it means the typed tree overlay is incomplete.
+6. **SRTP Blindness**: The syntax tree (`SynExpr`) shows SRTP operators as simple identifiers. Only the typed tree (`FSharpExpr.TraitCall`) knows the resolution. If your code doesn't have SRTP info, it means the typed tree overlay is incomplete.
 
 7. **Hard-Delete Reachability**: Physically removing unreachable nodes breaks the typed tree zipper. Use soft-delete (mark IsReachable = false) to preserve structure for correlation.
 
-8. **Wrong Nanopass Scope**: Different operator classes need different nanopasses. Pipe operators (`|>`, `<|`) are reduced by `ReducePipeOperators`. Alloy operators (like `$`) are a separate class. Don't mix concerns.
+8. **Wrong Nanopass Scope**: Different operator classes need different nanopasses. Pipe operators (`|>`, `<|`) are reduced by `ReducePipeOperators`. SRTP operators are a separate class. Don't mix concerns.
 
 9. **Central Dispatch/Emitter**: Creating a handler registry that routes based on node kinds. This antipattern (PSGEmitter, PSGScribe) was removed twice. The Zipper folds, XParsec matches locally, Bindings provide platform implementations, MLIR Builder accumulates. NO routing table.
 
@@ -670,8 +670,7 @@ name = "ProjectName"
 memory_model = "stack_only"
 target = "native"
 
-[dependencies]
-alloy = { path = "/home/hhh/repos/Alloy/src" }
+# No dependencies section needed - types and operations are FNCS intrinsics
 
 [build]
 sources = ["Main.fs"]
@@ -686,7 +685,7 @@ output_kind = "freestanding"  # or "console"
 1. **Read the docs** - Review all relevant documentation in `/docs/` completely
 2. **Trace the pipeline** - Follow data flow from F# source to native binary
 3. **Identify the layer** - Determine which pipeline stage contains the ROOT CAUSE:
-   - Alloy (library implementation)
+   - FNCS (intrinsic definitions, type mappings)
    - FCS (parsing, type checking, symbol resolution)
    - PSG (semantic graph construction)
    - Nanopasses (PSG enrichment)

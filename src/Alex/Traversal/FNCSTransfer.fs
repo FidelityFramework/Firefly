@@ -660,6 +660,83 @@ let witnessApplication (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnTyp
                 let zipper'' = MLIRZipper.witnessOpWithResult zeroText zeroSSA mlirRetType zipper'
                 zipper'', TRValue (zeroSSA, mlirTypeStr)
 
+            // ═══════════════════════════════════════════════════════════════════════════
+            // String intrinsics - Native string operations (post-Alloy absorption)
+            // ═══════════════════════════════════════════════════════════════════════════
+            | "String.concat2", [(str1SSA, _); (str2SSA, _)] ->
+                // string -> string -> string (concatenate two fat pointer strings)
+                // For now, allocate a new buffer and copy both strings
+                // TODO: This is a simplified implementation - real impl needs heap allocation
+
+                // Extract ptr and len from first string
+                let ptr1SSA, zipper1 = MLIRZipper.yieldSSA zipper
+                let extractPtr1 = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptr1SSA str1SSA
+                let zipper2 = MLIRZipper.witnessOpWithResult extractPtr1 ptr1SSA Pointer zipper1
+
+                let len1SSA, zipper3 = MLIRZipper.yieldSSA zipper2
+                let extractLen1 = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(ptr, i64)>" len1SSA str1SSA
+                let zipper4 = MLIRZipper.witnessOpWithResult extractLen1 len1SSA (Integer I64) zipper3
+
+                // Extract ptr and len from second string
+                let ptr2SSA, zipper5 = MLIRZipper.yieldSSA zipper4
+                let extractPtr2 = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptr2SSA str2SSA
+                let zipper6 = MLIRZipper.witnessOpWithResult extractPtr2 ptr2SSA Pointer zipper5
+
+                let len2SSA, zipper7 = MLIRZipper.yieldSSA zipper6
+                let extractLen2 = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(ptr, i64)>" len2SSA str2SSA
+                let zipper8 = MLIRZipper.witnessOpWithResult extractLen2 len2SSA (Integer I64) zipper7
+
+                // Calculate total length
+                let totalLenSSA, zipper9 = MLIRZipper.yieldSSA zipper8
+                let addLenText = sprintf "%s = arith.addi %s, %s : i64" totalLenSSA len1SSA len2SSA
+                let zipper10 = MLIRZipper.witnessOpWithResult addLenText totalLenSSA (Integer I64) zipper9
+
+                // Allocate buffer on stack for result
+                let bufSSA, zipper11 = MLIRZipper.yieldSSA zipper10
+                let allocaText = sprintf "%s = llvm.alloca %s x i8 : (i64) -> !llvm.ptr" bufSSA totalLenSSA
+                let zipper12 = MLIRZipper.witnessOpWithResult allocaText bufSSA Pointer zipper11
+
+                // Copy first string to buffer
+                let memcpy1 = sprintf "\"llvm.intr.memcpy\"(%s, %s, %s) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()" bufSSA ptr1SSA len1SSA
+                let zipper13 = MLIRZipper.witnessVoidOp memcpy1 zipper12
+
+                // Calculate offset for second string (buf + len1)
+                let offsetSSA, zipper14 = MLIRZipper.yieldSSA zipper13
+                let gepText = sprintf "%s = llvm.getelementptr %s[%s] : (!llvm.ptr, i64) -> !llvm.ptr, i8" offsetSSA bufSSA len1SSA
+                let zipper15 = MLIRZipper.witnessOpWithResult gepText offsetSSA Pointer zipper14
+
+                // Copy second string
+                let memcpy2 = sprintf "\"llvm.intr.memcpy\"(%s, %s, %s) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()" offsetSSA ptr2SSA len2SSA
+                let zipper16 = MLIRZipper.witnessVoidOp memcpy2 zipper15
+
+                // Construct result fat pointer
+                let undefSSA, zipper17 = MLIRZipper.yieldSSA zipper16
+                let undefText = sprintf "%s = llvm.mlir.undef : !llvm.struct<(ptr, i64)>" undefSSA
+                let zipper18 = MLIRZipper.witnessOpWithResult undefText undefSSA NativeStrType zipper17
+
+                let withPtrSSA, zipper19 = MLIRZipper.yieldSSA zipper18
+                let insertPtrText = sprintf "%s = llvm.insertvalue %s, %s[0] : !llvm.struct<(ptr, i64)>" withPtrSSA bufSSA undefSSA
+                let zipper20 = MLIRZipper.witnessOpWithResult insertPtrText withPtrSSA NativeStrType zipper19
+
+                let resultSSA, zipper21 = MLIRZipper.yieldSSA zipper20
+                let insertLenText = sprintf "%s = llvm.insertvalue %s, %s[1] : !llvm.struct<(ptr, i64)>" resultSSA totalLenSSA withPtrSSA
+                let zipper22 = MLIRZipper.witnessOpWithResult insertLenText resultSSA NativeStrType zipper21
+
+                zipper22, TRValue (resultSSA, NativeStrTypeStr)
+
+            // ═══════════════════════════════════════════════════════════════════════════
+            // Console intrinsics - Dispatch to platform bindings layer
+            // These are FNCS intrinsics (post-Alloy absorption) that wrap Sys.* operations
+            // Platform-specific MLIR is generated via PlatformDispatch
+            // ═══════════════════════════════════════════════════════════════════════════
+            | intrinsicName, argSSAs when intrinsicName.StartsWith("Console.") ->
+                // Console intrinsics dispatch to platform bindings just like Sys.*
+                // Map argument SSAs to (ssa, type) pairs for PlatformPrimitive
+                let argSSAsWithTypes =
+                    argSSAs |> List.map (fun (ssa, tyStr) -> (ssa, Serialize.deserializeType tyStr))
+                // Dispatch to platform bindings - Console.write/writeln/readln/error/errorln
+                witnessPlatformBinding intrinsicName argSSAsWithTypes returnType zipper
+
             | intrinsicName, [] ->
                 // TypeApp or partial application - return marker for subsequent application
                 // This handles polymorphic intrinsics (e.g., stackalloc<byte>) before value args are applied
@@ -1032,8 +1109,9 @@ let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper)
         ()
         let zipper', result = witnessSequential nodeIds zipper
         // Bind result to this node for TypeAnnotation to recall
+        // But only if we have a non-empty SSA value
         match result with
-        | TRValue (ssa, ty) ->
+        | TRValue (ssa, ty) when ssa <> "" ->
             let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
             zipper'', result
         | _ -> zipper', result
@@ -1099,9 +1177,9 @@ let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper)
             // Thread the zipper through in case we need to generate a default value
             let bodySSA, bodyType, zipperWithBody = 
                 match MLIRZipper.recallNodeSSA (string (NodeId.value bodyId)) zipper with
-                | Some (ssa, ty) -> ssa, ty, zipper
-                | None -> 
-                    // Body didn't produce a value - generate appropriate default
+                | Some (ssa, ty) when ssa <> "" -> ssa, ty, zipper
+                | _ -> 
+                    // Body didn't produce a value (or produced empty SSA) - generate appropriate default
                     let zeroSSA, z = MLIRZipper.yieldSSA zipper
                     if declaredRetType = "!llvm.ptr" then
                         // For pointer returns, use llvm.mlir.zero for null pointer
@@ -1844,6 +1922,7 @@ let mapRegionKind (rk: RegionKind) : SCFRegionKind =
     | RegionKind.ElseRegion -> SCFRegionKind.ElseRegion
     | RegionKind.StartExprRegion -> SCFRegionKind.StartExprRegion
     | RegionKind.EndExprRegion -> SCFRegionKind.EndExprRegion
+    | RegionKind.MatchCaseRegion idx -> SCFRegionKind.MatchCaseRegion idx
 
 /// Create SCF Region Hook that tracks operations and sets up iter_args bindings.
 /// This is a function (not a value) because it needs access to the SemanticGraph.
@@ -1936,6 +2015,7 @@ let createSCFRegionHook (graph: SemanticGraph) : SCFRegionHook<MLIRZipper> = {
 let transferGraph (graph: SemanticGraph) (isFreestanding: bool) : string =
     // Initialize platform bindings
     Alex.Bindings.Console.ConsoleBindings.registerBindings()
+    Alex.Bindings.Console.ConsoleBindings.registerConsoleIntrinsics()
     Alex.Bindings.Process.ProcessBindings.registerBindings()
     Alex.Bindings.Time.TimeBindings.registerBindings()
 
@@ -1979,6 +2059,7 @@ let transferGraph (graph: SemanticGraph) (isFreestanding: bool) : string =
 let transferGraphWithDiagnostics (graph: SemanticGraph) (isFreestanding: bool) : string * string list =
     // Initialize platform bindings
     Alex.Bindings.Console.ConsoleBindings.registerBindings()
+    Alex.Bindings.Console.ConsoleBindings.registerConsoleIntrinsics()
     Alex.Bindings.Process.ProcessBindings.registerBindings()
     Alex.Bindings.Time.TimeBindings.registerBindings()
 

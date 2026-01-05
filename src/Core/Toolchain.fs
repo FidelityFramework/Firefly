@@ -79,7 +79,8 @@ let compileLLVMToNative
             let clangArgs =
                 match outputKind with
                 | Core.Types.MLIRTypes.Console ->
-                    sprintf "-O0 %s -o %s -lc" objPath outputPath
+                    // Use -no-pie to avoid relocation issues with LLVM-generated code
+                    sprintf "-O0 -no-pie %s -o %s -lc" objPath outputPath
                 | Core.Types.MLIRTypes.Freestanding | Core.Types.MLIRTypes.Embedded ->
                     // Use _start as entry point - it handles argc/argv and calls exit syscall
                     sprintf "-O0 %s -o %s -nostdlib -static -ffreestanding -Wl,-e,_start" objPath outputPath

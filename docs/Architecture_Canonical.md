@@ -8,15 +8,14 @@
 
 ## The Pipeline Model
 
-**ARCHITECTURE UPDATE (January 2026)**: FNCS now builds the PSG. Firefly consumes it.
+**ARCHITECTURE UPDATE (January 2026)**: Alloy absorbed into FNCS. Types and operations are compiler intrinsics.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Alloy (Platform-Agnostic Library)                      │
-│  - Pure F# + FSharp.NativeInterop                       │
-│  - BCL-sympathetic API surface                          │
-│  - Platform Bindings: Module convention + marker type   │
-│  - ZERO platform knowledge, ZERO BCL dependencies       │
+│  F# Application Code                                    │
+│  - Uses FNCS intrinsics: Console.writeln, Sys.write    │
+│  - Types provided by NTUKind: string, int, Uuid, etc.  │
+│  - NO external library dependencies                     │
 └─────────────────────────────────────────────────────────┘
                           │
                           │ Compiled by FNCS
@@ -24,13 +23,12 @@
 ┌─────────────────────────────────────────────────────────┐
 │  FNCS (F# Native Compiler Services)                     │
 │  - Parses F# source (SynExpr, SynModule)                │
-│  - Type checking with native types (no BCL)             │
+│  - Type checking with NTUKind native types              │
 │  - SRTP resolution during type checking                 │
-│  - PSG CONSTRUCTION (moved from Firefly)                │
-│  - Editor services preserved for design-time tooling    │
+│  - Intrinsic modules: Sys.*, NativePtr.*, Console.*    │
+│  - PSG CONSTRUCTION with intrinsic markers              │
 │                                                         │
-│  OUTPUT: PSG with native types, SRTP resolved           │
-│          Full symbol info for navigation                │
+│  OUTPUT: PSG with native types, intrinsics marked       │
 └─────────────────────────────────────────────────────────┘
                           │
                           │ PSG (correct by construction)
@@ -40,7 +38,6 @@
 ├─────────────────────────────────────────────────────────┤
 │  Lowering Nanopasses (if needed)                        │
 │  - FlattenApplications, ReducePipeOperators             │
-│  - DetectPlatformBindings                               │
 └─────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -49,56 +46,59 @@
 │  - Consumes PSG as "correct by construction"            │
 │  - NO type checking needed - trusts FNCS                │
 │  - Zipper traversal + XParsec pattern matching          │
-│  - Platform-specific MLIR via Bindings                  │
-│  - Generates platform-optimized MLIR                    │
+│  - Intrinsic → MLIR mapping using NTUKind               │
+│  - Platform implementations for Sys.* intrinsics        │
 └─────────────────────────────────────────────────────────┘
 ```
 
-**FNCS-First Architecture:** With PSG construction moved to FNCS, Firefly's role simplifies:
-- **FNCS**: Builds PSG with types attached, SRTP resolved, symbol info preserved
+**FNCS-First Architecture:** Types and operations ARE the compiler, not library code:
+- **FNCS**: Defines NTUKind types, provides intrinsic modules, builds PSG with intrinsics marked
 - **Alex**: Traverses PSG → generates MLIR → LLVM → native binary
-- **Baker absorbed into FNCS**: Baker's work (type correlation, SRTP resolution) happens DURING PSG construction in FNCS, not as a post-hoc phase in Firefly
+- **No external library**: Following ML/Rust/Triton-CPU patterns, types ARE the language
 
 **Zipper Coherence:** Alex uses PSGZipper to traverse the PSG from FNCS:
 - PSG comes from FNCS with all type information attached
-- Alex's PSGZipper traverses PSG to emit MLIR
-- No typed tree correlation needed in Firefly - FNCS does it during construction
+- Intrinsics are marked with `SemanticKind.Intrinsic`
+- Alex maps intrinsics to platform-specific MLIR
 
-## Alloy: What It Is
+## Alloy: Historical Archive (Absorbed January 2026)
 
-Alloy provides F# implementations that decompose to **platform bindings** - functions that Alex provides platform-specific implementations for.
+> **Note**: Alloy has been absorbed into FNCS. The repository is preserved as a historical artifact.
+> See blog entry: [Absorbing Alloy](/blog/absorbing-alloy/)
 
-### The Platform Binding Pattern (BCL-Free)
+Alloy was a BCL-free F# standard library that proved native compilation was possible. Its functionality is now provided by FNCS intrinsic modules.
 
-Platform bindings are declared using a module convention (OCaml homage) combined with a marker type:
+### What Alloy Taught Us
+
+Alloy demonstrated:
+- **BCL-free F# is possible** - No System.* dependencies needed
+- **Fat pointer types work** - NativeStr, NativeArray as (ptr, length) structs
+- **SRTP enables zero-cost abstractions** - Compile-time polymorphism
+
+These lessons are now embodied in FNCS as NTUKind types and intrinsic modules.
+
+### FNCS Intrinsics (Replacement)
+
+What was Alloy is now FNCS:
 
 ```fsharp
-// Core marker type - signals "platform provides this"
-[<Struct>]
-type PlatformProvided = PlatformProvided
+// FNCS intrinsic modules - defined in CheckExpressions.fs
+// Sys.* for platform operations
+| "Sys.write" -> NativeType.TFun(intType, TFun(ptrType, TFun(intType, intType)))
+| "Sys.clock_gettime" -> NativeType.TFun(unitType, int64Type)
 
-// Primary approach: Functions in Platform.Bindings module
-// Alex recognizes this module structure and provides implementations
-module Platform.Bindings =
-    let writeBytes fd buffer count : int = Unchecked.defaultof<int>
-    let readBytes fd buffer maxCount : int = Unchecked.defaultof<int>
-    let getCurrentTicks () : int64 = Unchecked.defaultof<int64>
-    let sleep milliseconds : unit = ()
+// Console.* for I/O (thin wrappers over Sys.*)
+| "Console.writeln" -> NativeType.TFun(stringType, unitType)
 
-// Console.fs - Real F# that decomposes to platform bindings
-// Note: string has native semantics (Pointer, Length members) via FNCS
-let inline write (s: string) =
-    Platform.Bindings.writeBytes STDOUT s.Pointer s.Length |> ignore
+// Application code uses intrinsics directly
+let main() =
+    Console.writeln "Hello, World!"  // FNCS intrinsic, not library call
 ```
 
-**Why BCL-Free?** The `DllImportAttribute` from `System.Runtime.InteropServices` is a BCL dependency. Fidelity deliberately avoids ALL BCL dependencies to maintain a clean compilation path to native code. The Platform Binding pattern achieves the same goal (marking functions for platform-specific implementation) without BCL pollution.
-
-**Alloy does NOT:**
-- Know about Linux/Windows/macOS
-- Contain `#if PLATFORM` conditionals
-- Have platform-specific directories
-- Make syscalls directly
-- Use ANY BCL types (including DllImportAttribute)
+**Why intrinsics?** Following ML/Rust/Triton-CPU patterns:
+- Types ARE the language (NTUKind)
+- Operations ARE the language (intrinsic modules)
+- No external library needed
 
 ## Alex: The Non-Dispatch Model
 
@@ -160,93 +160,80 @@ Unlike Fable (AST→AST, delegates memory to target runtime), Fidelity:
 
 The generated native binary has the same safety properties as the source F#.
 
-## Platform Binding Contract
+## FNCS Intrinsic Modules
 
-Alex recognizes functions in the `Platform.Bindings` module and provides platform-specific implementations:
+FNCS provides intrinsic modules that Alex maps to platform-specific implementations:
 
-| Binding Function | MLIR Mapping | Signature |
-|-----------------|--------------|-----------|
-| writeBytes | write syscall | (i32, ptr, i32) → i32 |
-| readBytes | read syscall | (i32, ptr, i32) → i32 |
-| getCurrentTicks | clock_gettime | () → i64 |
-| getMonotonicTicks | clock_gettime(MONOTONIC) | () → i64 |
-| getTickFrequency | constant (platform-specific) | () → i64 |
-| sleep | nanosleep/Sleep | (i32) → void |
-| createWebview | webview_create | (i32, ptr) → ptr |
-| setWebviewHtml | webview_set_html | (ptr, ptr) → i32 |
-| runWebview | webview_run | (ptr) → i32 |
+| Intrinsic Module | MLIR Mapping | Purpose |
+|-----------------|--------------|---------|
+| Sys.write | write syscall | Low-level I/O |
+| Sys.read | read syscall | Low-level I/O |
+| Sys.clock_gettime | clock_gettime | Wall clock time |
+| Sys.clock_monotonic | clock_gettime(MONOTONIC) | High-resolution timing |
+| Sys.tick_frequency | constant (platform-specific) | Timer resolution |
+| Sys.nanosleep | nanosleep/Sleep | Thread sleep |
+| Console.write | Sys.write wrapper | String output |
+| Console.writeln | Sys.write + newline | Line output |
+| Console.readln | Sys.read wrapper | Line input |
 
-Alex provides implementations for each `(binding, platform)` pair. The module structure (`Platform.Bindings`) serves as the recognition marker - no attributes required.
+Alex provides implementations for each `(intrinsic, platform)` pair based on target platform.
 
 > **Note**: Webview bindings call library functions (WebKitGTK, WebView2, WKWebView) rather than syscalls. See [WebView_Desktop_Architecture.md](./WebView_Desktop_Architecture.md) for the full desktop UI stack architecture.
 
 ## File Organization
 
 ```
-Alloy/src/
-├── Platform.fs        # PlatformProvided marker + Platform.Bindings module
-├── Console.fs         # Decomposes to Platform.Bindings
-├── Time.fs            # Decomposes to Platform.Bindings
-└── ...                # NO platform directories, NO BCL dependencies
-
-fsnative/src/Compiler/Checking.Native/  # PSG CONSTRUCTION NOW HERE
+fsnative/src/Compiler/Checking.Native/  # TYPES AND OPERATIONS
 ├── NativeService.fs        # Public API for FNCS
-├── NativeTypes.fs          # Native type representation
-├── NativeGlobals.fs        # Built-in types (string=UTF-8, etc.)
-├── CheckExpressions.fs     # Type checking with PSG construction
-├── SemanticGraph.fs        # PSG data structures
+├── NativeTypes.fs          # NTUKind enum - native type universe
+├── NativeGlobals.fs        # Type constructors (string, int, Uuid, etc.)
+├── CheckExpressions.fs     # Intrinsic modules (Sys.*, Console.*, etc.)
+├── SemanticGraph.fs        # PSG data structures with intrinsic markers
 ├── SRTPResolution.fs       # SRTP resolution during type checking
 └── NameResolution.fs       # Compositional name resolution
 
 Firefly/src/Core/PSG/Nanopass/  # LOWERING PASSES (post-FNCS)
 ├── FlattenApplications.fs
 ├── ReducePipeOperators.fs
-├── DetectPlatformBindings.fs
 └── ...
 
 Firefly/src/Alex/
 ├── Traversal/
 │   ├── PSGZipper.fs       # Bidirectional traversal (attention)
 │   └── PSGXParsec.fs      # Local pattern matching combinators
+│   └── FNCSTransfer.fs    # Intrinsic → MLIR mapping
 ├── Bindings/
-│   ├── BindingTypes.fs    # ExternDispatch registry, platform types
-│   ├── Console/ConsoleBindings.fs  # Console extern bindings (data)
-│   ├── Time/TimeBindings.fs        # Time extern bindings (data)
+│   ├── BindingTypes.fs    # Platform types
+│   ├── SysBindings.fs     # Sys.* platform implementations
 │   └── ...
 ├── CodeGeneration/
 │   ├── MLIRBuilder.fs     # MLIR accumulation (correct centralization)
-│   └── TypeMapping.fs     # F# → MLIR type mapping
+│   └── TypeMapping.fs     # NTUKind → MLIR type mapping
 └── Pipeline/
     └── CompilationOrchestrator.fs  # Entry point
+
+Alloy/ (HISTORICAL ARCHIVE - absorbed into FNCS January 2026)
+└── README.md              # Explains absorbed status
 ```
 
-**Note:** Baker functionality is ABSORBED into FNCS - type correlation happens during PSG construction, not post-hoc.
+**Note:** Alloy functionality absorbed into FNCS as intrinsic modules.
 **Note:** PSGEmitter.fs and PSGScribe.fs were removed - they were antipatterns.
 
 ## Anti-Patterns (DO NOT DO)
 
 ```fsharp
-// WRONG: BCL dependencies in Alloy (including DllImportAttribute!)
+// WRONG: BCL dependencies anywhere
 open System.Runtime.InteropServices
 [<DllImport("__fidelity")>]
-extern int writeBytes(...)  // NO! This pollutes entire pipeline with BCL
+extern int writeBytes(...)  // NO! BCL pollution
 
-// WRONG: Platform code in Alloy
-#if LINUX
-let write fd buf len = syscall 1 fd buf len
-#endif
-
-// WRONG: Separate platform files in Alex
-Alex/Bindings/Console/Linux.fs
-Alex/Bindings/Console/Windows.fs
-Alex/Bindings/Console/MacOS.fs
-
-// WRONG: Pattern matching on library names
+// WRONG: Pattern matching on namespace names
 match symbolName with
-| "Alloy.Console.Write" -> ...  // NO!
+| "MyApp.Console.Write" -> ...  // NO! Use intrinsic markers
 
-// WRONG: Alloy functions that are stubs expecting compiler magic
-let Write (s: string) = ()  // placeholder
+// WRONG: Expecting library to provide what compiler should
+// (This was the Alloy anti-pattern - library as BCL equivalent)
+open Alloy  // NO! Types are NTUKind, operations are intrinsics
 
 // WRONG: Central dispatch hub (the "emitter" or "scribe" antipattern)
 module PSGEmitter =
@@ -260,10 +247,11 @@ module PSGEmitter =
 ```
 
 **The correct model:**
-- Platform bindings in `Platform.Bindings` module (no attributes, just structure)
+- Types defined by NTUKind in FNCS
+- Operations defined as intrinsic modules in FNCS
+- Alex recognizes `SemanticKind.Intrinsic` markers
 - Zipper provides attention (focus + context)
 - XParsec provides local pattern matching
-- Bindings looked up by module structure, not by attributes
 - MLIR Builder accumulates (correct centralization point)
 
 ## PSG Construction: Handled by FNCS
@@ -295,16 +283,17 @@ With FNCS handling PSG construction:
 ## Validation Samples
 
 These samples must compile WITHOUT modification:
-- `01_HelloWorldDirect` - Console.Write, Console.WriteLine
-- `02_HelloWorldSaturated` - Console.ReadLine, interpolated strings
+- `01_HelloWorldDirect` - Console.write, Console.writeln (FNCS intrinsics)
+- `02_HelloWorldSaturated` - Console.readln, interpolated strings
 - `03_HelloWorldHalfCurried` - Pipe operators, string formatting
 
-The samples use Alloy's BCL-sympathetic API. Compilation flow:
-1. FNCS: Parse, type check with native types, build PSG with SRTP resolved
-2. Firefly: Receive PSG from FNCS ("correct by construction")
-3. Firefly: Apply lowering nanopasses (flatten apps, reduce pipes, etc.)
-4. Alex/Zipper: Traverse PSG → generate MLIR
-5. MLIR → LLVM → native binary
+The samples use FNCS intrinsics directly. Compilation flow:
+1. FNCS: Parse, type check with NTUKind types, recognize intrinsics
+2. FNCS: Build PSG with intrinsics marked, SRTP resolved
+3. Firefly: Receive PSG from FNCS ("correct by construction")
+4. Firefly: Apply lowering nanopasses (flatten apps, reduce pipes, etc.)
+5. Alex/Zipper: Traverse PSG, map intrinsics → MLIR
+6. MLIR → LLVM → native binary
 
 ---
 

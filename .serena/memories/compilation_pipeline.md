@@ -1,5 +1,10 @@
 # Compilation Pipeline (Updated January 2026)
 
+> **ARCHITECTURE UPDATE**: Alloy has been absorbed into FNCS.
+> Types are NTUKind compiler intrinsics. Operations are FNCS intrinsic modules.
+> Applications use FNCS intrinsics directly - no external library needed.
+> See blog entry: "Absorbing Alloy: When Your Library Becomes Your Language"
+
 ## Architecture Change: FNCS Builds PSG
 
 > **CRITICAL**: FNCS now builds the PSG. Firefly consumes it as "correct by construction".
@@ -16,7 +21,7 @@ F# Source → FNCS → PSG (with native types, SRTP resolved) → Firefly → ML
 
 ### 1. F# Source
 - User-written F# code
-- Uses Alloy library for runtime-free implementations
+- Uses FNCS intrinsics (Console.writeln, Sys.write, etc.) - no external library
 - Project configured via `.fidproj` TOML files
 
 ### 2. FNCS (F# Native Compiler Services) - BUILDS PSG

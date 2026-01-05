@@ -1,8 +1,5 @@
 module Examples.HelloWorldFullCurried
 
-open Alloy
-open Alloy.Console
-
 /// Demonstrates FULL-CURRIED patterns:
 /// - Curried function with multiple parameters
 /// - Pipe operator: `x |> f`
@@ -12,12 +9,12 @@ open Alloy.Console
 
 /// Curried greeting function - takes prefix then name
 let greet prefix name =
-    WriteLine $"{prefix}, {name}!"
+    Console.writeln $"{prefix}, {name}!"
 
 /// Hello function partially applies greet
 let hello prefix =
-    Write "Enter your name: "
-    ReadLine()
+    Console.write "Enter your name: "
+    Console.readln()
     |> greet prefix
 
 [<EntryPoint>]

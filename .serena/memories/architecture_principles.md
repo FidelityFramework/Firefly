@@ -1,5 +1,9 @@
 # Architecture Principles
 
+> **ARCHITECTURE UPDATE (January 2026)**: Alloy has been absorbed into FNCS.
+> Types are NTUKind compiler intrinsics. Operations are FNCS intrinsic modules.
+> See blog entry: "Absorbing Alloy: When Your Library Becomes Your Language"
+
 ## The "Fidelity" Principle
 
 > **CORE PRINCIPLE**: The entire point of Fidelity is that **the F# compiler controls memory layout - not MLIR, not LLVM**.
@@ -98,13 +102,11 @@ The PSG structure drives emission. There's no routing table.
 
 | Layer | Responsibility | DOES NOT |
 |-------|---------------|----------|
-| **Alloy** | F# library implementations | Contain stubs expecting compiler magic |
-| **FCS** | Parse, type-check, resolve | Transform or generate code |
-| **PSG Builder** | Construct semantic graph | Make targeting decisions |
-| **Nanopasses** | Enrich PSG | Generate MLIR or know targets |
+| **FNCS** | Types (NTUKind), intrinsic modules, PSG construction | Generate MLIR |
+| **Firefly/Nanopasses** | Enrich PSG (post-FNCS lowering) | Generate MLIR or know targets |
 | **Alex/Zipper** | Traverse PSG | Route or dispatch |
 | **XParsec** | Local pattern matching | Central routing |
-| **Bindings** | Platform MLIR generation | Know F# syntax or Alloy |
+| **Bindings** | Platform MLIR generation | Know F# syntax |
 | **MLIR Builder** | Accumulate emissions | Route or dispatch |
 
 ## ANTIPATTERN: Central Dispatch (Emitter/Scribe)

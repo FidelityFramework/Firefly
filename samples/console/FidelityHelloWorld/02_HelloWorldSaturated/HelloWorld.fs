@@ -1,13 +1,11 @@
 module Examples.HelloWorldSaturated
 
-open Alloy
-
 /// Demonstrates SATURATED function calls - all arguments provided at once.
-/// Uses BCL-sympathetic Alloy APIs.
+/// Uses FNCS Console intrinsics.
 let hello() =
-    Console.Write "Enter your name: "
-    let name = Console.ReadLine()
-    Console.WriteLine $"Hello, {name}!"
+    Console.write "Enter your name: "
+    let name = Console.readln()
+    Console.writeln $"Hello, {name}!"
 
 [<EntryPoint>]
 let main argv =

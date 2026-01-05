@@ -93,6 +93,8 @@ type SCFRegionKind =
     | StartExprRegion
     /// End expression region (for loop end bound)
     | EndExprRegion
+    /// Match case body region (index: 0-based case index)
+    | MatchCaseRegion of index: int
 
 // ═══════════════════════════════════════════════════════════════════
 // MLIRZipper Focus - Where we are in the MLIR structure
