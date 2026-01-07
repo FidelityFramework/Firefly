@@ -81,7 +81,8 @@ let compileLLVMToNative
                 match outputKind with
                 | Core.Types.MLIRTypes.Console ->
                     // Use -no-pie to avoid relocation issues with LLVM-generated code
-                    sprintf "-O0 -no-pie %s -o %s -lc" objPath outputPath
+                    // Include webview dependencies: webkit2gtk and gtk3
+                    sprintf "-O0 -no-pie %s -o %s -lc -lwebkit2gtk-4.0 -lgtk-3 -lgobject-2.0 -lglib-2.0" objPath outputPath
                 | Core.Types.MLIRTypes.Freestanding | Core.Types.MLIRTypes.Embedded ->
                     // Use _start as entry point - it handles argc/argv and calls exit syscall
                     sprintf "-O0 %s -o %s -nostdlib -static -ffreestanding -Wl,-e,_start" objPath outputPath

@@ -694,7 +694,7 @@ let witnessMatch
             let scrutineeType =
                 match SemanticGraph.tryGetNode scrutineeId graph with
                 | Some n -> n.Type
-                | None -> NativeType.TApp({ Name = "unit"; Module = []; ParamKinds = []; Layout = TypeLayout.Inline(0, 1); NTUKind = None }, [])
+                | None -> NativeType.TApp({ Name = "unit"; Module = []; ParamKinds = []; Layout = TypeLayout.Inline(0, 1); NTUKind = None; FieldCount = 0 }, [])
 
             // Build tuple aggregate type string for 2 DUs: !llvm.struct<(!llvm.struct<(i32, i64)>, !llvm.struct<(i32, i64)>)>
             let elemTypes =

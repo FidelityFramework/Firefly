@@ -20,6 +20,10 @@ type FloatPrecision = F32 | F64
 
 /// MLIR types - the structured representation used throughout Alex
 /// String serialization happens only in Serialize module during MLIR text emission
+///
+/// ARCHITECTURAL PRINCIPLE: A compiler's PRIMARY job is to surface errors.
+/// Silent failures are the most severe architectural violations.
+/// TypeError MUST propagate and NEVER be silently ignored.
 type MLIRType =
     | Integer of IntegerBitWidth
     | Float of FloatPrecision
@@ -29,6 +33,9 @@ type MLIRType =
     | Function of MLIRType list * MLIRType
     | Unit
     | Index
+    /// Type mapping error - MUST propagate up the pipeline
+    /// Contains error message describing why type mapping failed
+    | TypeError of string
 
 /// An SSA value - the primary currency of MLIR operations
 [<Struct>]
@@ -75,9 +82,11 @@ module Serialize =
             sprintf "(%s) -> %s" parameterString (mlirType returnType)
         | Unit -> "i32"  // Unit maps to i32 for compatibility (returns 0)
         | Index -> "index"
+        | TypeError msg -> failwithf "COMPILER ERROR: Attempted to serialize TypeError to MLIR: %s" msg
 
     /// Deserialize an MLIR type string back to MLIRType
     /// This is the inverse of mlirType
+    /// Returns TypeError for unknown types - NEVER falls back silently
     let deserializeType (s: string) : MLIRType =
         match s.Trim() with
         | "i1" -> Integer I1
@@ -93,13 +102,13 @@ module Serialize =
         | "!llvm.struct<(!llvm.ptr, i64)>" -> Struct [Pointer; Integer I64]
         // DU type: tag (i32) + payload (i64)
         | "!llvm.struct<(i32, i64)>" -> Struct [Integer I32; Integer I64]
+        // Two-pointer struct (e.g., WebView handle)
+        | "!llvm.struct<(!llvm.ptr, !llvm.ptr)>" -> Struct [Pointer; Pointer]
         | _ when s.StartsWith("!llvm.ptr") -> Pointer  // Handle opaque pointer variations
-        | _ when s.StartsWith("!llvm.struct") -> 
-            // Generic struct - attempt to parse, but warn this is incomplete
-            // TODO: Proper struct parsing for arbitrary layouts
-            eprintfn "WARNING: deserializeType falling back for struct type: %s" s
-            Struct [Pointer; Integer I64]
-        | _ -> Pointer  // Default to pointer for unknown types (conservative)
+        | _ when s.StartsWith("!llvm.struct") ->
+            // Generic struct - we MUST parse this properly, not fall back
+            TypeError (sprintf "deserializeType: unparsed struct type '%s' - implement proper parsing" s)
+        | _ -> TypeError (sprintf "deserializeType: unknown MLIR type '%s'" s)
 
     let ssa (s: SSA) = s.Name
 

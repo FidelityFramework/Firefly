@@ -157,10 +157,14 @@ let private witnessInFunctionScope
         else
             bodySSA, bodyType, zipperWithBody
     
-    // Add return instruction to end the function body
-    let retParams = {| Value = returnSSA; Type = returnType |}
-    let returnText = render LLVMTemplates.Quot.Control.retValue retParams
-    let zipper1 = MLIRZipper.witnessVoidOp returnText zipperForReturn
+    // Add return instruction or panic terminator to end the function body
+    let zipper1 =
+        if bodySSA = "$panic" then
+            MLIRZipper.witnessUnreachable zipperWithBody
+        else
+            let retParams = {| Value = returnSSA; Type = returnType |}
+            let returnText = render LLVMTemplates.Quot.Control.retValue retParams
+            MLIRZipper.witnessVoidOp returnText zipperForReturn
     
     // Exit function scope - this creates the MLIRFunc with all accumulated body ops
     let zipper2, func = MLIRZipper.exitFunction zipper1
@@ -274,22 +278,29 @@ let preBindParams (zipper: MLIRZipper) (node: SemanticNode) : MLIRZipper =
                 let bindings, needsConv =
                     match params' with
                     | [(paramName, paramType)] ->
-                        // Single F# parameter - check if it's string array
-                        match paramType with
-                        | NativeType.TApp({ Name = "array" }, [NativeType.TApp({ Name = "string" }, [])]) ->
-                            // F# `argv: string[]` - needs conversion from C char**
-                            // Don't bind yet - we'll generate conversion code and bind after
-                            [(paramName, "", "")], true
-                        | _ ->
-                            // Non-array parameter - just bind to argv pointer
-                            [(paramName, "%arg1", Serialize.mlirType (mapType paramType))], false
+                        // Single F# parameter - check what kind it is
+                        if paramName = "_" then
+                            // Discarded parameter - no binding needed
+                            // C main signature (argc, argv) is still used, just not bound to F#
+                            [], false
+                        else
+                            match paramType with
+                            | NativeType.TApp({ Name = "array" }, [NativeType.TApp({ Name = "string" }, [])]) ->
+                                // F# `argv: string[]` - needs conversion from C char**
+                                // Don't bind yet - we'll generate conversion code and bind after
+                                [(paramName, "", "")], true
+                            | _ ->
+                                // Named parameter - bind to argv pointer (C main convention)
+                                // Use C type (!llvm.ptr), not F# type (which may be unresolved)
+                                [(paramName, "%arg1", "!llvm.ptr")], false
                     | [] ->
                         // Unit parameter - nothing to bind
                         [], false
                     | _ ->
-                        // Multiple parameters (unusual for entry point)
-                        params' |> List.mapi (fun i (name, ty) ->
-                            (name, sprintf "%%arg%d" (i + 1), Serialize.mlirType (mapType ty))), false
+                        // Multiple parameters (unusual for entry point) - bind to C args
+                        params' |> List.mapi (fun i (name, _ty) ->
+                            if name = "_" then (name, "", "")  // Skip discarded
+                            else (name, sprintf "%%arg%d" (i + 1), "!llvm.ptr")), false
                 cParams, bindings, needsConv
             else
                 // Regular lambda - use node.Type for parameter types (has instantiated generics)

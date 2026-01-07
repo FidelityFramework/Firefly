@@ -23,6 +23,7 @@ module Alex.Traversal.MLIRZipper
 
 open Alex.CodeGeneration.MLIRTypes
 open Alex.Templates.TemplateTypes
+module SSACoeffect = Alex.Preprocessing.SSAAssignment
 
 module ArithTemplates = Alex.Templates.ArithTemplates
 module LLVMTemplates = Alex.Templates.LLVMTemplates
@@ -186,6 +187,9 @@ type MLIRState = {
     /// Pre-computed map from loop body NodeId to list of modified variable names
     /// Used for SCF iter_args generation - computed ONCE before transfer begins
     ModifiedVarsInLoopBodies: Map<int, string list>
+    /// Pre-computed SSA assignments (coeffect from Preprocessing)
+    /// SSA names are assigned BEFORE transfer, not computed during emission
+    PrecomputedSSA: SSACoeffect.SSAAssignment option
 }
 
 module MLIRState =
@@ -211,6 +215,7 @@ module MLIRState =
         AddressedMutables = Set.empty
         MutableAllocas = Map.empty
         ModifiedVarsInLoopBodies = Map.empty
+        PrecomputedSSA = None
     }
 
     /// Create state with entry point Lambda IDs
@@ -236,6 +241,7 @@ module MLIRState =
         AddressedMutables = Set.empty
         MutableAllocas = Map.empty
         ModifiedVarsInLoopBodies = Map.empty
+        PrecomputedSSA = None
     }
 
     /// Create state with entry points and full mutability analysis result
@@ -243,6 +249,7 @@ module MLIRState =
         (entryPointLambdaIds: Set<int>)
         (addressedMutables: Set<int>)
         (modifiedVarsInLoopBodies: Map<int, string list>)
+        (ssaAssignment: SSACoeffect.SSAAssignment)
         : MLIRState = {
         SSACounter = 0
         LabelCounter = 0
@@ -264,7 +271,12 @@ module MLIRState =
         AddressedMutables = addressedMutables
         MutableAllocas = Map.empty
         ModifiedVarsInLoopBodies = modifiedVarsInLoopBodies
+        PrecomputedSSA = Some ssaAssignment
     }
+
+    /// Look up pre-computed SSA name for a node (from coeffect)
+    let lookupPrecomputedSSA (nodeId: int) (state: MLIRState) : string option =
+        state.PrecomputedSSA |> Option.bind (fun ssa -> SSACoeffect.lookupSSA (FSharp.Native.Compiler.Checking.Native.SemanticGraph.NodeId nodeId) ssa)
 
     /// Check if a mutable binding needs alloca (its address is taken)
     let isAddressedMutable (bindingNodeId: int) (state: MLIRState) : bool =
@@ -549,11 +561,12 @@ module MLIRZipper =
         (entryPointLambdaIds: Set<int>)
         (addressedMutables: Set<int>)
         (modifiedVarsInLoopBodies: Map<int, string list>)
+        (ssaAssignment: SSACoeffect.SSAAssignment)
         : MLIRZipper = {
         Focus = AtModule
         Path = Top
         CurrentOps = []
-        State = MLIRState.createWithAnalysis entryPointLambdaIds addressedMutables modifiedVarsInLoopBodies
+        State = MLIRState.createWithAnalysis entryPointLambdaIds addressedMutables modifiedVarsInLoopBodies ssaAssignment
         Globals = []
         CompletedFunctions = []
         PlatformHelpers = Set.empty
@@ -617,7 +630,9 @@ module MLIRZipper =
     let observeStringLiteral (content: string) (zipper: MLIRZipper) : string * MLIRZipper =
         let name, newState = MLIRState.observeStringLiteral content zipper.State
         // Also add to globals
-        let len = content.Length + 1  // +1 for null terminator
+        // CRITICAL: Use UTF-8 byte count, not .NET character count
+        // Multi-byte UTF-8 sequences (emoji, non-ASCII) have different byte counts
+        let len = System.Text.Encoding.UTF8.GetByteCount(content) + 1  // +1 for null terminator
         let strGlobal = StringLiteral (name, content, len)
         let newGlobals =
             if List.exists (fun g ->

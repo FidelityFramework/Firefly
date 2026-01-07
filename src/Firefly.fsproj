@@ -52,6 +52,9 @@
       <Compile Include="Alex/Templates/ControlFlowTemplates.fs" />
       <Compile Include="Alex/Templates/LLVMTemplates.fs" />
 
+      <!-- Alex Preprocessing - SSA assignment coeffect (before MLIRZipper) -->
+      <Compile Include="Alex/Preprocessing/SSAAssignment.fs" />
+
       <!-- Alex Traversal - MLIRZipper MUST come before bindings that use it -->
       <Compile Include="Alex/Traversal/MLIRZipper.fs" />
 
@@ -60,14 +63,18 @@
       <Compile Include="Alex/Bindings/Console/ConsoleBindings.fs" />
       <Compile Include="Alex/Bindings/Time/TimeBindings.fs" />
       <Compile Include="Alex/Bindings/Process/ProcessBindings.fs" />
+      <Compile Include="Alex/Bindings/WebView/WebViewBindings.fs" />
+      <Compile Include="Alex/Bindings/DynamicLib/DynamicLibBindings.fs" />
+      <Compile Include="Alex/Bindings/GTK/GTKBindings.fs" />
+      <Compile Include="Alex/Bindings/WebKit/WebKitBindings.fs" />
       <Compile Include="Alex/Bindings/PlatformHelpers.fs" />
 
       <!-- Alex CodeGeneration - TypeMapping uses FNCS types -->
       <Compile Include="Alex/CodeGeneration/TypeMapping.fs" />
 
-      <!-- Alex Preprocessing - SSA assignment before emission -->
+      <!-- Alex Preprocessing - analysis before emission -->
+      <!-- NOTE: SSAAssignment.fs moved earlier (before MLIRZipper) as it's a coeffect -->
       <!-- NOTE: SaturateApplications.fs removed - transforms moved to FNCS -->
-      <Compile Include="Alex/Preprocessing/SSAAssignment.fs" />
       <Compile Include="Alex/Preprocessing/MutabilityAnalysis.fs" />
       <Compile Include="Alex/Preprocessing/PatternBindingAnalysis.fs" />
 

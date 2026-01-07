@@ -214,8 +214,29 @@ let witnessRecordExpr
             let zipper1 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper
             zipper1, TRValue (ssa, ty)
         | _ ->
-            // Multi-field record - for now, return unit and handle properly later
-            zipper, TRVoid
+            // Multi-field record - construct LLVM struct
+            // 1. Create struct type from field types
+            let fieldTypeStrs = fieldSSAs |> List.map snd
+            let structTypeStr = sprintf "!llvm.struct<(%s)>" (String.concat ", " fieldTypeStrs)
+
+            // 2. Create undef struct
+            let undefSSA, zipper1 = MLIRZipper.yieldSSA zipper
+            let undefText = sprintf "%s = llvm.mlir.undef : %s" undefSSA structTypeStr
+            let zipper2 = MLIRZipper.witnessOpWithResult undefText undefSSA (Struct []) zipper1
+
+            // 3. Insert each field value
+            let zipper3, finalSSA =
+                fieldSSAs
+                |> List.indexed
+                |> List.fold (fun (z, prevSSA) (idx, (fieldSSA, _fieldTy)) ->
+                    let insertSSA, z1 = MLIRZipper.yieldSSA z
+                    let insertText = sprintf "%s = llvm.insertvalue %s, %s[%d] : %s" insertSSA fieldSSA prevSSA idx structTypeStr
+                    let z2 = MLIRZipper.witnessOpWithResult insertText insertSSA (Struct []) z1
+                    z2, insertSSA
+                ) (zipper2, undefSSA)
+
+            let zipper4 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) finalSSA structTypeStr zipper3
+            zipper4, TRValue (finalSSA, structTypeStr)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Array Expression
@@ -283,13 +304,15 @@ let witnessListExpr
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Witness field get (expr.fieldName)
-let witnessFieldGet 
-    (exprId: NodeId) 
-    (fieldName: string) 
-    (node: SemanticNode) 
-    (zipper: MLIRZipper) 
+/// Uses the expression's NativeType to determine field index for extractvalue
+let witnessFieldGet
+    (exprId: NodeId)
+    (fieldName: string)
+    (node: SemanticNode)
+    (graph: SemanticGraph)
+    (zipper: MLIRZipper)
     : MLIRZipper * TransferResult =
-    
+
     match MLIRZipper.recallNodeSSA (string (NodeId.value exprId)) zipper with
     | Some (exprSSA, exprType) ->
         // STRING INTRINSIC MEMBERS: Native string is fat pointer {ptr, len}
@@ -314,32 +337,92 @@ let witnessFieldGet
             | _ ->
                 zipper, TRError (sprintf "Unknown string field: %s (expected Pointer or Length)" fieldName)
         else
-            // Generic field access for other struct types
-            let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
-            let loadParams = { Result = resultSSA; Pointer = exprSSA; Type = "!llvm.ptr" }
-            let loadText = render Quot.Core.load loadParams
-            let zipper'' = MLIRZipper.witnessOpWithResult loadText resultSSA Pointer zipper'
-            let zipper''' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) resultSSA "!llvm.ptr" zipper''
-            zipper''', TRValue (resultSSA, "!llvm.ptr")
+            // Look up expression node to get its NativeType
+            match SemanticGraph.tryGetNode exprId graph with
+            | Some exprNode ->
+                match exprNode.Type with
+                | NativeType.TApp(tycon, _) ->
+                    // FCS pattern: TyconRef.Deref for field info - look up via SemanticGraph.Types
+                    // TypeConRef.Name already contains the fully qualified name matching TypeDef
+                    let typeName = tycon.Name
+                    match SemanticGraph.tryGetRecordFields typeName graph with
+                    | Some fields ->
+                        // Find field index by name
+                        match fields |> List.tryFindIndex (fun (name, _) -> name = fieldName) with
+                        | Some fieldIndex ->
+                            // Get field type for result
+                            let _, fieldType = fields.[fieldIndex]
+                            let fieldMLIRType = mapType fieldType
+                            let fieldTypeStr = Serialize.mlirType fieldMLIRType
+
+                            let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                            let extractParams : Quot.Aggregate.ExtractParams = { Result = resultSSA; Aggregate = exprSSA; Index = fieldIndex; AggType = exprType }
+                            let extractText = render Quot.Aggregate.extractValue extractParams
+                            let zipper'' = MLIRZipper.witnessOpWithResult extractText resultSSA fieldMLIRType zipper'
+                            let zipper''' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) resultSSA fieldTypeStr zipper''
+                            zipper''', TRValue (resultSSA, fieldTypeStr)
+                        | None ->
+                            zipper, TRError (sprintf "Field '%s' not found in record type '%s'" fieldName typeName)
+                    | None ->
+                        zipper, TRError (sprintf "Type '%s' not found in SemanticGraph.Types or is not a record" typeName)
+                | _ ->
+                    // Non-TApp type - this shouldn't happen for FieldGet on records
+                    zipper, TRError (sprintf "FieldGet on non-TApp type: %A" exprNode.Type)
+            | None ->
+                zipper, TRError (sprintf "FieldGet: expression node %A not found in graph" exprId)
     | None ->
         zipper, TRError (sprintf "FieldGet '%s': expression not computed" fieldName)
 
 /// Witness field set (expr.fieldName <- value)
-let witnessFieldSet 
-    (exprId: NodeId) 
-    (fieldName: string) 
-    (valueId: NodeId) 
-    (zipper: MLIRZipper) 
+/// For mutable record fields - uses insertvalue for struct values
+let witnessFieldSet
+    (exprId: NodeId)
+    (fieldName: string)
+    (valueId: NodeId)
+    (graph: SemanticGraph)
+    (zipper: MLIRZipper)
     : MLIRZipper * TransferResult =
-    
+
     match MLIRZipper.recallNodeSSA (string (NodeId.value exprId)) zipper,
           MLIRZipper.recallNodeSSA (string (NodeId.value valueId)) zipper with
-    | Some (exprSSA, _), Some (valueSSA, valueType) ->
-        // Store value at field offset
-        let storeParams = { Value = valueSSA; Pointer = exprSSA; Type = valueType }
-        let storeText = render Quot.Core.store storeParams
-        let zipper' = MLIRZipper.witnessVoidOp storeText zipper
-        zipper', TRVoid
+    | Some (exprSSA, exprType), Some (valueSSA, valueType) ->
+        // Look up expression node to get its NativeType
+        match SemanticGraph.tryGetNode exprId graph with
+        | Some exprNode ->
+            match exprNode.Type with
+            | NativeType.TApp(tycon, _) ->
+                // FCS pattern: TyconRef.Deref for field info - look up via SemanticGraph.Types
+                // TypeConRef.Name already contains the fully qualified name matching TypeDef
+                let typeName = tycon.Name
+                match SemanticGraph.tryGetRecordFields typeName graph with
+                | Some fields ->
+                    // Find field index by name
+                    match fields |> List.tryFindIndex (fun (name, _) -> name = fieldName) with
+                    | Some fieldIndex ->
+                        // Use insertvalue to create a new struct with the updated field
+                        let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                        let insertParams : Quot.Aggregate.InsertParams = { Result = resultSSA; Value = valueSSA; Aggregate = exprSSA; Index = fieldIndex; AggType = exprType }
+                        let insertText = render Quot.Aggregate.insertValue insertParams
+                        let zipper'' = MLIRZipper.witnessOpWithResult insertText resultSSA (mapType exprNode.Type) zipper'
+                        // Bind the updated struct (for chained operations)
+                        let zipper''' = MLIRZipper.bindNodeSSA (string (NodeId.value exprId)) resultSSA exprType zipper''
+                        zipper''', TRVoid
+                    | None ->
+                        zipper, TRError (sprintf "FieldSet: field '%s' not found in record type '%s'" fieldName typeName)
+                | None ->
+                    // Not a record type - fall back to store (pointer semantics)
+                    let storeParams = { Value = valueSSA; Pointer = exprSSA; Type = valueType }
+                    let storeText = render Quot.Core.store storeParams
+                    let zipper' = MLIRZipper.witnessVoidOp storeText zipper
+                    zipper', TRVoid
+            | _ ->
+                // Non-TApp type - fall back to store (pointer semantics)
+                let storeParams = { Value = valueSSA; Pointer = exprSSA; Type = valueType }
+                let storeText = render Quot.Core.store storeParams
+                let zipper' = MLIRZipper.witnessVoidOp storeText zipper
+                zipper', TRVoid
+        | None ->
+            zipper, TRError (sprintf "FieldSet: expression node %A not found in graph" exprId)
     | _ ->
         zipper, TRError (sprintf "FieldSet '%s': expression or value not computed" fieldName)
 

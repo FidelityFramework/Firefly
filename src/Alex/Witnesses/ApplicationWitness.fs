@@ -656,8 +656,14 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                 | "writeBytes" | "readBytes" -> 3
                 | "getCurrentTicks" -> 0
                 | "sleep" -> 1
+                // WebView bindings
+                | "createWebview" -> 2
+                | "destroyWebview" | "runWebview" | "terminateWebview" -> 1
+                | "setWebviewTitle" | "navigateWebview" | "setWebviewHtml"
+                | "initWebview" | "evalWebview" | "bindWebview" -> 2
+                | "setWebviewSize" | "returnWebview" -> 4
                 | _ -> 0
-            
+
             if List.length argSSAs < expectedParamCount then
                 let argsEncoded = 
                     argSSAs 
@@ -861,7 +867,7 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
 
                 zipper8, TRValue (fatPtrSSA, NativeStrTypeStr)
 
-            | NativeDefaultOp "zeroed", [] ->
+            | NativeDefaultOp "zeroed", ([] | [_]) ->
                 let zeroSSA, zipper' = MLIRZipper.yieldSSA zipper
                 let mlirRetType = mapType returnType
                 let mlirTypeStr = Serialize.mlirType mlirRetType
@@ -1023,6 +1029,20 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                     zipper, TRValue (marker, "func")
                 | _ ->
                     zipper, TRError (sprintf "Pipe operator '%s' expects 1 argument, got %d" name (List.length argSSAs))
+            elif name = "ignore" then
+                // ZERO-COST INTRINSIC: ignore produces no code and just returns unit
+                let unitSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let unitParams : ConstantParams = { Result = unitSSA; Value = "0"; Type = "i32" }
+                let unitText = render Quot.Constant.intConst unitParams
+                let zipper'' = MLIRZipper.witnessOpWithResult unitText unitSSA (Integer I32) zipper'
+                zipper'', TRValue (unitSSA, "i32")
+            elif name = "failwith" || name = "failwithf" then
+                // NATIVE PANIC: failwith triggers SYS_exit(1) for now
+                let sysExitSSA, z1 = MLIRZipper.witnessConstant 60L I64 zipper
+                let errorCodeSSA, z2 = MLIRZipper.witnessConstant 1L I64 z1
+                let _, z3 = MLIRZipper.witnessSyscall sysExitSSA [errorCodeSSA, "i64"] (Integer I64) z2
+                // Return a marker that signals a panic occurred (terminates the block)
+                z3, TRValue ("$panic", "i32")
             else
 
             match defId with
@@ -1166,13 +1186,19 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                             |> Array.toList
                         let allArgSSAs = appliedArgs @ (List.zip argSSAs argTypes)
                         
-                        let expectedParamCount = 
+                        let expectedParamCount =
                             match entryPoint with
                             | "writeBytes" | "readBytes" -> 3
                             | "getCurrentTicks" -> 0
                             | "sleep" -> 1
+                            // WebView bindings
+                            | "createWebview" -> 2
+                            | "destroyWebview" | "runWebview" | "terminateWebview" -> 1
+                            | "setWebviewTitle" | "navigateWebview" | "setWebviewHtml"
+                            | "initWebview" | "evalWebview" | "bindWebview" -> 2
+                            | "setWebviewSize" | "returnWebview" -> 4
                             | _ -> List.length allArgSSAs
-                        
+
                         if List.length allArgSSAs < expectedParamCount then
                             let argsEncoded = allArgSSAs |> List.collect (fun (a, t) -> [a; Serialize.mlirType t]) |> String.concat ":"
                             let marker = sprintf "$platform:%s:%s" entryPoint argsEncoded

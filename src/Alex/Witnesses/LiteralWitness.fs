@@ -59,6 +59,18 @@ let witness (lit: LiteralValue) (zipper: MLIRZipper) : MLIRZipper * TransferResu
         let ssaName, zipper' = MLIRZipper.witnessConstant (int64 n) I64 zipper
         zipper', TRValue (ssaName, "i64")
 
+    | LiteralValue.NativeInt n ->
+        let wordType = Alex.CodeGeneration.TypeMapping.platformWordType Alex.CodeGeneration.TypeMapping.defaultPlatform
+        let width = if wordType = "i64" then I64 else I32
+        let ssaName, zipper' = MLIRZipper.witnessConstant (int64 n) width zipper
+        zipper', TRValue (ssaName, wordType)
+
+    | LiteralValue.UNativeInt n ->
+        let wordType = Alex.CodeGeneration.TypeMapping.platformWordType Alex.CodeGeneration.TypeMapping.defaultPlatform
+        let width = if wordType = "i64" then I64 else I32
+        let ssaName, zipper' = MLIRZipper.witnessConstant (int64 n) width zipper
+        zipper', TRValue (ssaName, wordType)
+
     | LiteralValue.Char c ->
         let ssaName, zipper' = MLIRZipper.witnessConstant (int64 c) I32 zipper
         zipper', TRValue (ssaName, "i32")
@@ -81,7 +93,9 @@ let witness (lit: LiteralValue) (zipper: MLIRZipper) : MLIRZipper * TransferResu
         // Native string: fat pointer struct {ptr: *u8, len: i64}
         let globalName, zipper1 = MLIRZipper.observeStringLiteral s zipper
         let ptrSSA, zipper2 = MLIRZipper.witnessAddressOf globalName zipper1
-        let lenSSA, zipper3 = MLIRZipper.witnessConstant (int64 s.Length) I64 zipper2
+        // CRITICAL: Use UTF-8 byte count, not .NET character count
+        let byteLen = System.Text.Encoding.UTF8.GetByteCount(s)
+        let lenSSA, zipper3 = MLIRZipper.witnessConstant (int64 byteLen) I64 zipper2
         
         // Build fat pointer struct using templates
         let undefSSA, zipper4 = MLIRZipper.yieldSSA zipper3

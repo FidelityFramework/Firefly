@@ -25,6 +25,7 @@ module CFWitness = Alex.Witnesses.ControlFlowWitness
 module MemWitness = Alex.Witnesses.MemoryWitness
 module LambdaWitness = Alex.Witnesses.LambdaWitness
 module MutAnalysis = Alex.Preprocessing.MutabilityAnalysis
+module SSAAssign = Alex.Preprocessing.SSAAssignment
 // NOTE: SatApps removed - application saturation now happens in FNCS during type checking
 open Alex.Patterns.SemanticPatterns
 
@@ -131,13 +132,31 @@ let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper)
     // Type annotations - pass through the inner expression's value
     | SemanticKind.TypeAnnotation (exprId, _annotatedType) ->
         // Type annotation doesn't generate code - just forward the inner expression's value
-        match MLIRZipper.recallNodeSSA (string (NodeId.value exprId)) zipper with
-        | Some (ssa, ty) ->
-            let zipper1 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper
-            zipper1, TRValue (ssa, ty)
+        // First, check if the inner expression is unit-typed (void calls don't have SSA values)
+        match SemanticGraph.tryGetNode exprId graph with
+        | Some innerNode ->
+            let innerType = mapType innerNode.Type
+            match innerType with
+            | Unit ->
+                // Unit-typed expression produces no SSA value - this is valid
+                zipper, TRVoid
+            | _ ->
+                // Non-unit expression should have an SSA value
+                match MLIRZipper.recallNodeSSA (string (NodeId.value exprId)) zipper with
+                | Some (ssa, ty) ->
+                    let zipper1 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper
+                    zipper1, TRValue (ssa, ty)
+                | None ->
+                    // Try pre-computed SSA from coeffect
+                    match MLIRState.lookupPrecomputedSSA (NodeId.value exprId) zipper.State with
+                    | Some ssaName ->
+                        let tyStr = Serialize.mlirType innerType
+                        let zipper1 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssaName tyStr zipper
+                        zipper1, TRValue (ssaName, tyStr)
+                    | None ->
+                        zipper, TRError (sprintf "TypeAnnotation inner expr %A not computed (non-unit)" exprId)
         | None ->
-            // Inner expression not yet computed - shouldn't happen in post-order
-            zipper, TRError (sprintf "TypeAnnotation inner expr %A not computed" exprId)
+            zipper, TRError (sprintf "TypeAnnotation inner expr %A not found in graph" exprId)
 
     // Mutable set
     | SemanticKind.Set (targetId, valueId) ->
@@ -215,11 +234,11 @@ let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper)
 
     // Field access: expr.fieldName
     | SemanticKind.FieldGet (exprId, fieldName) ->
-        MemWitness.witnessFieldGet exprId fieldName node zipper
+        MemWitness.witnessFieldGet exprId fieldName node graph zipper
 
     // Field set: expr.fieldName <- value
     | SemanticKind.FieldSet (exprId, fieldName, valueId) ->
-        MemWitness.witnessFieldSet exprId fieldName valueId zipper
+        MemWitness.witnessFieldSet exprId fieldName valueId graph zipper
 
     // Pattern bindings (variables introduced by match patterns)
     | SemanticKind.PatternBinding name ->
@@ -272,16 +291,23 @@ let private transferGraphCore
     Alex.Bindings.Console.ConsoleBindings.registerConsoleIntrinsics()
     Alex.Bindings.Process.ProcessBindings.registerBindings()
     Alex.Bindings.Time.TimeBindings.registerBindings()
+    Alex.Bindings.WebView.WebViewBindings.registerBindings()
+    Alex.Bindings.DynamicLib.DynamicLibBindings.registerBindings()
+    Alex.Bindings.GTK.GTKBindings.registerBindings()
+    Alex.Bindings.WebKit.WebKitBindings.registerBindings()
 
     // Pre-analyze graph (ONCE, before transfer begins)
     // This adheres to the photographer principle: observe structure, don't compute during transfer
     let entryPointLambdaIds = MutAnalysis.findEntryPointLambdaIds graph
     let analysisResult = MutAnalysis.analyze graph
+    // SSA assignment is a coeffect - computed BEFORE transfer, not during
+    let ssaAssignment = SSAAssign.assignSSA graph
     let initialZipper =
         MLIRZipper.createWithAnalysis
             entryPointLambdaIds
             analysisResult.AddressedMutableBindings
             analysisResult.ModifiedVarsInLoopBodies
+            ssaAssignment
     let scfHook = CFWitness.createSCFRegionHook graph
 
     // Error accumulator (only used if collectErrors)
