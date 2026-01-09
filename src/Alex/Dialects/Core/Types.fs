@@ -63,6 +63,7 @@ type MLIRType =
 /// Common type aliases for convenience
 module MLIRTypes =
     let i1 = TInt I1
+    let bool = TInt I1  // Semantic alias for boolean
     let i8 = TInt I8
     let i16 = TInt I16
     let i32 = TInt I32
@@ -113,6 +114,21 @@ type Val = {
 let val' ssa ty = { SSA = ssa; Type = ty }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// TRANSFER RESULT
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of transferring a PSG node to MLIR
+/// - TRValue: Has an SSA result with type
+/// - TRVoid: No result (unit operations, statements)
+/// - TRError: Compilation error with message
+/// - TRBuiltin: Handled specially (platform bindings defer to dispatch)
+type TransferResult =
+    | TRValue of Val
+    | TRVoid
+    | TRError of string
+    | TRBuiltin of name: string * args: Val list
+
+// ═══════════════════════════════════════════════════════════════════════════
 // COMPARISON PREDICATES
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -152,11 +168,8 @@ type GlobalRef =
 // REGIONS AND BLOCKS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// A block argument (SSA name + type)
-type BlockArg = {
-    SSA: SSA
-    Type: MLIRType
-}
+/// A block argument is a typed SSA value
+type BlockArg = Val
 
 /// Forward declaration - actual operation types defined per-dialect
 /// This is the sum type that will hold all dialect operations
@@ -285,7 +298,7 @@ and LLVMOp =
     // === MEMORY OPERATIONS ===
     | Alloca of result: SSA * count: SSA * elementTy: MLIRType * alignment: int option
     | Load of result: SSA * ptr: SSA * ty: MLIRType * ordering: AtomicOrdering
-    | Store of value: SSA * ptr: SSA * ordering: AtomicOrdering
+    | Store of value: SSA * ptr: SSA * valueTy: MLIRType * ordering: AtomicOrdering
     | GEP of result: SSA * base': SSA * indices: (SSA * MLIRType) list * elemTy: MLIRType
     | MemCpy of dst: SSA * src: SSA * len: SSA * isVolatile: bool
     | MemMove of dst: SSA * src: SSA * len: SSA * isVolatile: bool
@@ -374,13 +387,13 @@ and LLVMOp =
     | Phi of result: SSA * ty: MLIRType * incomings: (SSA * BlockRef) list
 
     // === INLINE ASM ===
-    | InlineAsm of result: SSA option * asm: string * constraints: string * args: SSA list * retTy: MLIRType option * hasSideEffects: bool * isAlignStack: bool
+    | InlineAsm of result: SSA option * asm: string * constraints: string * args: (SSA * MLIRType) list * retTy: MLIRType option * hasSideEffects: bool * isAlignStack: bool
 
     // === VA ARG ===
     | VaArg of result: SSA * vaList: SSA * ty: MLIRType
 
     // === RETURN ===
-    | Return of value: SSA option
+    | Return of value: SSA option * valueTy: MLIRType option
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SCF DIALECT - EXHAUSTIVE (from SCFOps.td)
@@ -539,9 +552,9 @@ and VectorOp =
     // === SPLAT ===
     | Splat of result: SSA * value: SSA * resultTy: MLIRType
 
-    // === LOAD/STORE ===
-    | Load of result: SSA * basePtr: SSA * indices: SSA list
-    | Store of valueToStore: SSA * basePtr: SSA * indices: SSA list
+    // === LOAD/STORE (prefixed to avoid collision with LLVMOp) ===
+    | VectorLoad of result: SSA * basePtr: SSA * indices: SSA list
+    | VectorStore of valueToStore: SSA * basePtr: SSA * indices: SSA list
     | MaskedLoad of result: SSA * basePtr: SSA * indices: SSA list * mask: SSA * passthru: SSA
     | MaskedStore of valueToStore: SSA * basePtr: SSA * indices: SSA list * mask: SSA
     | Gather of result: SSA * basePtr: SSA * indices: SSA * indexVec: SSA * mask: SSA * passthru: SSA
@@ -639,6 +652,6 @@ let opResults (op: MLIROp) : SSA list =
         | ReductionMinSI (r,_) | ReductionMinUI (r,_) | ReductionMaxSI (r,_) | ReductionMaxUI (r,_)
         | ReductionMinF (r,_) | ReductionMaxF (r,_)
         | FMA (r,_,_,_) | Splat (r,_,_)
-        | VectorOp.Load (r,_,_) | MaskedLoad (r,_,_,_,_) | Gather (r,_,_,_,_,_)
+        | VectorLoad (r,_,_) | MaskedLoad (r,_,_,_,_) | Gather (r,_,_,_,_,_)
         | CreateMask (r,_) | ConstantMask (r,_) -> [r]
-        | VectorOp.Store _ | MaskedStore _ | Scatter _ | Print _ -> []
+        | VectorStore _ | MaskedStore _ | Scatter _ | Print _ -> []

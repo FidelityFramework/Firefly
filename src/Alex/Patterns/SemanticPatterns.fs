@@ -3,21 +3,34 @@
 /// ARCHITECTURAL FOUNDATION:
 /// This module provides typed active patterns that replace string matching
 /// on operator and function names. Instead of matching on "op_Addition",
-/// we pattern match on (|ArithAdd|_|) which is:
+/// we pattern match on (|BinaryArith|_|) which is:
 /// - Type-safe (compiler checks exhaustiveness)
 /// - Self-documenting (patterns describe intent)
 /// - Composable (patterns can be nested)
 /// - Extensible (add new patterns without changing existing code)
+///
+/// SEPARATION OF CONCERNS:
+/// These are SEMANTIC classifications, not MLIR types.
+/// Witnesses map these semantic kinds to MLIR operations.
 module Alex.Patterns.SemanticPatterns
 
-open Alex.Templates.TemplateTypes
+// ═══════════════════════════════════════════════════════════════════════════
+// SEMANTIC CLASSIFICATION TYPES
+// These are semantic kinds - NOT MLIR types. Witnesses do the mapping.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Binary arithmetic operation kinds (semantic classification)
+type BinaryArithKind =
+    | Add | Sub | Mul | Div | Mod
+    | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight
+
+/// Comparison operation kinds (semantic classification)
+type CompareKind =
+    | Lt | Le | Gt | Ge | Eq | Ne
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Binary Arithmetic Operators
 // ═══════════════════════════════════════════════════════════════════════════
-
-// Note: BinaryArithOp and CompareOp are canonical in TemplateTypes
-// This module re-exports them for pattern matching convenience
 
 /// Active pattern to classify binary arithmetic by operator name
 let (|BinaryArith|_|) (opName: string) =

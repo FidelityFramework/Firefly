@@ -1,129 +1,161 @@
 /// WebKitBindings - Platform bindings for WebKitGTK on Linux
 ///
-/// ARCHITECTURAL FOUNDATION:
-/// WebKitGTK is dynamically linked at load time - the system's
-/// libwebkit2gtk is already installed on Linux desktops.
+/// ARCHITECTURAL PRINCIPLE (January 2026):
+/// Bindings RETURN structured MLIROp lists - they do NOT emit.
+/// Uses dialect templates for all operations. ZERO sprintf.
 module Alex.Bindings.WebKit.WebKitBindings
 
-open Alex.CodeGeneration.MLIRTypes
-open Alex.Traversal.MLIRZipper
+open Alex.Dialects.Core.Types
+open Alex.Dialects.LLVM.Templates
+open Alex.Traversal.PSGZipper
+open Alex.Bindings.PlatformTypes
 open Alex.Bindings.BindingTypes
+
+// ===================================================================
+// Type Constants
+// ===================================================================
+
+/// Fat string type: { ptr, i64 }
+let fatStringType = TStruct [MLIRTypes.ptr; MLIRTypes.i64]
 
 // ===================================================================
 // Helper Functions
 // ===================================================================
 
+/// Create a Val from SSA and type
+let inline val' ssa ty : Val = { SSA = ssa; Type = ty }
+
 /// Extract pointer from fat string for C string interop
-let private extractStringPointer (strSSA: string) (ty: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
+let extractStringPointer (z: PSGZipper) (strSSA: SSA) (ty: MLIRType) : SSA * MLIROp list =
     match ty with
-    | Struct _ ->
-        let ptrSSA, z = MLIRZipper.yieldSSA zipper
-        let extractText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let z' = MLIRZipper.witnessOpWithResult extractText ptrSSA Pointer z
-        ptrSSA, z'
-    | Pointer -> strSSA, zipper
-    | _ -> strSSA, zipper
+    | TStruct _ ->
+        let ptrSSA = freshSynthSSA z
+        let op = MLIROp.LLVMOp (extractValueAt ptrSSA strSSA 0 fatStringType)
+        ptrSSA, [op]
+    | TPtr _ ->
+        strSSA, []
+    | _ ->
+        strSSA, []
 
-/// Witness a call to a WebKit function
-let witnessWebKitCall (funcName: string) (args: (string * MLIRType) list) (returnType: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
-    let argTypes = args |> List.map snd
-    let argTypeStrs = argTypes |> List.map Serialize.mlirType
-    let retTypeStr = Serialize.mlirType returnType
-    let signature = sprintf "(%s) -> %s" (String.concat ", " argTypeStrs) retTypeStr
+/// Convert integer to pointer if needed
+let ensurePointer (z: PSGZipper) (ssa: SSA) (ty: MLIRType) : SSA * MLIROp list =
+    match ty with
+    | TPtr -> ssa, []
+    | TInt _ ->
+        let ptrSSA = freshSynthSSA z
+        let op = MLIROp.LLVMOp (intToPtr ptrSSA ssa MLIRTypes.i64)
+        ptrSSA, [op]
+    | _ -> ssa, []
 
-    let zipper1 = MLIRZipper.observeExternFunc funcName signature zipper
-    let argSSAs = args |> List.map fst
-    MLIRZipper.witnessCall funcName argSSAs argTypes returnType zipper1
+/// Create null pointer constant
+let nullPointer (z: PSGZipper) : SSA * MLIROp list =
+    let nullSSA = freshSynthSSA z
+    let op = MLIROp.LLVMOp (NullPtr nullSSA)
+    nullSSA, [op]
 
 // ===================================================================
 // WebKitGTK Platform Bindings
 // ===================================================================
 
-/// webkit_web_view_new - Create a new WebView widget
-let witnessWebViewNew (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    let resultSSA, zipper1 = witnessWebKitCall "webkit_web_view_new" [] Pointer zipper
-    zipper1, WitnessedValue (resultSSA, Pointer)
+/// webViewNew - Create a new WebView widget
+let bindWebViewNew (z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
+    let resultSSA = freshSynthSSA z
+    let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) "webkit_web_view_new" [] MLIRTypes.ptr)
+    BoundOps ([callOp], Some { SSA = resultSSA; Type = MLIRTypes.ptr })
 
-/// webkit_web_view_load_uri - Load a URL
-let witnessWebViewLoadUri (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// webViewLoadUri - Load a URL
+let bindWebViewLoadUri (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(webviewSSA, _); (uriSSA, uriTy)] ->
-        let uriPtrSSA, zipper1 = extractStringPointer uriSSA uriTy zipper
-        let args = [ (webviewSSA, Pointer); (uriPtrSSA, Pointer) ]
-        let _, zipper2 = witnessWebKitCall "webkit_web_view_load_uri" args Unit zipper1
-        zipper2, WitnessedVoid
-    | _ -> zipper, NotSupported "webkit_web_view_load_uri requires (webview, uri)"
+    | [webview; uri] ->
+        let webviewPtr, webviewOps = ensurePointer z webview.SSA webview.Type
+        let uriPtr, uriOps = extractStringPointer z uri.SSA uri.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webkit_web_view_load_uri"
+            [val' webviewPtr MLIRTypes.ptr; val' uriPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (webviewOps @ uriOps @ [callOp], None)
+    | _ ->
+        NotSupported "webViewLoadUri requires (webview, uri)"
 
-/// webkit_web_view_load_html - Load HTML content
-let witnessWebViewLoadHtml (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// webViewLoadHtml - Load HTML content
+let bindWebViewLoadHtml (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(webviewSSA, _); (htmlSSA, htmlTy); (baseUriSSA, baseUriTy)] ->
-        let htmlPtrSSA, zipper1 = extractStringPointer htmlSSA htmlTy zipper
-        let baseUriPtrSSA, zipper2 = extractStringPointer baseUriSSA baseUriTy zipper1
-        let args = [ (webviewSSA, Pointer); (htmlPtrSSA, Pointer); (baseUriPtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebKitCall "webkit_web_view_load_html" args Unit zipper2
-        zipper3, WitnessedVoid
-    | [(webviewSSA, _); (htmlSSA, htmlTy)] ->
+    | [webview; html; baseUri] ->
+        let webviewPtr, webviewOps = ensurePointer z webview.SSA webview.Type
+        let htmlPtr, htmlOps = extractStringPointer z html.SSA html.Type
+        let baseUriPtr, baseUriOps = extractStringPointer z baseUri.SSA baseUri.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webkit_web_view_load_html"
+            [val' webviewPtr MLIRTypes.ptr; val' htmlPtr MLIRTypes.ptr; val' baseUriPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (webviewOps @ htmlOps @ baseUriOps @ [callOp], None)
+    | [webview; html] ->
         // Overload with no base URI - pass NULL
-        let htmlPtrSSA, zipper1 = extractStringPointer htmlSSA htmlTy zipper
-        let nullSSA, zipper2 = MLIRZipper.witnessConstant 0L I64 zipper1
-        let nullPtrSSA, zipper3 = MLIRZipper.yieldSSA zipper2
-        let convText = sprintf "%s = llvm.inttoptr %s : i64 to !llvm.ptr" nullPtrSSA nullSSA
-        let zipper4 = MLIRZipper.witnessOpWithResult convText nullPtrSSA Pointer zipper3
-        let args = [ (webviewSSA, Pointer); (htmlPtrSSA, Pointer); (nullPtrSSA, Pointer) ]
-        let _, zipper5 = witnessWebKitCall "webkit_web_view_load_html" args Unit zipper4
-        zipper5, WitnessedVoid
-    | _ -> zipper, NotSupported "webkit_web_view_load_html requires (webview, html[, baseUri])"
+        let webviewPtr, webviewOps = ensurePointer z webview.SSA webview.Type
+        let htmlPtr, htmlOps = extractStringPointer z html.SSA html.Type
+        let nullSSA, nullOps = nullPointer z
+        let callOp = MLIROp.LLVMOp (callFunc None "webkit_web_view_load_html"
+            [val' webviewPtr MLIRTypes.ptr; val' htmlPtr MLIRTypes.ptr; val' nullSSA MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (webviewOps @ htmlOps @ nullOps @ [callOp], None)
+    | _ ->
+        NotSupported "webViewLoadHtml requires (webview, html[, baseUri])"
 
-/// webkit_web_view_run_javascript - Execute JavaScript
-let witnessWebViewRunJavaScript (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// webViewRunJavaScript - Execute JavaScript
+let bindWebViewRunJavaScript (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(webviewSSA, _); (scriptSSA, scriptTy)] ->
-        let scriptPtrSSA, zipper1 = extractStringPointer scriptSSA scriptTy zipper
+    | [webview; script] ->
+        let webviewPtr, webviewOps = ensurePointer z webview.SSA webview.Type
+        let scriptPtr, scriptOps = extractStringPointer z script.SSA script.Type
         // webkit_web_view_run_javascript(webview, script, NULL, NULL, NULL)
-        // The last 3 args are: cancellable, callback, user_data
-        let nullSSA, zipper2 = MLIRZipper.witnessConstant 0L I64 zipper1
-        let nullPtrSSA, zipper3 = MLIRZipper.yieldSSA zipper2
-        let convText = sprintf "%s = llvm.inttoptr %s : i64 to !llvm.ptr" nullPtrSSA nullSSA
-        let zipper4 = MLIRZipper.witnessOpWithResult convText nullPtrSSA Pointer zipper3
-        let args = [
-            (webviewSSA, Pointer)
-            (scriptPtrSSA, Pointer)
-            (nullPtrSSA, Pointer)  // cancellable
-            (nullPtrSSA, Pointer)  // callback
-            (nullPtrSSA, Pointer)  // user_data
-        ]
-        let _, zipper5 = witnessWebKitCall "webkit_web_view_run_javascript" args Unit zipper4
-        zipper5, WitnessedVoid
-    | _ -> zipper, NotSupported "webkit_web_view_run_javascript requires (webview, script)"
+        // Last 3 args: cancellable, callback, user_data
+        let nullSSA, nullOps = nullPointer z
+        let callOp = MLIROp.LLVMOp (callFunc None "webkit_web_view_run_javascript"
+            [val' webviewPtr MLIRTypes.ptr
+             val' scriptPtr MLIRTypes.ptr
+             val' nullSSA MLIRTypes.ptr   // cancellable
+             val' nullSSA MLIRTypes.ptr   // callback
+             val' nullSSA MLIRTypes.ptr]  // user_data
+            MLIRTypes.unit)
+        BoundOps (webviewOps @ scriptOps @ nullOps @ [callOp], None)
+    | _ ->
+        NotSupported "webViewRunJavaScript requires (webview, script)"
 
-/// webkit_web_view_get_settings - Get WebView settings
-let witnessWebViewGetSettings (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// webViewGetSettings - Get WebView settings
+let bindWebViewGetSettings (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(webviewSSA, _)] ->
-        let args = [ (webviewSSA, Pointer) ]
-        let resultSSA, zipper1 = witnessWebKitCall "webkit_web_view_get_settings" args Pointer zipper
-        zipper1, WitnessedValue (resultSSA, Pointer)
-    | _ -> zipper, NotSupported "webkit_web_view_get_settings requires (webview)"
+    | [webview] ->
+        let webviewPtr, webviewOps = ensurePointer z webview.SSA webview.Type
+        let resultSSA = freshSynthSSA z
+        let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) "webkit_web_view_get_settings"
+            [val' webviewPtr MLIRTypes.ptr] MLIRTypes.ptr)
+        BoundOps (webviewOps @ [callOp], Some { SSA = resultSSA; Type = MLIRTypes.ptr })
+    | _ ->
+        NotSupported "webViewGetSettings requires (webview)"
 
-/// webkit_settings_set_enable_developer_extras - Enable dev tools
-let witnessSettingsSetEnableDeveloperExtras (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// settingsSetEnableDeveloperExtras - Enable dev tools
+let bindSettingsSetEnableDeveloperExtras (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(settingsSSA, _); (enableSSA, _)] ->
-        let args = [ (settingsSSA, Pointer); (enableSSA, Integer I1) ]
-        let _, zipper1 = witnessWebKitCall "webkit_settings_set_enable_developer_extras" args Unit zipper
-        zipper1, WitnessedVoid
-    | _ -> zipper, NotSupported "webkit_settings_set_enable_developer_extras requires (settings, enable)"
+    | [settings; enable] ->
+        let settingsPtr, settingsOps = ensurePointer z settings.SSA settings.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webkit_settings_set_enable_developer_extras"
+            [val' settingsPtr MLIRTypes.ptr; val' enable.SSA MLIRTypes.i1] MLIRTypes.unit)
+        BoundOps (settingsOps @ [callOp], None)
+    | _ ->
+        NotSupported "settingsSetEnableDeveloperExtras requires (settings, enable)"
 
 // ===================================================================
 // Registration
 // ===================================================================
 
 let registerBindings () =
-    // Register WebKit bindings for Linux
-    PlatformDispatch.register Linux X86_64 "webViewNew" witnessWebViewNew
-    PlatformDispatch.register Linux X86_64 "webViewLoadUri" witnessWebViewLoadUri
-    PlatformDispatch.register Linux X86_64 "webViewLoadHtml" witnessWebViewLoadHtml
-    PlatformDispatch.register Linux X86_64 "webViewRunJavaScript" witnessWebViewRunJavaScript
-    PlatformDispatch.register Linux X86_64 "webViewGetSettings" witnessWebViewGetSettings
-    PlatformDispatch.register Linux X86_64 "settingsSetEnableDeveloperExtras" witnessSettingsSetEnableDeveloperExtras
+    // Register WebKit bindings for Linux x86_64
+    PlatformDispatch.register Linux X86_64 "webViewNew" bindWebViewNew
+    PlatformDispatch.register Linux X86_64 "webViewLoadUri" bindWebViewLoadUri
+    PlatformDispatch.register Linux X86_64 "webViewLoadHtml" bindWebViewLoadHtml
+    PlatformDispatch.register Linux X86_64 "webViewRunJavaScript" bindWebViewRunJavaScript
+    PlatformDispatch.register Linux X86_64 "webViewGetSettings" bindWebViewGetSettings
+    PlatformDispatch.register Linux X86_64 "settingsSetEnableDeveloperExtras" bindSettingsSetEnableDeveloperExtras
+
+    // Register for Linux ARM64
+    PlatformDispatch.register Linux ARM64 "webViewNew" bindWebViewNew
+    PlatformDispatch.register Linux ARM64 "webViewLoadUri" bindWebViewLoadUri
+    PlatformDispatch.register Linux ARM64 "webViewLoadHtml" bindWebViewLoadHtml
+    PlatformDispatch.register Linux ARM64 "webViewRunJavaScript" bindWebViewRunJavaScript
+    PlatformDispatch.register Linux ARM64 "webViewGetSettings" bindWebViewGetSettings
+    PlatformDispatch.register Linux ARM64 "settingsSetEnableDeveloperExtras" bindSettingsSetEnableDeveloperExtras

@@ -12,7 +12,7 @@
 module Alex.XParsec.PSGCombinators
 
 open FSharp.Native.Compiler.Checking.Native.SemanticGraph
-open Alex.Traversal.MLIRZipper
+open Alex.Traversal.PSGZipper
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CORE TYPES
@@ -26,7 +26,7 @@ type PSGMatchResult<'T> =
 /// Parser state threaded through pattern matching
 type PSGParserState = {
     Graph: SemanticGraph
-    Zipper: MLIRZipper
+    Zipper: PSGZipper
     /// Currently focused node
     Current: SemanticNode
 }
@@ -333,12 +333,12 @@ let psg = PSGParserBuilder()
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Run a parser on a node
-let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper) =
+let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) =
     let state = { Graph = graph; Zipper = zipper; Current = node }
     parser state
 
 /// Try to match a pattern, returning option
-let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper) =
+let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) =
     match runParser parser graph node zipper with
     | Matched v, state' -> Some (v, state'.Zipper)
     | NoMatch _, _ -> None

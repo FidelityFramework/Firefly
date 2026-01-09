@@ -26,12 +26,12 @@ let loadNonAtomic (result: SSA) (ptr: SSA) (ty: MLIRType) : LLVMOp =
     LLVMOp.Load (result, ptr, ty, NotAtomic)
 
 /// Store value to pointer: llvm.store
-let store (value: SSA) (ptr: SSA) (ordering: AtomicOrdering) : LLVMOp =
-    LLVMOp.Store (value, ptr, ordering)
+let store (value: SSA) (ptr: SSA) (valueTy: MLIRType) (ordering: AtomicOrdering) : LLVMOp =
+    LLVMOp.Store (value, ptr, valueTy, ordering)
 
 /// Store value to pointer (non-atomic): llvm.store
-let storeNonAtomic (value: SSA) (ptr: SSA) : LLVMOp =
-    LLVMOp.Store (value, ptr, NotAtomic)
+let storeNonAtomic (value: SSA) (ptr: SSA) (valueTy: MLIRType) : LLVMOp =
+    LLVMOp.Store (value, ptr, valueTy, NotAtomic)
 
 /// Get element pointer: llvm.getelementptr
 let gep (result: SSA) (base': SSA) (indices: (SSA * MLIRType) list) (elemTy: MLIRType) : LLVMOp =
@@ -126,11 +126,12 @@ let ptrToInt (result: SSA) (operand: SSA) (toTy: MLIRType) : LLVMOp =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Inline assembly: llvm.inline_asm
-let inlineAsm (result: SSA option) (asm: string) (constraints: string) (args: SSA list) (retTy: MLIRType option) (hasSideEffects: bool) (isAlignStack: bool) : LLVMOp =
+/// args is a list of (SSA, MLIRType) pairs for proper type signature emission
+let inlineAsm (result: SSA option) (asm: string) (constraints: string) (args: (SSA * MLIRType) list) (retTy: MLIRType option) (hasSideEffects: bool) (isAlignStack: bool) : LLVMOp =
     LLVMOp.InlineAsm (result, asm, constraints, args, retTy, hasSideEffects, isAlignStack)
 
 /// Inline assembly with side effects (common case for syscalls)
-let inlineAsmWithSideEffects (result: SSA option) (asm: string) (constraints: string) (args: SSA list) (retTy: MLIRType option) : LLVMOp =
+let inlineAsmWithSideEffects (result: SSA option) (asm: string) (constraints: string) (args: (SSA * MLIRType) list) (retTy: MLIRType option) : LLVMOp =
     LLVMOp.InlineAsm (result, asm, constraints, args, retTy, true, false)
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -138,16 +139,16 @@ let inlineAsmWithSideEffects (result: SSA option) (asm: string) (constraints: st
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Return from function: llvm.return
-let ret (value: SSA option) : LLVMOp =
-    LLVMOp.Return value
+let ret (value: SSA option) (valueTy: MLIRType option) : LLVMOp =
+    LLVMOp.Return (value, valueTy)
 
 /// Return void
 let retVoid : LLVMOp =
-    LLVMOp.Return None
+    LLVMOp.Return (None, None)
 
-/// Return value
-let retVal (value: SSA) : LLVMOp =
-    LLVMOp.Return (Some value)
+/// Return value with type
+let retVal (value: SSA) (valueTy: MLIRType) : LLVMOp =
+    LLVMOp.Return (Some value, Some valueTy)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPOSITE PATTERNS (common combinations)
@@ -177,7 +178,8 @@ let extractFatPtr (aggregate: SSA) (ptrResult: SSA) (lenResult: SSA) : LLVMOp li
 
 /// Build syscall with up to 6 arguments (Linux x86_64)
 /// Returns inline_asm operation
-let syscall (result: SSA) (sysNum: int) (args: SSA list) : LLVMOp =
+/// args is a list of (SSA, MLIRType) pairs - typically (ssa, i64) for syscalls
+let syscall (result: SSA) (sysNum: int) (args: (SSA * MLIRType) list) : LLVMOp =
     // Linux x86_64 syscall convention:
     // rax = syscall number
     // rdi, rsi, rdx, r10, r8, r9 = args[0..5]
@@ -192,7 +194,7 @@ let syscall (result: SSA) (sysNum: int) (args: SSA list) : LLVMOp =
         | 5 -> "=r,{rax},{rdi},{rsi},{rdx},{r10},{r8}"
         | 6 -> "=r,{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9}"
         | _ -> failwith "syscall: too many arguments (max 6)"
-    
+
     // Create syscall number as constant first (handled by caller)
     // The args list should already have the syscall number prepended
     LLVMOp.InlineAsm (Some result, "syscall", constraints, args, Some MLIRTypes.i64, true, false)

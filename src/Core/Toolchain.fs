@@ -9,6 +9,7 @@ module Core.Toolchain
 
 open System
 open System.IO
+open Core.Types.Dialects
 
 /// Lower MLIR to LLVM IR using mlir-opt and mlir-translate
 let lowerMLIRToLLVM (mlirPath: string) (llvmPath: string) : Result<unit, string> =
@@ -58,7 +59,7 @@ let compileLLVMToNative
     (llvmPath: string)
     (outputPath: string)
     (targetTriple: string)
-    (outputKind: Core.Types.MLIRTypes.OutputKind) : Result<unit, string> =
+    (outputKind: OutputKind) : Result<unit, string> =
     try
         let objPath = Path.ChangeExtension(llvmPath, ".o")
 
@@ -79,14 +80,14 @@ let compileLLVMToNative
             // Step 2: clang to link into executable
             let clangArgs =
                 match outputKind with
-                | Core.Types.MLIRTypes.Console ->
+                | Console ->
                     // Use -no-pie to avoid relocation issues with LLVM-generated code
                     // Include webview dependencies: webkit2gtk and gtk3
                     sprintf "-O0 -no-pie %s -o %s -lc -lwebkit2gtk-4.0 -lgtk-3 -lgobject-2.0 -lglib-2.0" objPath outputPath
-                | Core.Types.MLIRTypes.Freestanding | Core.Types.MLIRTypes.Embedded ->
+                | Freestanding | Embedded ->
                     // Use _start as entry point - it handles argc/argv and calls exit syscall
                     sprintf "-O0 %s -o %s -nostdlib -static -ffreestanding -Wl,-e,_start" objPath outputPath
-                | Core.Types.MLIRTypes.Library ->
+                | Library ->
                     sprintf "-O0 -shared %s -o %s" objPath outputPath
 
             let clangProcess = new System.Diagnostics.Process()

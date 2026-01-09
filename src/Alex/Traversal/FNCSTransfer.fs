@@ -1,297 +1,61 @@
-/// FNCSTransfer - Witness-based transfer from FNCS SemanticGraph to MLIR
+/// FNCSTransfer - Transfer SemanticGraph to MLIR via witnesses
 ///
-/// ARCHITECTURAL FOUNDATION (Coeffects & Codata):
-/// This module witnesses the FNCS SemanticGraph structure and produces MLIR
-/// via the MLIRZipper codata accumulator.
+/// This is NOT a layer. It is orchestration code that:
+/// 1. Sets up coeffects (SSA assignment, mutability analysis)
+/// 2. Runs FNCS traversal with witnesses
+/// 3. Serializes accumulated ops to MLIR text
 ///
-/// KEY DESIGN PRINCIPLES:
-/// 1. Post-order traversal: Children before parents (SSAs available when parent visited)
-/// 2. Dispatch on SemanticKind ONLY - no pattern matching on symbol names
-/// 3. Platform bindings via SemanticKind.PlatformBinding marker → PlatformDispatch
-/// 4. Codata vocabulary: witness, observe, yield, bind, recall, extract
-///
-/// This replaces the deleted FNCSEmitter.fs antipattern.
+/// Region ops for SCF constructs are collected in LOCAL state,
+/// not in the zipper. The zipper remains pure navigation + emission.
 module Alex.Traversal.FNCSTransfer
 
+open System.Collections.Generic
 open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
-open Alex.CodeGeneration.MLIRTypes
-open Alex.Traversal.MLIRZipper
+open Alex.Dialects.Core.Types
+open Alex.Dialects.Core.Serialize
+open Alex.Traversal.PSGZipper
 open Alex.Bindings.BindingTypes
+open Alex.Bindings.PlatformTypes
+open Alex.CodeGeneration.TypeMapping
+open Alex.Patterns.SemanticPatterns
+open Alex.Preprocessing.PlatformConfig
+
+// Witness modules
 module LitWitness = Alex.Witnesses.LiteralWitness
 module BindWitness = Alex.Witnesses.BindingWitness
-module AppWitness = Alex.Witnesses.ApplicationWitness
+module AppWitness = Alex.Witnesses.Application.Witness
 module CFWitness = Alex.Witnesses.ControlFlowWitness
 module MemWitness = Alex.Witnesses.MemoryWitness
 module LambdaWitness = Alex.Witnesses.LambdaWitness
+
+// Preprocessing modules (coeffects)
 module MutAnalysis = Alex.Preprocessing.MutabilityAnalysis
 module SSAAssign = Alex.Preprocessing.SSAAssignment
-// NOTE: SatApps removed - application saturation now happens in FNCS during type checking
-open Alex.Patterns.SemanticPatterns
+module PlatformResolution = Alex.Preprocessing.PlatformBindingResolution
 
-// ═══════════════════════════════════════════════════════════════════
-// Type Mapping: NativeType → MLIRType (delegated to TypeMapping module)
-// ═══════════════════════════════════════════════════════════════════
+/// Map FNCS NativeType to MLIR type
+let private mapType = mapNativeType
 
-/// Map FNCS NativeType to MLIR type - delegates to canonical implementation
-let mapType = Alex.CodeGeneration.TypeMapping.mapNativeType
+/// Convert RegionKind to int for dictionary key
+let private regionKindToInt (kind: RegionKind) : int =
+    match kind with
+    | RegionKind.GuardRegion -> 0
+    | RegionKind.BodyRegion -> 1
+    | RegionKind.ThenRegion -> 2
+    | RegionKind.ElseRegion -> 3
+    | RegionKind.StartExprRegion -> 4
+    | RegionKind.EndExprRegion -> 5
+    | RegionKind.MatchCaseRegion idx -> 100 + idx
 
-// ═══════════════════════════════════════════════════════════════════
-// Main Transfer Fold
-// ═══════════════════════════════════════════════════════════════════
-
-/// Witness a single node based on its SemanticKind
-/// Dispatch is ONLY on SemanticKind - no symbol name pattern matching
-let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper) : MLIRZipper * TransferResult =
-    match node.Kind with
-    // Literals
-    | SemanticKind.Literal lit ->
-        let zipper', result = LitWitness.witness lit zipper
-        // Bind result to this node for future reference
-        match result with
-        | TRValue (ssa, ty) ->
-            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
-            zipper'', result
-        | _ -> zipper', result
-
-    // Variable references
-    | SemanticKind.VarRef (name, defId) ->
-        let zipper', result = BindWitness.witnessVarRef name defId graph zipper
-        // CRITICAL: Bind result to this node for future reference
-        // This is needed when VarRef is used as value in a Binding or TypeAnnotation
-        match result with
-        | TRValue (ssa, ty) ->
-            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
-            zipper'', result
-        | TRBuiltin opName ->
-            // Built-in operator - bind a marker so TypeAnnotation can forward it
-            let marker = "$builtin:" + opName
-            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) marker "func" zipper'
-            zipper'', result
-        | _ -> zipper', result
-
-    // Platform bindings (the ONLY place platform calls are recognized)
-    | SemanticKind.PlatformBinding entryPoint ->
-        // Platform binding node itself doesn't produce a value
-        // The Application that uses it will call witnessPlatformBinding
-        zipper, TRVoid
-
-    // Compiler intrinsics (e.g., NativePtr.toNativeInt)
-    | SemanticKind.Intrinsic intrinsicInfo ->
-        // Intrinsic node itself produces a function value
-        // The Application will handle generating actual MLIR code
-        // Bind a marker so Application can recognize and handle it
-        let zipper' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ("$intrinsic:" + intrinsicInfo.FullName) "func" zipper
-        zipper', TRValue ("$intrinsic:" + intrinsicInfo.FullName, "func")
-
-    // Function applications
-    | SemanticKind.Application (funcId, argIds) ->
-        let zipper', result = AppWitness.witness funcId argIds node.Type graph zipper
-        match result with
-        | TRValue (ssa, ty) ->
-            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
-            zipper'', result
-        | _ -> zipper', result
-
-    // Sequential expressions
-    | SemanticKind.Sequential nodeIds ->
-        let zipper', result = CFWitness.witnessSequential nodeIds zipper
-        // Bind result to this node for TypeAnnotation to recall
-        // But only if we have a non-empty SSA value
-        match result with
-        | TRValue (ssa, ty) when ssa <> "" ->
-            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
-            zipper'', result
-        | _ -> zipper', result
-
-    // Bindings
-    | SemanticKind.Binding (name, isMutable, _isRecursive, _isEntryPoint) ->
-        // Get the value node (first child)
-        match node.Children with
-        | valueId :: _ ->
-            BindWitness.witness name isMutable valueId node zipper
-        | [] ->
-            zipper, TRError "Binding has no value child"
-
-    // Module definitions (container - children already processed)
-    | SemanticKind.ModuleDef (name, _members) ->
-        zipper, TRVoid
-
-    // Type definitions (don't generate runtime code)
-    | SemanticKind.TypeDef (_name, _kind, _members) ->
-        zipper, TRVoid
-
-    // Record expressions - construct a record value
-    | SemanticKind.RecordExpr (fields, copyFrom) ->
-        MemWitness.witnessRecordExpr fields copyFrom node zipper
-
-    // Lambdas - delegate to LambdaWitness
-    | SemanticKind.Lambda (params', bodyId) ->
-        LambdaWitness.witness params' bodyId node zipper
-
-    // Type annotations - pass through the inner expression's value
-    | SemanticKind.TypeAnnotation (exprId, _annotatedType) ->
-        // Type annotation doesn't generate code - just forward the inner expression's value
-        // First, check if the inner expression is unit-typed (void calls don't have SSA values)
-        match SemanticGraph.tryGetNode exprId graph with
-        | Some innerNode ->
-            let innerType = mapType innerNode.Type
-            match innerType with
-            | Unit ->
-                // Unit-typed expression produces no SSA value - this is valid
-                zipper, TRVoid
-            | _ ->
-                // Non-unit expression should have an SSA value
-                match MLIRZipper.recallNodeSSA (string (NodeId.value exprId)) zipper with
-                | Some (ssa, ty) ->
-                    let zipper1 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper
-                    zipper1, TRValue (ssa, ty)
-                | None ->
-                    // Try pre-computed SSA from coeffect
-                    match MLIRState.lookupPrecomputedSSA (NodeId.value exprId) zipper.State with
-                    | Some ssaName ->
-                        let tyStr = Serialize.mlirType innerType
-                        let zipper1 = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssaName tyStr zipper
-                        zipper1, TRValue (ssaName, tyStr)
-                    | None ->
-                        zipper, TRError (sprintf "TypeAnnotation inner expr %A not computed (non-unit)" exprId)
-        | None ->
-            zipper, TRError (sprintf "TypeAnnotation inner expr %A not found in graph" exprId)
-
-    // Mutable set
-    | SemanticKind.Set (targetId, valueId) ->
-        match SemanticGraph.tryGetNode targetId graph with
-        | Some targetNode ->
-            match targetNode.Kind with
-            | SemanticKind.VarRef (name, _) ->
-                // Get the value SSA first
-                match MLIRZipper.recallNodeSSA (string (NodeId.value valueId)) zipper with
-                | Some (valueSSA, valueType) ->
-                    // Check if this is a module-level mutable
-                    match MLIRZipper.lookupModuleLevelMutable name zipper with
-                    | Some (_bindingId, globalName) ->
-                        // Module-level mutable: use global store template primitive
-                        let zipper' = MLIRZipper.witnessGlobalStore globalName valueSSA valueType zipper
-                        zipper', TRVoid
-                    | None ->
-                        // Local mutable: pure SSA rebinding (for SCF iter_args)
-                        let zipper' = MLIRZipper.bindVar name valueSSA valueType zipper
-                        zipper', TRVoid
-                | None ->
-                    zipper, TRError (sprintf "Set: value for '%s' not computed" name)
-            | _ ->
-                // Non-variable target (field set, array set, etc.) - use store
-                match MLIRZipper.recallNodeSSA (string (NodeId.value targetId)) zipper,
-                      MLIRZipper.recallNodeSSA (string (NodeId.value valueId)) zipper with
-                | Some (targetSSA, _), Some (valueSSA, valueType) ->
-                    let storeText = sprintf "llvm.store %s, %s : %s, !llvm.ptr" valueSSA targetSSA valueType
-                    let zipper' = MLIRZipper.witnessVoidOp storeText zipper
-                    zipper', TRVoid
-                | _ ->
-                    zipper, TRError "Set: target or value not computed"
-        | None ->
-            zipper, TRError "Set: target node not found"
-
-    // Control flow - delegates to ControlFlowWitness module
-    | SemanticKind.IfThenElse (guardId, thenId, elseIdOpt) ->
-        CFWitness.witnessIfThenElse guardId thenId elseIdOpt node zipper
-
-    | SemanticKind.WhileLoop (guardId, bodyId) ->
-        CFWitness.witnessWhileLoop guardId bodyId node zipper
-
-    | SemanticKind.ForLoop (varName, startId, finishId, isUp, bodyId) ->
-        CFWitness.witnessForLoop varName startId finishId isUp bodyId node zipper
-
-    | SemanticKind.Match (scrutineeId, cases) ->
-        CFWitness.witnessMatch scrutineeId cases node graph zipper
-
-    // Interpolated strings
-    | SemanticKind.InterpolatedString parts ->
-        // TODO: Implement string interpolation lowering
-        zipper, TRError "InterpolatedString not yet implemented"
-
-    // Array/collection indexing
-    | SemanticKind.IndexGet (collectionId, indexId) ->
-        MemWitness.witnessIndexGet collectionId indexId node zipper
-
-    | SemanticKind.IndexSet (collectionId, indexId, valueId) ->
-        MemWitness.witnessIndexSet collectionId indexId valueId zipper
-
-    // Address-of operator
-    | SemanticKind.AddressOf (exprId, isMutable) ->
-        MemWitness.witnessAddressOf exprId isMutable node graph zipper
-
-    // Tuple expressions - construct a tuple value
-    | SemanticKind.TupleExpr elementIds ->
-        MemWitness.witnessTupleExpr elementIds node zipper
-
-    // TraitCall - SRTP member resolution
-    | SemanticKind.TraitCall (memberName, typeArgs, argId) ->
-        MemWitness.witnessTraitCall memberName typeArgs argId node zipper
-
-    // Array expressions - construct an array
-    | SemanticKind.ArrayExpr elementIds ->
-        MemWitness.witnessArrayExpr elementIds node zipper
-
-    // List expressions - construct a list
-    | SemanticKind.ListExpr elementIds ->
-        MemWitness.witnessListExpr elementIds node zipper
-
-    // Field access: expr.fieldName
-    | SemanticKind.FieldGet (exprId, fieldName) ->
-        MemWitness.witnessFieldGet exprId fieldName node graph zipper
-
-    // Field set: expr.fieldName <- value
-    | SemanticKind.FieldSet (exprId, fieldName, valueId) ->
-        MemWitness.witnessFieldSet exprId fieldName valueId graph zipper
-
-    // Pattern bindings (variables introduced by match patterns)
-    | SemanticKind.PatternBinding name ->
-        // PatternBinding represents a variable bound by a pattern.
-        // The binding was set up in BeforeRegion for MatchCaseRegion via emitPatternBindings.
-        // Here we just look up the bound SSA and forward it.
-        match Map.tryFind name zipper.State.VarBindings with
-        | Some (ssa, ty) ->
-            let zipper' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper
-            zipper', TRValue (ssa, ty)
-        | None ->
-            // Variable not yet bound - this might happen for patterns not yet implemented
-            zipper, TRError (sprintf "PatternBinding '%s' not found in bindings" name)
-
-    // Union case construction (discriminated union value creation)
-    | SemanticKind.UnionCase (caseName, caseIndex, payloadOpt) ->
-        let zipper', result = MemWitness.witnessUnionCase caseName caseIndex payloadOpt node zipper
-        match result with
-        | TRValue (ssa, ty) ->
-            let zipper'' = MLIRZipper.bindNodeSSA (string (NodeId.value node.Id)) ssa ty zipper'
-            zipper'', result
-        | _ -> zipper', result
-
-    // Error nodes
-    | SemanticKind.Error msg ->
-        zipper, TRError msg
-
-    // Catch-all for unimplemented kinds
-    | kind ->
-        zipper, TRError (sprintf "SemanticKind not yet implemented: %A" kind)
-
-
-
-
-
-
-/// Core transfer implementation with optional error collection
+/// Core transfer implementation
 let private transferGraphCore
     (graph: SemanticGraph)
     (isFreestanding: bool)
     (collectErrors: bool)
     : string * string list =
 
-    // NOTE: Application saturation (pipes, curried apps) now happens in FNCS during type checking.
-    // The SemanticGraph received here is already fully saturated.
-    // See: ~/repos/fsnative/src/Compiler/Checking.Native/CheckExpressions.fs (SynExpr.App handling)
-
-    // Initialize platform bindings
+    // Register platform bindings
     Alex.Bindings.Console.ConsoleBindings.registerBindings()
     Alex.Bindings.Console.ConsoleBindings.registerConsoleIntrinsics()
     Alex.Bindings.Process.ProcessBindings.registerBindings()
@@ -301,50 +65,520 @@ let private transferGraphCore
     Alex.Bindings.GTK.GTKBindings.registerBindings()
     Alex.Bindings.WebKit.WebKitBindings.registerBindings()
 
-    // Pre-analyze graph (ONCE, before transfer begins)
-    // This adheres to the photographer principle: observe structure, don't compute during transfer
+    // ═══════════════════════════════════════════════════════════════════════
+    // COEFFECTS (computed ONCE before transfer)
+    // ═══════════════════════════════════════════════════════════════════════
     let entryPointLambdaIds = MutAnalysis.findEntryPointLambdaIds graph
     let analysisResult = MutAnalysis.analyze graph
-    // SSA assignment is a coeffect - computed BEFORE transfer, not during
     let ssaAssignment = SSAAssign.assignSSA graph
-    let initialZipper =
-        MLIRZipper.createWithAnalysis
-            entryPointLambdaIds
-            analysisResult.AddressedMutableBindings
-            analysisResult.ModifiedVarsInLoopBodies
-            analysisResult.ModuleLevelMutableBindings
-            ssaAssignment
-    let scfHook = CFWitness.createSCFRegionHook graph
 
-    // Error accumulator (only used if collectErrors)
-    let mutable errors = []
+    // Platform resolution (nanopass)
+    let hostPlatform = TargetPlatform.detectHost()
+    let runtimeMode = if isFreestanding then Freestanding else Console
+    let platformResolution = PlatformResolution.analyze graph runtimeMode hostPlatform.OS hostPlatform.Arch
 
-    // Traverse with SCF region hooks
-    let traversedZipper =
-        Traversal.foldWithSCFRegions
-            LambdaWitness.preBindParams
-            (Some scfHook)
-            (fun zipper node ->
-                let zipper', result = witnessNode graph node zipper
-                if collectErrors then
-                    match result with
-                    | TRError msg -> errors <- msg :: errors
-                    | _ -> ()
-                zipper')
-            initialZipper
-            graph
+    // Create WitnessContext for binding witnesses
+    let witnessCtx: BindWitness.WitnessContext = {
+        SSA = ssaAssignment
+        Mutability = analysisResult
+        Graph = graph
+    }
 
-    // Add freestanding entry point if needed
-    let finalZipper =
-        if isFreestanding then MLIRZipper.addFreestandingEntryPoint traversedZipper
-        else traversedZipper
+    // ═══════════════════════════════════════════════════════════════════════
+    // LOCAL STATE for region ops (NOT in zipper)
+    // ═══════════════════════════════════════════════════════════════════════
+    let regionOps = Dictionary<int * int, MLIROp list>()
+    let mutable errors: string list = []
 
-    MLIRZipper.extract finalZipper, List.rev errors
+    // ═══════════════════════════════════════════════════════════════════════
+    // SCF REGION HOOK (closes over regionOps)
+    // ═══════════════════════════════════════════════════════════════════════
+    let scfHook: SCFRegionHook<PSGZipper> = {
+        BeforeRegion = fun z _parentId _kind ->
+            enterRegion z
+            z
+        AfterRegion = fun z parentId kind ->
+            let ops = exitRegion z
+            let key = (NodeId.value parentId, regionKindToInt kind)
+            regionOps.[key] <- ops
+            z
+    }
 
-/// Transfer an entire SemanticGraph to MLIR
+    // ═══════════════════════════════════════════════════════════════════════
+    // HELPER: Resolve NodeId to Val
+    // ═══════════════════════════════════════════════════════════════════════
+    let resolveNodeToVal (nodeId: NodeId) (z: PSGZipper) : Val option =
+        match recallNodeResult (NodeId.value nodeId) z with
+        | Some (ssa, ty) -> Some { SSA = ssa; Type = ty }
+        | None -> None
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // WITNESS DISPATCH (closes over regionOps, graph, witnessCtx)
+    // ═══════════════════════════════════════════════════════════════════════
+    let witnessNode (z: PSGZipper) (node: SemanticNode) : PSGZipper =
+        let nodeIdVal = NodeId.value node.Id
+
+        let z', result =
+            match node.Kind with
+            // ─────────────────────────────────────────────────────────────────
+            // Literals
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Literal lit ->
+                let ops, result = LitWitness.witness z node.Id lit
+                emitAll ops z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Variable references
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.VarRef (name, defId) ->
+                let ops, result = BindWitness.witnessVarRef witnessCtx z name defId
+                emitAll ops z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Platform bindings (marker only - Application handles emission)
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.PlatformBinding _ ->
+                z, TRVoid
+
+            // ─────────────────────────────────────────────────────────────────
+            // Intrinsics (marker only - Application handles emission)
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Intrinsic _ ->
+                z, TRVoid
+
+            // ─────────────────────────────────────────────────────────────────
+            // Function applications
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Application (funcId, argIds) ->
+                let ops, result = AppWitness.witness funcId argIds node.Type z
+                emitAll ops z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Sequential expressions
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Sequential nodeIds ->
+                let ops, result = CFWitness.witnessSequential z nodeIds
+                emitAll ops z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Bindings
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Binding (name, isMutable, _isRecursive, _isEntryPoint) ->
+                match node.Children with
+                | valueId :: _ ->
+                    // Get the value result from already-processed child
+                    let valueResult =
+                        match recallNodeResult (NodeId.value valueId) z with
+                        | Some (ssa, ty) -> TRValue { SSA = ssa; Type = ty }
+                        | None -> TRVoid
+                    let ops, result = BindWitness.witness witnessCtx z node name isMutable valueId valueResult
+                    emitAll ops z
+                    z, result
+                | [] ->
+                    z, TRError "Binding has no value child"
+
+            // ─────────────────────────────────────────────────────────────────
+            // Module/Type definitions (containers, no code)
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.ModuleDef _ ->
+                z, TRVoid
+
+            | SemanticKind.TypeDef _ ->
+                z, TRVoid
+
+            // ─────────────────────────────────────────────────────────────────
+            // Record expressions
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.RecordExpr (fields, _copyFrom) ->
+                // fields is (string * NodeId) list - resolve each field value
+                let fieldVals =
+                    fields
+                    |> List.choose (fun (name, valueId) ->
+                        match resolveNodeToVal valueId z with
+                        | Some v -> Some (name, v)
+                        | None -> None)
+                let recordType = mapType node.Type
+                let ops, result = MemWitness.witnessRecordExpr z fieldVals recordType
+                emitAll ops z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Lambdas
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Lambda (params', bodyId) ->
+                // Get accumulated body ops from children (already in CurrentOps)
+                // Note: getCurrentOps already reverses to correct order
+                let bodyOps = getCurrentOps z
+                
+                // Witness returns: (funcDef option, localOps, result)
+                // Photographer Principle: witness RETURNS, we ACCUMULATE
+                let funcDefOpt, localOps, result = LambdaWitness.witness params' bodyId node bodyOps z
+                
+                // Add function definition to top-level (if present)
+                match funcDefOpt with
+                | Some funcDef -> emitTopLevel funcDef z
+                | None -> ()
+                
+                // Clear the body ops we just consumed
+                clearCurrentOps z
+                
+                // Emit local ops (addressof) to current scope
+                emitAll localOps z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Type annotations (pass through)
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.TypeAnnotation (exprId, _) ->
+                match SemanticGraph.tryGetNode exprId graph with
+                | Some innerNode ->
+                    let innerType = mapType innerNode.Type
+                    match innerType with
+                    | TUnit -> z, TRVoid
+                    | _ ->
+                        match recallNodeResult (NodeId.value exprId) z with
+                        | Some (ssa, ty) ->
+                            z, TRValue { SSA = ssa; Type = ty }
+                        | None ->
+                            z, TRError (sprintf "TypeAnnotation: inner expr %d not computed" (NodeId.value exprId))
+                | None ->
+                    z, TRError (sprintf "TypeAnnotation: inner expr %d not found" (NodeId.value exprId))
+
+            // ─────────────────────────────────────────────────────────────────
+            // Mutable set
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.Set (targetId, valueId) ->
+                match SemanticGraph.tryGetNode targetId graph with
+                | Some targetNode ->
+                    match targetNode.Kind with
+                    | SemanticKind.VarRef (name, _) ->
+                        match recallNodeResult (NodeId.value valueId) z with
+                        | Some (valueSSA, valueType) ->
+                            match lookupModuleLevelMutable name z with
+                            | Some (_, globalName) ->
+                                let addrSSA = freshSynthSSA z
+                                let addrOp = MLIROp.LLVMOp (LLVMOp.AddressOf (addrSSA, GlobalRef.GNamed globalName))
+                                let storeOp = MLIROp.LLVMOp (LLVMOp.Store (valueSSA, addrSSA, valueType, AtomicOrdering.NotAtomic))
+                                emit addrOp z
+                                emit storeOp z
+                                z, TRVoid
+                            | None ->
+                                let z' = bindVarSSA name valueSSA valueType z
+                                z', TRVoid
+                        | None ->
+                            z, TRError (sprintf "Set: value not computed for '%s'" name)
+                    | _ ->
+                        match recallNodeResult (NodeId.value targetId) z,
+                              recallNodeResult (NodeId.value valueId) z with
+                        | Some (targetSSA, _), Some (valueSSA, valueType) ->
+                            let storeOp = MLIROp.LLVMOp (LLVMOp.Store (valueSSA, targetSSA, valueType, AtomicOrdering.NotAtomic))
+                            emit storeOp z
+                            z, TRVoid
+                        | _ ->
+                            z, TRError "Set: target or value not computed"
+                | None ->
+                    z, TRError "Set: target node not found"
+
+            // ─────────────────────────────────────────────────────────────────
+            // Control flow - use collected region ops
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.IfThenElse (guardId, thenId, elseIdOpt) ->
+                let thenKey = (nodeIdVal, regionKindToInt RegionKind.ThenRegion)
+                let elseKey = (nodeIdVal, regionKindToInt RegionKind.ElseRegion)
+
+                // Get guard result from node bindings
+                let condSSA =
+                    match recallNodeResult (NodeId.value guardId) z with
+                    | Some (ssa, _) -> ssa
+                    | None -> freshSynthSSA z  // Fallback
+
+                let thenOps = regionOps.GetValueOrDefault(thenKey, [])
+                let thenResultSSA =
+                    match recallNodeResult (NodeId.value thenId) z with
+                    | Some (ssa, _) -> Some ssa
+                    | None -> None
+
+                let elseOps, elseResultSSA =
+                    match elseIdOpt with
+                    | Some elseId ->
+                        let ops = regionOps.GetValueOrDefault(elseKey, [])
+                        let ssa = match recallNodeResult (NodeId.value elseId) z with
+                                  | Some (s, _) -> Some s
+                                  | None -> None
+                        Some ops, ssa
+                    | None -> None, None
+
+                let resultType =
+                    let mlirType = mapType node.Type
+                    if mlirType = TUnit then None else Some mlirType
+
+                let ops, result = CFWitness.witnessIfThenElse z condSSA thenOps thenResultSSA elseOps elseResultSSA resultType
+                emitAll ops z
+                z, result
+
+            | SemanticKind.WhileLoop (guardId, _bodyId) ->
+                let guardKey = (nodeIdVal, regionKindToInt RegionKind.GuardRegion)
+                let bodyKey = (nodeIdVal, regionKindToInt RegionKind.BodyRegion)
+
+                let condOps = regionOps.GetValueOrDefault(guardKey, [])
+                let bodyOps = regionOps.GetValueOrDefault(bodyKey, [])
+
+                let condResultSSA =
+                    match recallNodeResult (NodeId.value guardId) z with
+                    | Some (ssa, _) -> ssa
+                    | None -> freshSynthSSA z
+
+                // Get iter args from mutability analysis
+                let iterArgs: Val list = []  // TODO: from coeffects
+
+                let ops, result = CFWitness.witnessWhileLoop z condOps condResultSSA bodyOps iterArgs
+                emitAll ops z
+                z, result
+
+            | SemanticKind.ForLoop (_varName, startId, finishId, isUp, _bodyId) ->
+                let bodyKey = (nodeIdVal, regionKindToInt RegionKind.BodyRegion)
+                let bodyOps = regionOps.GetValueOrDefault(bodyKey, [])
+
+                let ivSSA = freshSynthSSA z
+                let startSSA =
+                    match recallNodeResult (NodeId.value startId) z with
+                    | Some (ssa, _) -> ssa
+                    | None -> freshSynthSSA z
+                let stopSSA =
+                    match recallNodeResult (NodeId.value finishId) z with
+                    | Some (ssa, _) -> ssa
+                    | None -> freshSynthSSA z
+
+                // Step is 1 or -1 depending on isUp
+                let stepSSA = freshSynthSSA z
+                let stepVal = if isUp then 1L else -1L
+                let stepOp = MLIROp.ArithOp (ArithOp.ConstI (stepSSA, stepVal, MLIRTypes.index))
+                emit stepOp z
+
+                let iterArgs: Val list = []  // TODO: from coeffects
+
+                let ops, result = CFWitness.witnessForLoop z ivSSA startSSA stopSSA stepSSA bodyOps iterArgs
+                emitAll ops z
+                z, result
+
+            | SemanticKind.Match (scrutineeId, cases) ->
+                // Get scrutinee SSA
+                let scrutineeSSA, scrutineeType =
+                    match recallNodeResult (NodeId.value scrutineeId) z with
+                    | Some (ssa, ty) -> ssa, ty
+                    | None -> freshSynthSSA z, TPtr
+
+                // Build cases with collected region ops
+                // Use case index as tag (actual tag resolution would come from Pattern)
+                let caseOps =
+                    cases
+                    |> List.mapi (fun idx case ->
+                        let caseKey = (nodeIdVal, regionKindToInt (RegionKind.MatchCaseRegion idx))
+                        let ops = regionOps.GetValueOrDefault(caseKey, [])
+                        // case.Body is NodeId (not option)
+                        let resultSSA =
+                            match recallNodeResult (NodeId.value case.Body) z with
+                            | Some (ssa, _) -> Some ssa
+                            | None -> None
+                        (idx, ops, resultSSA))
+
+                let resultType =
+                    let mlirType = mapType node.Type
+                    if mlirType = TUnit then None else Some mlirType
+
+                let ops, result = CFWitness.witnessMatch z scrutineeSSA scrutineeType caseOps resultType
+                emitAll ops z
+                z, result
+
+            // ─────────────────────────────────────────────────────────────────
+            // Other node kinds
+            // ─────────────────────────────────────────────────────────────────
+            | SemanticKind.InterpolatedString _ ->
+                z, TRError "InterpolatedString not yet implemented"
+
+            | SemanticKind.IndexGet (collectionId, indexId) ->
+                match resolveNodeToVal collectionId z, resolveNodeToVal indexId z with
+                | Some collVal, Some indexVal ->
+                    // Determine element type from collection type
+                    let elemType =
+                        match collVal.Type with
+                        | TStruct [TPtr; _] -> TPtr  // Fat pointer - element type unknown, assume ptr
+                        | _ -> TPtr
+                    let ops, result = MemWitness.witnessIndexGet z collVal.SSA collVal.Type indexVal.SSA elemType
+                    emitAll ops z
+                    z, result
+                | _ ->
+                    z, TRError "IndexGet: collection or index not computed"
+
+            | SemanticKind.IndexSet (collectionId, indexId, valueId) ->
+                match resolveNodeToVal collectionId z, resolveNodeToVal indexId z, resolveNodeToVal valueId z with
+                | Some collVal, Some indexVal, Some valV ->
+                    let ops, result = MemWitness.witnessIndexSet z collVal.SSA indexVal.SSA valV.SSA valV.Type
+                    emitAll ops z
+                    z, result
+                | _ ->
+                    z, TRError "IndexSet: collection, index, or value not computed"
+
+            | SemanticKind.AddressOf (exprId, isMutable) ->
+                match resolveNodeToVal exprId z with
+                | Some exprVal ->
+                    let ops, result = MemWitness.witnessAddressOf z exprVal.SSA exprVal.Type isMutable
+                    emitAll ops z
+                    z, result
+                | None ->
+                    z, TRError "AddressOf: expr not computed"
+
+            | SemanticKind.TupleExpr elementIds ->
+                let elements =
+                    elementIds
+                    |> List.choose (fun id -> resolveNodeToVal id z)
+                let ops, result = MemWitness.witnessTupleExpr z elements
+                emitAll ops z
+                z, result
+
+            | SemanticKind.TraitCall (memberName, _typeArgs, argId) ->
+                match resolveNodeToVal argId z with
+                | Some receiverVal ->
+                    let memberType = mapType node.Type
+                    let ops, result = MemWitness.witnessTraitCall z receiverVal.SSA receiverVal.Type memberName memberType
+                    emitAll ops z
+                    z, result
+                | None ->
+                    z, TRError "TraitCall: receiver not computed"
+
+            | SemanticKind.ArrayExpr elementIds ->
+                let elements =
+                    elementIds
+                    |> List.choose (fun id -> resolveNodeToVal id z)
+                let elemType =
+                    match elements with
+                    | first :: _ -> first.Type
+                    | [] -> TPtr
+                let ops, result = MemWitness.witnessArrayExpr z elements elemType
+                emitAll ops z
+                z, result
+
+            | SemanticKind.ListExpr elementIds ->
+                let elements =
+                    elementIds
+                    |> List.choose (fun id -> resolveNodeToVal id z)
+                let elemType =
+                    match elements with
+                    | first :: _ -> first.Type
+                    | [] -> TPtr
+                let ops, result = MemWitness.witnessListExpr z elements elemType
+                emitAll ops z
+                z, result
+
+            | SemanticKind.FieldGet (exprId, fieldName) ->
+                match resolveNodeToVal exprId z with
+                | Some exprVal ->
+                    // TODO: Resolve field index from type info
+                    let fieldIndex = 0  // Placeholder
+                    let fieldType = mapType node.Type
+                    let ops, result = MemWitness.witnessFieldGet z exprVal.SSA exprVal.Type fieldIndex fieldType
+                    emitAll ops z
+                    z, result
+                | None ->
+                    z, TRError (sprintf "FieldGet '%s': expr not computed" fieldName)
+
+            | SemanticKind.FieldSet (exprId, fieldName, valueId) ->
+                match resolveNodeToVal exprId z, resolveNodeToVal valueId z with
+                | Some exprVal, Some valV ->
+                    // TODO: Resolve field index from type info
+                    let fieldIndex = 0  // Placeholder
+                    let ops, result = MemWitness.witnessFieldSet z exprVal.SSA exprVal.Type fieldIndex valV.SSA
+                    emitAll ops z
+                    z, result
+                | _ ->
+                    z, TRError (sprintf "FieldSet '%s': expr or value not computed" fieldName)
+
+            | SemanticKind.PatternBinding name ->
+                match Map.tryFind name z.State.VarBindings with
+                | Some (ssa, ty) ->
+                    z, TRValue { SSA = ssa; Type = ty }
+                | None ->
+                    z, TRError (sprintf "PatternBinding '%s' not found" name)
+
+            | SemanticKind.UnionCase (_caseName, caseIndex, payloadOpt) ->
+                let payload =
+                    match payloadOpt with
+                    | Some payloadId -> resolveNodeToVal payloadId z
+                    | None -> None
+                let unionType = mapType node.Type
+                let ops, result = MemWitness.witnessUnionCase z caseIndex payload unionType
+                emitAll ops z
+                z, result
+
+            | SemanticKind.Error msg ->
+                z, TRError msg
+
+            | kind ->
+                z, TRError (sprintf "SemanticKind not implemented: %A" kind)
+
+        // Bind result to node for future reference
+        match result with
+        | TRValue { SSA = ssa; Type = ty } ->
+            bindNodeResult nodeIdVal ssa ty z'
+        | TRError msg when collectErrors ->
+            errors <- msg :: errors
+            z'
+        | _ ->
+            z'
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // CREATE ZIPPER AND RUN TRAVERSAL
+    // ═══════════════════════════════════════════════════════════════════════
+    match fromEntryPoint graph ssaAssignment analysisResult platformResolution entryPointLambdaIds with
+    | None ->
+        "", ["No entry point found in graph"]
+
+    | Some initialZipper ->
+        // Run traversal with SCF hooks
+        let finalZipper =
+            Traversal.foldWithSCFRegions
+                LambdaWitness.preBindParams
+                (Some scfHook)
+                witnessNode
+                initialZipper
+                graph
+
+        // ═══════════════════════════════════════════════════════════════════
+        // SERIALIZE OUTPUT
+        // ═══════════════════════════════════════════════════════════════════
+
+        // Collect string constants as globals
+        // Name must match GString serialization: @str_<hash>
+        let stringOps =
+            getStrings finalZipper
+            |> List.map (fun (hash, content, len) ->
+                let globalName = sprintf "str_%u" hash
+                MLIROp.LLVMOp (LLVMOp.GlobalString (globalName, content, len)))
+
+        // Get top-level ops (functions)
+        let topLevelOps = getTopLevelOps finalZipper
+
+        // Get _start wrapper if freestanding mode
+        let startWrapperOps =
+            match getStartWrapperOps finalZipper with
+            | Some ops -> ops
+            | None -> []
+
+        // Combine and serialize: strings, _start (if any), then user functions
+        let allOps = stringOps @ startWrapperOps @ (List.rev topLevelOps)
+        let body = opsToString allOps
+        let mlir = sprintf "module {\n%s}\n" body
+
+        mlir, List.rev errors
+
+/// Transfer a SemanticGraph to MLIR text
 let transferGraph (graph: SemanticGraph) (isFreestanding: bool) : string =
     fst (transferGraphCore graph isFreestanding false)
 
-/// Transfer a graph and return both MLIR text and any errors
+/// Transfer with diagnostics
 let transferGraphWithDiagnostics (graph: SemanticGraph) (isFreestanding: bool) : string * string list =
     transferGraphCore graph isFreestanding true

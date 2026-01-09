@@ -1,291 +1,143 @@
 /// TypeMapping - FNCS NativeType to MLIR type conversion
 ///
 /// Maps FNCS native types to their MLIR representations.
-/// Handles primitives, functions, tuples, options, lists, and arrays.
+/// Uses structured MLIRType from Alex.Dialects.Core.Types.
 ///
 /// FNCS-native: Uses NativeType from FSharp.Native.Compiler.Checking.Native
-///
-/// NTU Collection Architecture:
-/// - FatPointer: ptr + length, both platform-word sized
-/// - NTUCompound: n × platform-word sized components
-/// - These are resolved via platform context (quotations)
 module Alex.CodeGeneration.TypeMapping
 
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
-open Alex.CodeGeneration.MLIRTypes
+open Alex.Dialects.Core.Types
 
-//-------------------------------------------------------------------------
-// Platform Context for NTU Layout Resolution
-//-------------------------------------------------------------------------
+// ═══════════════════════════════════════════════════════════════════════════
+// TYPE CONSTANTS
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Platform context carries quotation-resolved values
-/// Currently defaults to x86_64 (64-bit words)
-type PlatformContext = {
-    /// Word size in bits (32 or 64)
-    WordSize: int
-    /// Pointer alignment in bytes
-    PointerAlign: int
-}
+/// Native string type: fat pointer = {ptr, len: i64}
+let NativeStrType = TStruct [TPtr; TInt I64]
 
-/// Default platform context for x86_64
-let defaultPlatform : PlatformContext = {
-    WordSize = 64
-    PointerAlign = 8
-}
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN TYPE MAPPING
+// ═══════════════════════════════════════════════════════════════════════════
 
-/// Resolve a TypeLayout to concrete size and alignment
-/// Uses platform quotations for NTU types
-let resolveLayout (ctx: PlatformContext) (layout: TypeLayout) : (int * int) option =
-    match layout with
-    | TypeLayout.Inline(size, align) when size >= 0 && align > 0 ->
-        Some (size, align)
-    | TypeLayout.Inline _ ->
-        // Unknown size - cannot resolve statically
-        None
-    | TypeLayout.PlatformWord ->
-        // Platform word: wordSize bits, wordSize/8 alignment
-        let bytes = ctx.WordSize / 8
-        Some (bytes, bytes)
-    | TypeLayout.FatPointer ->
-        // Fat pointer: ptr + length, both platform-word sized
-        // Total = 2 × wordSize, aligned to word
-        let wordBytes = ctx.WordSize / 8
-        Some (wordBytes * 2, wordBytes)
-    | TypeLayout.NTUCompound n ->
-        // NTU compound: n × platform-word components
-        let wordBytes = ctx.WordSize / 8
-        Some (wordBytes * n, wordBytes)
-    | TypeLayout.Reference _ ->
-        // Reference types are pointer-sized
-        let bytes = ctx.WordSize / 8
-        Some (bytes, bytes)
-    | TypeLayout.Opaque ->
-        // Cannot resolve opaque layouts
-        None
-
-/// Get MLIR integer type for platform word
-let platformWordType (ctx: PlatformContext) : string =
-    match ctx.WordSize with
-    | 32 -> "i32"
-    | 64 -> "i64"
-    | n -> sprintf "i%d" n
-
-/// Get MLIR struct type for fat pointer (ptr + length)
-let fatPointerType (ctx: PlatformContext) : string =
-    let wordType = platformWordType ctx
-    sprintf "!llvm.struct<(ptr, %s)>" wordType
-
-/// Convert a FNCS NativeType to its MLIR representation
-let rec nativeTypeToMLIR (ty: NativeType) : string =
+/// Map FNCS NativeType to structured MLIRType
+/// This is the canonical conversion used throughout Alex
+let rec mapNativeType (ty: NativeType) : MLIRType =
     match ty with
-    // Function types: domain -> range
-    | NativeType.TFun(domain, range) ->
-        let paramType = nativeTypeToMLIR domain
-        let retType = nativeTypeToMLIR range
-        sprintf "(%s) -> %s" paramType retType
-
-    // Tuple types
-    | NativeType.TTuple(elements, _isStruct) ->
-        let elemTypes =
-            elements
-            |> List.map nativeTypeToMLIR
-            |> String.concat ", "
-        sprintf "tuple<%s>" elemTypes
-
-    // Byref types (pointer-like)
-    | NativeType.TByref(_, _) ->
-        "!llvm.ptr"
-
-    // Native pointers
-    | NativeType.TNativePtr _ ->
-        "!llvm.ptr"
-
-    // Type applications (e.g., int, string, option<'T>, list<'T>)
-    | NativeType.TApp(conRef, args) ->
-        mapTypeApp conRef args
-
-    // Type variables (generic parameters)
-    | NativeType.TVar _ ->
-        // For now, assume generic types are pointers (common in Alloy)
-        "!llvm.ptr"
-
-    // Forall types (polymorphic)
-    | NativeType.TForall(_, body) ->
-        // Instantiate body (generic erased at runtime)
-        nativeTypeToMLIR body
-
-    // Measure types (used for UMX phantom types)
-    | NativeType.TMeasure _ ->
-        // Measures are erased at runtime, use the underlying type
-        "i32"
-
-    // Anonymous record types
-    | NativeType.TAnon(fields, _isStruct) ->
-        let fieldTypes =
-            fields
-            |> List.map (fun (_, ty) -> nativeTypeToMLIR ty)
-            |> String.concat ", "
-        sprintf "!llvm.struct<(%s)>" fieldTypes
-
-    // Record types - should not appear, use TApp with tycon.Fields instead
-    // If we get here, there's a bug in type construction
-    | NativeType.TRecord(tc, _) ->
-        sprintf "!llvm.struct<()> /* ERROR: unexpected TRecord '%s' - use TApp */" tc.Name
-
-    // Union types (discriminated unions)
-    | NativeType.TUnion(_, _cases) ->
-        // For now, represent as tagged union (tag + max payload)
-        "!llvm.struct<(i32, i64)>"
-
-    // Error types (shouldn't reach code generation)
-    | NativeType.TError _ ->
-        "i32"
-
-/// Map a type constructor application to MLIR
-/// Uses default platform context (x86_64) for NTU type resolution
-and mapTypeApp (conRef: TypeConRef) (args: NativeType list) : string =
-    mapTypeAppWithContext defaultPlatform conRef args
-
-/// Map a type constructor with explicit platform context
-/// Prefers NTUKind discrimination over string matching for type resolution
-and mapTypeAppWithContext (ctx: PlatformContext) (conRef: TypeConRef) (args: NativeType list) : string =
-    // First, check if we have NTUKind metadata - this is the authoritative source
-    match conRef.NTUKind with
-    | Some kind -> mapNTUKind ctx kind args
-    | None -> mapByName ctx conRef args
-
-/// Map NTUKind to MLIR type - authoritative NTU resolution
-and mapNTUKind (ctx: PlatformContext) (kind: NTUKind) (args: NativeType list) : string =
-    match kind with
-    // Platform-word sized integers (resolved via platform quotations)
-    | NTUKind.NTUint -> platformWordType ctx   // Signed platform word
-    | NTUKind.NTUuint -> platformWordType ctx  // Unsigned platform word
-    | NTUKind.NTUnint -> platformWordType ctx  // Native int (pointer-sized)
-    | NTUKind.NTUunint -> platformWordType ctx // Native uint
-
-    // Size types (like size_t, ptrdiff_t)
-    | NTUKind.NTUsize -> platformWordType ctx  // size_t equivalent
-    | NTUKind.NTUdiff -> platformWordType ctx  // ptrdiff_t equivalent
-
-    // Fixed-width integers
-    | NTUKind.NTUint8 -> "i8"
-    | NTUKind.NTUint16 -> "i16"
-    | NTUKind.NTUint32 -> "i32"
-    | NTUKind.NTUint64 -> "i64"
-    | NTUKind.NTUuint8 -> "i8"
-    | NTUKind.NTUuint16 -> "i16"
-    | NTUKind.NTUuint32 -> "i32"
-    | NTUKind.NTUuint64 -> "i64"
-
-    // Floating point
-    | NTUKind.NTUfloat32 -> "f32"
-    | NTUKind.NTUfloat64 -> "f64"
-
-    // Pointer type (no payload - union case takes no data)
-    | NTUKind.NTUptr -> "!llvm.ptr"
-
-    // Function pointer type (pointer-sized, used for callbacks)
-    | NTUKind.NTUfnptr -> "!llvm.ptr"
-
-    // String type (fat pointer: ptr + length)
-    | NTUKind.NTUstring -> fatPointerType ctx
-
-    // Boolean
-    | NTUKind.NTUbool -> "i1"
-
-    // Unit (void)
-    | NTUKind.NTUunit -> "()"
-
-    // Character (Unicode codepoint, 32-bit)
-    | NTUKind.NTUchar -> "i32"
-
-    // Decimal (128-bit, represented as struct of two i64)
-    | NTUKind.NTUdecimal -> "!llvm.struct<(i64, i64)>"
-
-    // Compound value types
-    | NTUKind.NTUuuid -> "!llvm.struct<(i64, i64)>"  // 128-bit UUID as two i64
-    | NTUKind.NTUdatetime -> "i64"  // 64-bit ticks
-    | NTUKind.NTUtimespan -> "i64"  // 64-bit duration in ticks
-
-    // Other types - fallback to pointer (most non-primitive types are reference-like)
-    | NTUKind.NTUother -> "!llvm.ptr"
-
-/// Fallback mapping by name for non-NTU types
-and mapByName (ctx: PlatformContext) (conRef: TypeConRef) (args: NativeType list) : string =
-    match conRef.Name with
-    // Legacy fixed-width integral types (for backwards compat)
-    | "int32" | "Int32" -> "i32"
-    | "int64" | "Int64" -> "i64"
-    | "int16" | "Int16" -> "i16"
-    | "int8" | "sbyte" | "SByte" -> "i8"
-    | "uint32" | "UInt32" -> "i32"
-    | "uint64" | "UInt64" -> "i64"
-    | "uint16" | "UInt16" -> "i16"
-    | "uint8" | "byte" | "Byte" -> "i8"
-
-    // Boolean
-    | "bool" | "Boolean" -> "i1"
-
-    // Floating point
-    | "float32" | "Single" -> "f32"
-    | "float" | "float64" | "Double" -> "f64"
-
-    // Strings - fallback for types without NTUKind
-    | "string" | "String" -> fatPointerType ctx
-
-    // Native pointers
-    | "nativeint" | "IntPtr" -> "!llvm.ptr"
-    | "unativeint" | "UIntPtr" -> "!llvm.ptr"
-    | "nativeptr" | "Ptr" -> "!llvm.ptr"
-
-    // Char (Unicode codepoint)
-    | "char" | "Char" -> "i32"
-
-    // Unit / Void
-    | "unit" | "Unit" | "Void" -> "()"
-
-    // Option type - value type in native (tag + payload)
-    | "option" | "Option" | "voption" | "ValueOption" ->
-        let innerType =
+    | NativeType.TApp(tycon, args) ->
+        match tycon.Name with
+        | "unit" -> TInt I32  // Unit represented as i32 (returns 0)
+        | "bool" -> TInt I1
+        | "int8" | "sbyte" -> TInt I8
+        | "uint8" | "byte" -> TInt I8
+        | "int16" -> TInt I16
+        | "uint16" -> TInt I16
+        | "int" | "int32" -> TInt I32
+        | "uint" | "uint32" -> TInt I32
+        | "int64" -> TInt I64
+        | "uint64" -> TInt I64
+        | "nativeint" -> TPtr
+        | "unativeint" -> TPtr
+        | "float32" | "single" -> TFloat F32
+        | "float" | "double" -> TFloat F64
+        | "char" -> TInt I32  // Unicode codepoint
+        | "string" -> NativeStrType
+        | "Ptr" | "nativeptr" -> TPtr
+        | "array" -> NativeStrType  // Fat pointer {ptr, len}
+        | "list" -> failwithf "list type not yet implemented: %A" ty
+        | "option" ->
             match args with
-            | [arg] -> nativeTypeToMLIR arg
-            | _ -> "i32"
-        sprintf "!llvm.struct<(i1, %s)>" innerType  // tag + payload
+            | [innerTy] -> TStruct [TInt I1; mapNativeType innerTy]
+            | _ -> failwithf "option type requires exactly one type argument: %A" ty
+        | "voption" ->
+            match args with
+            | [innerTy] -> TStruct [TInt I1; mapNativeType innerTy]
+            | _ -> failwithf "voption type requires exactly one type argument: %A" ty
+        | _ ->
+            // Check FieldCount for record types
+            if tycon.FieldCount > 0 then
+                match tycon.Layout with
+                | TypeLayout.Inline (size, align) when size > 0 && align > 0 ->
+                    if size = 16 && align = 8 && tycon.FieldCount = 2 then
+                        TStruct [TPtr; TPtr]
+                    else
+                        failwithf "Record '%s' with %d fields needs SemanticGraph for exact types (layout: %d, %d)"
+                            tycon.Name tycon.FieldCount size align
+                | TypeLayout.NTUCompound n when n = tycon.FieldCount ->
+                    TStruct (List.replicate n TPtr)
+                | _ ->
+                    failwithf "Record '%s' has unsupported layout: %A" tycon.Name tycon.Layout
+            else
+                match tycon.Layout with
+                | TypeLayout.Inline (size, _) when size > 8 ->
+                    TStruct [TInt I32; TInt I64]  // Tagged union
+                | TypeLayout.Inline (size, align) when size > 0 ->
+                    failwithf "TApp with unknown Inline layout (%d, %d): %s" size align tycon.Name
+                | TypeLayout.FatPointer ->
+                    NativeStrType
+                | TypeLayout.PlatformWord ->
+                    match tycon.NTUKind with
+                    | Some NTUKind.NTUptr | Some NTUKind.NTUfnptr -> TPtr
+                    | Some NTUKind.NTUint | Some NTUKind.NTUuint
+                    | Some NTUKind.NTUnint | Some NTUKind.NTUunint
+                    | Some NTUKind.NTUsize | Some NTUKind.NTUdiff -> TIndex
+                    | None -> TIndex
+                    | Some kind -> failwithf "Unexpected NTUKind %A with PlatformWord layout: %s" kind tycon.Name
+                | TypeLayout.Opaque ->
+                    failwithf "TApp with Opaque layout - FNCS must resolve type '%s'" tycon.Name
+                | TypeLayout.Reference _ ->
+                    failwithf "Reference type not yet implemented: %s" tycon.Name
+                | TypeLayout.NTUCompound n ->
+                    if n = 2 then TStruct [TPtr; TPtr]
+                    elif n = 1 then TPtr
+                    else failwithf "NTUCompound(%d) not yet implemented for %s" n tycon.Name
+                | TypeLayout.Inline _ ->
+                    failwithf "Unknown inline type '%s' with no fields" tycon.Name
 
-    // Result type
-    | "Result" ->
-        "!llvm.struct<(i32, i64, i64)>"  // tag + ok_payload + error_payload
+    | NativeType.TFun _ -> TStruct [TPtr; TPtr]  // Function pointer + closure
 
-    // List type
-    | "list" | "List" ->
-        "!llvm.ptr"  // Lists are pointers to cons cells
+    | NativeType.TTuple(elements, _) ->
+        TStruct (elements |> List.map mapNativeType)
 
-    // Array type - fat pointer (ptr + length, both platform-word sized)
-    // Uses FatPointer layout, resolved via platform context
-    | "array" | "Array" ->
-        // Array is a fat pointer regardless of element type
-        // The element type is used for pointer arithmetic, not storage
-        fatPointerType ctx
+    | NativeType.TVar tvar ->
+        match tvar.Parent with
+        | TypeParamState.Bound boundTy -> mapNativeType boundTy
+        | TypeParamState.Unbound ->
+            failwithf "Unbound type variable '%s' - type inference incomplete" tvar.Name
 
-    // Span/ReadOnlySpan - also fat pointers (non-owning views)
-    | "Span" | "ReadOnlySpan" ->
-        fatPointerType ctx
+    | NativeType.TByref _ -> TPtr
+    | NativeType.TNativePtr _ -> TPtr
+    | NativeType.TForall(_, body) -> mapNativeType body
 
-    // StackBuffer - stack-allocated array, fat pointer representation
-    | "StackBuffer" ->
-        fatPointerType ctx
+    | NativeType.TRecord(tc, _) ->
+        failwithf "Unexpected TRecord '%s' - use TApp with tycon.Fields" tc.Name
 
-    // Default fallback
-    | _ ->
-        // Check if it's a pointer-like type by name
-        if conRef.Name.Contains("ptr") || conRef.Name.Contains("Ptr") ||
-           conRef.Name.Contains("Buffer") || conRef.Name.Contains("Span") then
-            "!llvm.ptr"
-        else
-            "i32"
+    | NativeType.TUnion _ -> TStruct [TInt I32; TInt I64]  // Tagged union
 
-/// Extract return type from a function type
-/// Walks through curried function type to get the final return type
+    | NativeType.TAnon(fields, _) ->
+        TStruct (fields |> List.map (fun (_, ty) -> mapNativeType ty))
+
+    | NativeType.TMeasure _ ->
+        failwith "Measure type should have been stripped - this is an FNCS issue"
+
+    | NativeType.TError msg ->
+        failwithf "NativeType.TError: %s" msg
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING-BASED TYPE MAPPING (for legacy code)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Convert FNCS NativeType to MLIR type string
+/// Uses Serialize module for structured type → string conversion
+let nativeTypeToMLIR (ty: NativeType) : string =
+    let mlirType = mapNativeType ty
+    Alex.Dialects.Core.Serialize.typeToString mlirType
+
+/// Map a type constructor application to MLIR string
+let mapTypeApp (conRef: TypeConRef) (args: NativeType list) : string =
+    nativeTypeToMLIR (NativeType.TApp(conRef, args))
+
+/// Extract return type from a function type as string
 let getReturnType (ty: NativeType) : string =
     let rec getReturn t =
         match t with
@@ -293,8 +145,7 @@ let getReturnType (ty: NativeType) : string =
         | _ -> t
     nativeTypeToMLIR (getReturn ty)
 
-/// Extract parameter types from a function type
-/// Returns list of MLIR types for each curried parameter
+/// Extract parameter types from a function type as strings
 let getParamTypes (ty: NativeType) : string list =
     let rec extractParams funcType acc =
         match funcType with
@@ -305,12 +156,15 @@ let getParamTypes (ty: NativeType) : string list =
             List.rev acc
     extractParams ty []
 
-/// Check if a type is a primitive MLIR type (i32, i64, f32, etc.)
+// ═══════════════════════════════════════════════════════════════════════════
+// TYPE PREDICATES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check if a type is a primitive MLIR type
 let isPrimitive (mlirType: string) : bool =
     match mlirType with
     | "i1" | "i8" | "i16" | "i32" | "i64" -> true
     | "f32" | "f64" -> true
-    | "()" -> true
     | _ -> false
 
 /// Check if a type is an integer type
@@ -338,188 +192,3 @@ let integerBitWidth (mlirType: string) : int option =
     | "i32" -> Some 32
     | "i64" -> Some 64
     | _ -> None
-
-/// Get the appropriate zero constant for a type
-let zeroConstant (mlirType: string) : string =
-    match mlirType with
-    | "i1" -> "0"
-    | "i8" | "i16" | "i32" | "i64" -> "0"
-    | "f32" -> "0.0"
-    | "f64" -> "0.0"
-    | _ -> "0"
-
-/// Get the appropriate one constant for a type
-let oneConstant (mlirType: string) : string =
-    match mlirType with
-    | "i1" -> "1"
-    | "i8" | "i16" | "i32" | "i64" -> "1"
-    | "f32" -> "1.0"
-    | "f64" -> "1.0"
-    | _ -> "1"
-
-// ═══════════════════════════════════════════════════════════════════════════
-// NativeType to MLIRType Conversion
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Map FNCS NativeType to MLIR type
-/// This is the canonical conversion used throughout Alex
-///
-/// ARCHITECTURAL PRINCIPLE: NEVER silently fall back to Pointer.
-/// Unknown types MUST produce TypeError which propagates up the pipeline.
-let rec mapNativeType (ty: NativeType) : MLIRType =
-    match ty with
-    // Applied types - match on type constructor name and layout
-    | NativeType.TApp(tycon, args) ->
-        match tycon.Name with
-        | "unit" -> Unit
-        | "bool" -> Integer I1
-        | "int8" | "sbyte" -> Integer I8
-        | "uint8" | "byte" -> Integer I8
-        | "int16" -> Integer I16
-        | "uint16" -> Integer I16
-        | "int" | "int32" -> Integer I32
-        | "uint" | "uint32" -> Integer I32
-        | "int64" -> Integer I64
-        | "uint64" -> Integer I64
-        | "nativeint" -> Pointer  // Native int IS a pointer type
-        | "unativeint" -> Pointer
-        | "float32" | "single" -> Float F32
-        | "float" | "double" -> Float F64
-        | "char" -> Integer I32  // Unicode codepoint
-        | "string" -> NativeStrType  // Fat pointer {ptr: *u8, len: i64}
-        | "Ptr" | "nativeptr" -> Pointer
-        | "array" -> NativeStrType  // Fat pointer {ptr, len} - same as string
-        | "list" -> TypeError (sprintf "list type not yet implemented: %A" ty)
-        | "option" ->
-            // Value type: tag (i1) + payload
-            match args with
-            | [innerTy] -> Struct [Integer I1; mapNativeType innerTy]
-            | _ -> TypeError (sprintf "option type requires exactly one type argument: %A" ty)
-        | "voption" ->
-            match args with
-            | [innerTy] -> Struct [Integer I1; mapNativeType innerTy]
-            | _ -> TypeError (sprintf "voption type requires exactly one type argument: %A" ty)
-        | _ ->
-            // Check FieldCount for record types - field info is looked up via SemanticGraph.Types
-            // For TypeMapping (no graph access), we use layout-based inference for structs
-            if tycon.FieldCount > 0 then
-                // Record type - use layout to determine struct representation
-                // The actual field types are only available via SemanticGraph.Types lookup
-                // For code generation, we need the graph; here we use layout as approximation
-                match tycon.Layout with
-                | TypeLayout.Inline (size, align) when size > 0 && align > 0 ->
-                    // For most records, use the computed layout
-                    // 2 platform words = struct of 2 pointers (common for 2-field records with nativeint)
-                    if size = 16 && align = 8 && tycon.FieldCount = 2 then
-                        Struct [Pointer; Pointer]
-                    else
-                        // Other layouts - would need graph for exact field types
-                        TypeError (sprintf "Record '%s' with %d fields needs SemanticGraph for exact types (layout: %d, %d)"
-                            tycon.Name tycon.FieldCount size align)
-                | TypeLayout.NTUCompound n when n = tycon.FieldCount ->
-                    // n platform words as n pointers
-                    Struct (List.replicate n Pointer)
-                | _ ->
-                    TypeError (sprintf "Record '%s' has unsupported layout: %A" tycon.Name tycon.Layout)
-            else
-                // Not a record - check layout for other type kinds
-                match tycon.Layout with
-                | TypeLayout.Inline (size, _align) when size > 8 ->
-                    // User-defined DU - use tagged union struct (tag + payload)
-                    Struct [Integer I32; Integer I64]
-                | TypeLayout.Inline (size, align) when size > 0 ->
-                    // Other known inline type with specific size
-                    TypeError (sprintf "TApp with unknown Inline layout (%d, %d): %s" size align tycon.Name)
-                | TypeLayout.FatPointer ->
-                    NativeStrType  // Fat pointer {ptr, len}
-                | TypeLayout.PlatformWord ->
-                    // Platform word: check NTUKind to distinguish pointers from integers
-                    match tycon.NTUKind with
-                    // Pointer types → !llvm.ptr
-                    | Some NTUKind.NTUptr | Some NTUKind.NTUfnptr ->
-                        Pointer
-                    // Platform integer types → index
-                    | Some NTUKind.NTUint | Some NTUKind.NTUuint
-                    | Some NTUKind.NTUnint | Some NTUKind.NTUunint
-                    | Some NTUKind.NTUsize | Some NTUKind.NTUdiff ->
-                        Index
-                    // No NTUKind = user-defined handle type (Signal, Effect, Memo) → index
-                    | None ->
-                        Index
-                    // Fixed-width types should NOT have PlatformWord layout
-                    | Some NTUKind.NTUint8 | Some NTUKind.NTUint16 | Some NTUKind.NTUint32 | Some NTUKind.NTUint64
-                    | Some NTUKind.NTUuint8 | Some NTUKind.NTUuint16 | Some NTUKind.NTUuint32 | Some NTUKind.NTUuint64
-                    | Some NTUKind.NTUfloat32 | Some NTUKind.NTUfloat64 ->
-                        TypeError (sprintf "Fixed-width type '%s' has PlatformWord layout - FNCS type definition error" tycon.Name)
-                    // Other types should NOT have PlatformWord layout
-                    | Some NTUKind.NTUstring | Some NTUKind.NTUbool | Some NTUKind.NTUchar | Some NTUKind.NTUunit
-                    | Some NTUKind.NTUdecimal | Some NTUKind.NTUuuid | Some NTUKind.NTUdatetime | Some NTUKind.NTUtimespan
-                    | Some NTUKind.NTUother ->
-                        TypeError (sprintf "Type '%s' with NTUKind %A should not have PlatformWord layout" tycon.Name tycon.NTUKind)
-                | TypeLayout.Opaque ->
-                    // CRITICAL: Opaque layout means FNCS doesn't know the type structure
-                    // This is an FNCS issue - the type definition wasn't resolved
-                    TypeError (sprintf "TApp with Opaque layout - FNCS must resolve type '%s'" tycon.Name)
-                | TypeLayout.Reference _ ->
-                    TypeError (sprintf "Reference type not yet implemented: %s" tycon.Name)
-                | TypeLayout.NTUCompound n ->
-                    // NTU compound: n platform words
-                    if n = 2 then Struct [Pointer; Pointer]
-                    elif n = 1 then Pointer
-                    else TypeError (sprintf "NTUCompound(%d) not yet implemented for %s" n tycon.Name)
-                | TypeLayout.Inline _ ->
-                    // Inline but size <= 8 and not a record - treat as single value
-                    TypeError (sprintf "Unknown inline type '%s' with no fields" tycon.Name)
-
-    // Function types - function pointer + closure environment
-    | NativeType.TFun _ -> Struct [Pointer; Pointer]
-
-    // Tuple types - struct of elements
-    | NativeType.TTuple(elements, isStruct) ->
-        let elementTypes = elements |> List.map mapNativeType
-        // Check for any errors in element types
-        let errors = elementTypes |> List.choose (function TypeError msg -> Some msg | _ -> None)
-        if not (List.isEmpty errors) then
-            TypeError (sprintf "Tuple contains type errors: %s" (String.concat "; " errors))
-        else
-            Struct elementTypes
-
-    // Type variables - check if bound to a concrete type
-    | NativeType.TVar tvar ->
-        match tvar.Parent with
-        | TypeParamState.Bound boundTy -> mapNativeType boundTy
-        | TypeParamState.Unbound ->
-            TypeError (sprintf "Unbound type variable '%s' - type inference incomplete" tvar.Name)
-
-    // Byref types - pointer to the inner type
-    | NativeType.TByref _ -> Pointer
-
-    // Native pointers - these ARE pointers
-    | NativeType.TNativePtr _ -> Pointer
-
-    // Forall types - look at body
-    | NativeType.TForall(_, body) -> mapNativeType body
-
-    // Record types - should not appear, use TApp with tycon.Fields instead
-    // If we get here, there's a bug in type construction
-    | NativeType.TRecord(tc, _) ->
-        TypeError (sprintf "Unexpected TRecord '%s' - use TApp with tycon.Fields" tc.Name)
-
-    // Union types - tagged union struct (tag: i32, payload: i64)
-    | NativeType.TUnion _ -> Struct [Integer I32; Integer I64]
-
-    // Anonymous record types - map to actual struct representation
-    | NativeType.TAnon(fields, _isStruct) ->
-        let fieldTypes = fields |> List.map (fun (_, ty) -> mapNativeType ty)
-        let errors = fieldTypes |> List.choose (function TypeError msg -> Some msg | _ -> None)
-        if not (List.isEmpty errors) then
-            TypeError (sprintf "Anonymous record contains type errors: %s" (String.concat "; " errors))
-        else
-            Struct fieldTypes
-
-    // Measure types - look at the underlying type
-    | NativeType.TMeasure _ ->
-        TypeError "Measure type should have been stripped - this is an FNCS issue"
-
-    // Error type - propagate the error
-    | NativeType.TError msg -> TypeError (sprintf "NativeType.TError: %s" msg)

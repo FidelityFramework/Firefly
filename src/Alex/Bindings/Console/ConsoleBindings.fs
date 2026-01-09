@@ -1,455 +1,482 @@
-/// ConsoleBindings - Platform-specific console I/O bindings (witness-based)
+/// ConsoleBindings - Platform-specific console I/O bindings
 ///
-/// ARCHITECTURAL FOUNDATION (December 2025):
-/// Uses the codata accumulator pattern from MLIRZipper.
-/// Bindings are witness functions that take primitive info and zipper,
-/// returning an updated zipper with the witnessed MLIR operations.
+/// ARCHITECTURAL PRINCIPLE (January 2026):
+/// Bindings RETURN structured MLIROp lists - they do NOT emit.
+/// Uses dialect templates for all operations. ZERO sprintf.
 module Alex.Bindings.Console.ConsoleBindings
 
-open Alex.CodeGeneration.MLIRTypes
-open Alex.Traversal.MLIRZipper
+open Alex.Dialects.Core.Types
+open Alex.Dialects.Arith.Templates
+open Alex.Dialects.LLVM.Templates
+open Alex.Dialects.SCF.Templates
+open Alex.Traversal.PSGZipper
+open Alex.Bindings.PlatformTypes
 open Alex.Bindings.BindingTypes
 
 // ===================================================================
-// Platform Data: Syscall numbers and conventions
+// Syscall Numbers
 // ===================================================================
 
 module SyscallData =
-    /// Linux x86-64 syscall numbers
-    let linuxSyscalls = Map [
-        "read", 0L
-        "write", 1L
-    ]
+    let linuxWrite = 1L
+    let linuxRead = 0L
+    let macosWrite = 0x2000004L
+    let macosRead = 0x2000003L
 
-    /// macOS syscall numbers (with BSD 0x2000000 offset for x86-64)
-    let macosSyscalls = Map [
-        "read", 0x2000003L
-        "write", 0x2000004L
-    ]
-
-    let getSyscallNumber (os: OSFamily) (name: string) : int64 option =
+    let getWriteSyscall (os: OSFamily) =
         match os with
-        | Linux -> Map.tryFind name linuxSyscalls
-        | MacOS -> Map.tryFind name macosSyscalls
-        | _ -> None
+        | Linux -> linuxWrite
+        | MacOS -> macosWrite
+        | _ -> linuxWrite
+
+    let getReadSyscall (os: OSFamily) =
+        match os with
+        | Linux -> linuxRead
+        | MacOS -> macosRead
+        | _ -> linuxRead
 
 // ===================================================================
-// Helper Witness Functions
+// Helper: Build syscall via inline asm
 // ===================================================================
 
-/// Witness sign extension (extsi) if needed
-let witnessExtSIIfNeeded (ssaName: string) (fromType: MLIRType) (toWidth: IntegerBitWidth) (zipper: MLIRZipper) : string * MLIRZipper =
-    match fromType with
-    | Integer fromWidth when fromWidth <> toWidth ->
-        let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
-        let fromStr = Serialize.integerBitWidth fromWidth
-        let toStr = Serialize.integerBitWidth toWidth
-        let text = sprintf "%s = arith.extsi %s : %s to %s" resultSSA ssaName fromStr toStr
-        resultSSA, MLIRZipper.witnessOpWithResult text resultSSA (Integer toWidth) zipper'
-    | _ ->
-        // No extension needed
-        ssaName, zipper
+/// Helper: wrap SSA as i64 typed arg (syscall convention)
+let inline private i64Arg (ssa: SSA) = (ssa, MLIRTypes.i64)
 
-/// Witness truncation (trunci)
-let witnessTruncI (ssaName: string) (fromType: MLIRType) (toWidth: IntegerBitWidth) (zipper: MLIRZipper) : string * MLIRZipper =
-    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
-    let fromStr = Serialize.mlirType fromType
-    let toStr = Serialize.integerBitWidth toWidth
-    let text = sprintf "%s = arith.trunci %s : %s to %s" resultSSA ssaName fromStr toStr
-    resultSSA, MLIRZipper.witnessOpWithResult text resultSSA (Integer toWidth) zipper'
+/// Helper: wrap SSA as ptr typed arg
+let inline private ptrArg (ssa: SSA) = (ssa, MLIRTypes.ptr)
 
-// ===================================================================
-// MLIR Generation for Console Primitives (Witness-Based)
-// ===================================================================
-
-/// Witness write syscall for Unix-like systems (Linux, macOS)
-let witnessUnixWriteSyscall (syscallNum: int64) (fd: string) (fdType: MLIRType) (buf: string) (bufType: MLIRType) (count: string) (countType: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
-    // Extend fd to i64 if needed
-    let fdExt, zipper1 = witnessExtSIIfNeeded fd fdType I64 zipper
-
-    // Extend count to i64 if needed
-    let countExt, zipper2 = witnessExtSIIfNeeded count countType I64 zipper1
-
-    // Witness syscall number constant
-    let sysNumSSA, zipper3 = MLIRZipper.witnessConstant syscallNum I64 zipper2
-
-    // Witness syscall: write(fd, buf, count)
-    // rax = syscall number, rdi = fd, rsi = buf, rdx = count
-    // Buffer type can be !llvm.ptr or i64 (after ptrtoint conversion)
-    let bufTypeStr = Serialize.mlirType bufType
-    let args = [
-        (fdExt, "i64")
-        (buf, bufTypeStr)
-        (countExt, "i64")
+/// Generate syscall with up to 3 args (fd, buf, count)
+let buildSyscall3 (z: PSGZipper) (sysNum: int64) (fd: SSA) (buf: SSA) (count: SSA) : MLIROp list * SSA =
+    let sysNumSSA = freshSynthSSA z
+    let resultSSA = freshSynthSSA z
+    let ops = [
+        MLIROp.ArithOp (constI sysNumSSA sysNum MLIRTypes.i64)
+        MLIROp.LLVMOp (syscall resultSSA (int sysNum) [i64Arg sysNumSSA; i64Arg fd; ptrArg buf; i64Arg count])
     ]
-    MLIRZipper.witnessSyscall sysNumSSA args (Integer I64) zipper3
-
-/// Witness read syscall for Unix-like systems (Linux, macOS)
-let witnessUnixReadSyscall (syscallNum: int64) (fd: string) (fdType: MLIRType) (buf: string) (bufType: MLIRType) (maxCount: string) (countType: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
-    // Extend fd to i64 if needed
-    let fdExt, zipper1 = witnessExtSIIfNeeded fd fdType I64 zipper
-
-    // Extend count to i64 if needed
-    let countExt, zipper2 = witnessExtSIIfNeeded maxCount countType I64 zipper1
-
-    // Witness syscall number constant
-    let sysNumSSA, zipper3 = MLIRZipper.witnessConstant syscallNum I64 zipper2
-
-    // Witness syscall: read(fd, buf, count)
-    // Buffer type can be !llvm.ptr or i64 (after ptrtoint conversion)
-    let bufTypeStr = Serialize.mlirType bufType
-    let args = [
-        (fdExt, "i64")
-        (buf, bufTypeStr)
-        (countExt, "i64")
-    ]
-    MLIRZipper.witnessSyscall sysNumSSA args (Integer I64) zipper3
+    ops, resultSSA
 
 // ===================================================================
-// Platform Bindings (Witness-Based Pattern)
+// Sys.write / writeBytes binding
 // ===================================================================
 
-/// writeBytes - write bytes to file descriptor
-/// Witness binding from Alloy.Platform.Bindings.writeBytes
-let witnessWriteBytes (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// writeBytes(fd, buf, count) -> bytes written
+let bindWriteBytes (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(fd, fdType); (buf, bufType); (count, countType)] ->
-        match platform.OS with
-        | Linux ->
-            let resultSSA, zipper1 = witnessUnixWriteSyscall 1L fd fdType buf bufType count countType zipper
-            let truncSSA, zipper2 = witnessTruncI resultSSA (Integer I64) I32 zipper1
-            zipper2, WitnessedValue (truncSSA, Integer I32)
-        | MacOS ->
-            let resultSSA, zipper1 = witnessUnixWriteSyscall 0x2000004L fd fdType buf bufType count countType zipper
-            let truncSSA, zipper2 = witnessTruncI resultSSA (Integer I64) I32 zipper1
-            zipper2, WitnessedValue (truncSSA, Integer I32)
-        | Windows ->
-            zipper, NotSupported "Windows console not yet implemented"
-        | _ ->
-            zipper, NotSupported (sprintf "Console not supported on %A" platform.OS)
+    | [fd; buf; count] ->
+        let syscallNum = SyscallData.getWriteSyscall os
+
+        // Extend fd to i64 if needed
+        let fdExt, fdOps =
+            match fd.Type with
+            | TInt I64 -> fd.SSA, []
+            | TInt _ ->
+                let ext = freshSynthSSA z
+                ext, [MLIROp.ArithOp (extSI ext fd.SSA fd.Type MLIRTypes.i64)]
+            | _ -> fd.SSA, []
+
+        // Extend count to i64 if needed
+        let countExt, countOps =
+            match count.Type with
+            | TInt I64 -> count.SSA, []
+            | TInt _ ->
+                let ext = freshSynthSSA z
+                ext, [MLIROp.ArithOp (extSI ext count.SSA count.Type MLIRTypes.i64)]
+            | _ -> count.SSA, []
+
+        // Syscall
+        let sysNumSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let syscallOps = [
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdExt; ptrArg buf.SSA; i64Arg countExt] (Some MLIRTypes.i64))
+        ]
+
+        // Truncate result to i32
+        let truncSSA = freshSynthSSA z
+        let truncOp = MLIROp.ArithOp (truncI truncSSA resultSSA MLIRTypes.i64 MLIRTypes.i32)
+
+        let allOps = fdOps @ countOps @ syscallOps @ [truncOp]
+        BoundOps (allOps, Some { SSA = truncSSA; Type = MLIRTypes.i32 })
     | _ ->
-        zipper, NotSupported "writeBytes requires (fd, buffer, count) arguments"
+        NotSupported "writeBytes requires (fd, buf, count) arguments"
 
-/// readBytes - read bytes from file descriptor
-/// Witness binding from Alloy.Platform.Bindings.readBytes
-let witnessReadBytes (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// readBytes(fd, buf, maxCount) -> bytes read
+let bindReadBytes (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(fd, fdType); (buf, bufType); (maxCount, countType)] ->
-        match platform.OS with
-        | Linux ->
-            let resultSSA, zipper1 = witnessUnixReadSyscall 0L fd fdType buf bufType maxCount countType zipper
-            let truncSSA, zipper2 = witnessTruncI resultSSA (Integer I64) I32 zipper1
-            zipper2, WitnessedValue (truncSSA, Integer I32)
-        | MacOS ->
-            let resultSSA, zipper1 = witnessUnixReadSyscall 0x2000003L fd fdType buf bufType maxCount countType zipper
-            let truncSSA, zipper2 = witnessTruncI resultSSA (Integer I64) I32 zipper1
-            zipper2, WitnessedValue (truncSSA, Integer I32)
-        | Windows ->
-            zipper, NotSupported "Windows console not yet implemented"
-        | _ ->
-            zipper, NotSupported (sprintf "Console not supported on %A" platform.OS)
+    | [fd; buf; maxCount] ->
+        let syscallNum = SyscallData.getReadSyscall os
+
+        let fdExt, fdOps =
+            match fd.Type with
+            | TInt I64 -> fd.SSA, []
+            | TInt _ ->
+                let ext = freshSynthSSA z
+                ext, [MLIROp.ArithOp (extSI ext fd.SSA fd.Type MLIRTypes.i64)]
+            | _ -> fd.SSA, []
+
+        let countExt, countOps =
+            match maxCount.Type with
+            | TInt I64 -> maxCount.SSA, []
+            | TInt _ ->
+                let ext = freshSynthSSA z
+                ext, [MLIROp.ArithOp (extSI ext maxCount.SSA maxCount.Type MLIRTypes.i64)]
+            | _ -> maxCount.SSA, []
+
+        let sysNumSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let syscallOps = [
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdExt; ptrArg buf.SSA; i64Arg countExt] (Some MLIRTypes.i64))
+        ]
+
+        let truncSSA = freshSynthSSA z
+        let truncOp = MLIROp.ArithOp (truncI truncSSA resultSSA MLIRTypes.i64 MLIRTypes.i32)
+
+        let allOps = fdOps @ countOps @ syscallOps @ [truncOp]
+        BoundOps (allOps, Some { SSA = truncSSA; Type = MLIRTypes.i32 })
     | _ ->
-        zipper, NotSupported "readBytes requires (fd, buffer, maxCount) arguments"
+        NotSupported "readBytes requires (fd, buf, maxCount) arguments"
 
 // ===================================================================
-// Registration (Witness-Based)
+// Console.write / Console.writeln bindings
 // ===================================================================
 
-/// Register all console bindings for all platforms
-/// Entry points match Platform.Bindings function names AND FNCS Sys intrinsics
-let registerBindings () =
-    // Register for Linux x86_64
-    PlatformDispatch.register Linux X86_64 "writeBytes"
-        (fun prim zipper -> witnessWriteBytes TargetPlatform.linux_x86_64 prim zipper)
-    PlatformDispatch.register Linux X86_64 "readBytes"
-        (fun prim zipper -> witnessReadBytes TargetPlatform.linux_x86_64 prim zipper)
-    // FNCS Sys intrinsics - same implementation as writeBytes/readBytes
-    PlatformDispatch.register Linux X86_64 "Sys.write"
-        (fun prim zipper -> witnessWriteBytes TargetPlatform.linux_x86_64 prim zipper)
-    PlatformDispatch.register Linux X86_64 "Sys.read"
-        (fun prim zipper -> witnessReadBytes TargetPlatform.linux_x86_64 prim zipper)
-
-    // Register for Linux ARM64
-    PlatformDispatch.register Linux ARM64 "writeBytes"
-        (fun prim zipper -> witnessWriteBytes { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "readBytes"
-        (fun prim zipper -> witnessReadBytes { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "Sys.write"
-        (fun prim zipper -> witnessWriteBytes { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "Sys.read"
-        (fun prim zipper -> witnessReadBytes { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-
-    // Register for macOS x86_64
-    PlatformDispatch.register MacOS X86_64 "writeBytes"
-        (fun prim zipper -> witnessWriteBytes TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "readBytes"
-        (fun prim zipper -> witnessReadBytes TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "Sys.write"
-        (fun prim zipper -> witnessWriteBytes TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "Sys.read"
-        (fun prim zipper -> witnessReadBytes TargetPlatform.macos_x86_64 prim zipper)
-
-    // Register for macOS ARM64
-    PlatformDispatch.register MacOS ARM64 "writeBytes"
-        (fun prim zipper -> witnessWriteBytes TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "readBytes"
-        (fun prim zipper -> witnessReadBytes TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "Sys.write"
-        (fun prim zipper -> witnessWriteBytes TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "Sys.read"
-        (fun prim zipper -> witnessReadBytes TargetPlatform.macos_arm64 prim zipper)
-
-// ===================================================================
-// Console Intrinsics (FNCS Post-Alloy Absorption)
-// Console.write, Console.writeln, Console.error, Console.errorln, Console.readln
-// ===================================================================
-
-/// Witness Console.write - write string to stdout
-/// Takes a string (fat pointer: ptr + length) and writes to fd=1
-let witnessConsoleWrite (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// Console.write(str) - write string to stdout
+let bindConsoleWrite (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(strSSA, Struct _)] ->
-        // Extract pointer and length from fat pointer (string)
-        let ptrSSA, zipper1 = MLIRZipper.yieldSSA zipper
-        let extractPtrText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let zipper2 = MLIRZipper.witnessOpWithResult extractPtrText ptrSSA Pointer zipper1
+    | [str] when str.Type = MLIRTypes.nativeStr ->
+        // Extract ptr and len from fat pointer
+        let ptrSSA = freshSynthSSA z
+        let lenSSA = freshSynthSSA z
+        let extractOps = [
+            MLIROp.LLVMOp (extractValueAt ptrSSA str.SSA 0 MLIRTypes.nativeStr)
+            MLIROp.LLVMOp (extractValueAt lenSSA str.SSA 1 MLIRTypes.nativeStr)
+        ]
 
-        let lenSSA, zipper3 = MLIRZipper.yieldSSA zipper2
-        let extractLenText = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(ptr, i64)>" lenSSA strSSA
-        let zipper4 = MLIRZipper.witnessOpWithResult extractLenText lenSSA (Integer I64) zipper3
+        // fd = 1 (stdout)
+        let fdSSA = freshSynthSSA z
+        let fdOp = MLIROp.ArithOp (constI fdSSA 1L MLIRTypes.i64)
 
-        // Create fd=1 constant for stdout
-        let fdSSA, zipper5 = MLIRZipper.witnessConstant 1L I64 zipper4
+        // Syscall
+        let syscallNum = SyscallData.getWriteSyscall os
+        let sysNumSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let syscallOps = [
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdSSA; ptrArg ptrSSA; i64Arg lenSSA] (Some MLIRTypes.i64))
+        ]
 
-        // Call write syscall
-        let syscallNum = match platform.OS with Linux -> 1L | MacOS -> 0x2000004L | _ -> 1L
-        let resultSSA, zipper6 = witnessUnixWriteSyscall syscallNum fdSSA (Integer I64) ptrSSA Pointer lenSSA (Integer I64) zipper5
-
-        // Console.write returns unit, so just return unit
-        zipper6, WitnessedValue ("", Unit)
+        let allOps = extractOps @ [fdOp] @ syscallOps
+        BoundOps (allOps, None)  // Console.write returns unit
     | _ ->
-        zipper, NotSupported "Console.write requires (string) argument"
+        NotSupported "Console.write requires (string) argument"
 
-/// Witness Console.writeln - write string with newline to stdout
-let witnessConsoleWriteln (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// Console.writeln(str) - write string + newline to stdout
+let bindConsoleWriteln (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(strSSA, Struct _)] ->
-        // First write the string
-        let ptrSSA, zipper1 = MLIRZipper.yieldSSA zipper
-        let extractPtrText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let zipper2 = MLIRZipper.witnessOpWithResult extractPtrText ptrSSA Pointer zipper1
+    | [str] when str.Type = MLIRTypes.nativeStr ->
+        // Extract ptr and len
+        let ptrSSA = freshSynthSSA z
+        let lenSSA = freshSynthSSA z
+        let extractOps = [
+            MLIROp.LLVMOp (extractValueAt ptrSSA str.SSA 0 MLIRTypes.nativeStr)
+            MLIROp.LLVMOp (extractValueAt lenSSA str.SSA 1 MLIRTypes.nativeStr)
+        ]
 
-        let lenSSA, zipper3 = MLIRZipper.yieldSSA zipper2
-        let extractLenText = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(ptr, i64)>" lenSSA strSSA
-        let zipper4 = MLIRZipper.witnessOpWithResult extractLenText lenSSA (Integer I64) zipper3
+        // fd = 1 and syscall num
+        let fdSSA = freshSynthSSA z
+        let syscallNum = SyscallData.getWriteSyscall os
+        let sysNumSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let writeStrOps = [
+            MLIROp.ArithOp (constI fdSSA 1L MLIRTypes.i64)
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdSSA; ptrArg ptrSSA; i64Arg lenSSA] (Some MLIRTypes.i64))
+        ]
 
-        let fdSSA, zipper5 = MLIRZipper.witnessConstant 1L I64 zipper4
-
-        let syscallNum = match platform.OS with Linux -> 1L | MacOS -> 0x2000004L | _ -> 1L
-        let _, zipper6 = witnessUnixWriteSyscall syscallNum fdSSA (Integer I64) ptrSSA Pointer lenSSA (Integer I64) zipper5
-
-        // Now write the newline character
-        // Create a stack-allocated byte for newline
-        let oneSSA, zipper7 = MLIRZipper.witnessConstant 1L I64 zipper6
-        let nlPtrSSA, zipper8 = MLIRZipper.yieldSSA zipper7
-        let allocaText = sprintf "%s = llvm.alloca %s x i8 : (i64) -> !llvm.ptr" nlPtrSSA oneSSA
-        let zipper9 = MLIRZipper.witnessOpWithResult allocaText nlPtrSSA Pointer zipper8
-
-        // Store newline character (10 = '\n')
-        let nlCharSSA, zipper10 = MLIRZipper.witnessConstant 10L I8 zipper9
-        let storeText = sprintf "llvm.store %s, %s : i8, !llvm.ptr" nlCharSSA nlPtrSSA
-        let zipper11 = MLIRZipper.witnessOp storeText [] zipper10
-
-        // Write the newline
-        let _, zipper12 = witnessUnixWriteSyscall syscallNum fdSSA (Integer I64) nlPtrSSA Pointer oneSSA (Integer I64) zipper11
-
-        zipper12, WitnessedValue ("", Unit)
-    | _ ->
-        zipper, NotSupported "Console.writeln requires (string) argument"
-
-/// Witness Console.error - write string to stderr
-let witnessConsoleError (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    match prim.Args with
-    | [(strSSA, Struct _)] ->
-        let ptrSSA, zipper1 = MLIRZipper.yieldSSA zipper
-        let extractPtrText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let zipper2 = MLIRZipper.witnessOpWithResult extractPtrText ptrSSA Pointer zipper1
-
-        let lenSSA, zipper3 = MLIRZipper.yieldSSA zipper2
-        let extractLenText = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(ptr, i64)>" lenSSA strSSA
-        let zipper4 = MLIRZipper.witnessOpWithResult extractLenText lenSSA (Integer I64) zipper3
-
-        // fd=2 for stderr
-        let fdSSA, zipper5 = MLIRZipper.witnessConstant 2L I64 zipper4
-
-        let syscallNum = match platform.OS with Linux -> 1L | MacOS -> 0x2000004L | _ -> 1L
-        let _, zipper6 = witnessUnixWriteSyscall syscallNum fdSSA (Integer I64) ptrSSA Pointer lenSSA (Integer I64) zipper5
-
-        zipper6, WitnessedValue ("", Unit)
-    | _ ->
-        zipper, NotSupported "Console.error requires (string) argument"
-
-/// Witness Console.errorln - write string with newline to stderr
-let witnessConsoleErrorln (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    match prim.Args with
-    | [(strSSA, Struct _)] ->
-        let ptrSSA, zipper1 = MLIRZipper.yieldSSA zipper
-        let extractPtrText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let zipper2 = MLIRZipper.witnessOpWithResult extractPtrText ptrSSA Pointer zipper1
-
-        let lenSSA, zipper3 = MLIRZipper.yieldSSA zipper2
-        let extractLenText = sprintf "%s = llvm.extractvalue %s[1] : !llvm.struct<(ptr, i64)>" lenSSA strSSA
-        let zipper4 = MLIRZipper.witnessOpWithResult extractLenText lenSSA (Integer I64) zipper3
-
-        // fd=2 for stderr
-        let fdSSA, zipper5 = MLIRZipper.witnessConstant 2L I64 zipper4
-
-        let syscallNum = match platform.OS with Linux -> 1L | MacOS -> 0x2000004L | _ -> 1L
-        let _, zipper6 = witnessUnixWriteSyscall syscallNum fdSSA (Integer I64) ptrSSA Pointer lenSSA (Integer I64) zipper5
+        // Allocate and write newline
+        let oneSSA = freshSynthSSA z
+        let nlPtrSSA = freshSynthSSA z
+        let nlCharSSA = freshSynthSSA z
+        let nlOps = [
+            MLIROp.ArithOp (constI oneSSA 1L MLIRTypes.i64)
+            MLIROp.LLVMOp (alloca nlPtrSSA oneSSA MLIRTypes.i8 None)
+            MLIROp.ArithOp (constI nlCharSSA 10L MLIRTypes.i8)  // '\n'
+            MLIROp.LLVMOp (storeNonAtomic nlCharSSA nlPtrSSA MLIRTypes.i8)
+        ]
 
         // Write newline
-        let oneSSA, zipper7 = MLIRZipper.witnessConstant 1L I64 zipper6
-        let nlPtrSSA, zipper8 = MLIRZipper.yieldSSA zipper7
-        let allocaText = sprintf "%s = llvm.alloca %s x i8 : (i64) -> !llvm.ptr" nlPtrSSA oneSSA
-        let zipper9 = MLIRZipper.witnessOpWithResult allocaText nlPtrSSA Pointer zipper8
+        let sysNumSSA2 = freshSynthSSA z
+        let resultSSA2 = freshSynthSSA z
+        let writeNlOps = [
+            MLIROp.ArithOp (constI sysNumSSA2 syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA2) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA2; i64Arg fdSSA; ptrArg nlPtrSSA; i64Arg oneSSA] (Some MLIRTypes.i64))
+        ]
 
-        let nlCharSSA, zipper10 = MLIRZipper.witnessConstant 10L I8 zipper9
-        let storeText = sprintf "llvm.store %s, %s : i8, !llvm.ptr" nlCharSSA nlPtrSSA
-        let zipper11 = MLIRZipper.witnessOp storeText [] zipper10
-
-        let _, zipper12 = witnessUnixWriteSyscall syscallNum fdSSA (Integer I64) nlPtrSSA Pointer oneSSA (Integer I64) zipper11
-
-        zipper12, WitnessedValue ("", Unit)
+        let allOps = extractOps @ writeStrOps @ nlOps @ writeNlOps
+        BoundOps (allOps, None)
     | _ ->
-        zipper, NotSupported "Console.errorln requires (string) argument"
+        NotSupported "Console.writeln requires (string) argument"
 
-/// Witness Console.readln - read line from stdin (character by character until newline)
-/// Returns a string (fat pointer). Reads one byte at a time to handle piped input correctly.
-let witnessConsoleReadln (platform: TargetPlatform) (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    // Match no args, unit arg (MLIRType.Unit), or pseudo-unit (i32 with value 0)
-    // Unit literals are represented as "arith.constant 0 : i32" so we accept Integer I32 as well
+/// Console.error(str) - write string to stderr
+let bindConsoleError (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [] | [(_, Unit)] | [(_, Integer I32)] ->
-        // Allocate buffer on stack (256 bytes)
-        let bufSizeSSA, z1 = MLIRZipper.witnessConstant 256L I64 zipper
-        let bufPtrSSA, z2 = MLIRZipper.yieldSSA z1
-        let allocaText = sprintf "%s = llvm.alloca %s x i8 : (i64) -> !llvm.ptr" bufPtrSSA bufSizeSSA
-        let z3 = MLIRZipper.witnessOpWithResult allocaText bufPtrSSA Pointer z2
+    | [str] when str.Type = MLIRTypes.nativeStr ->
+        let ptrSSA = freshSynthSSA z
+        let lenSSA = freshSynthSSA z
+        let extractOps = [
+            MLIROp.LLVMOp (extractValueAt ptrSSA str.SSA 0 MLIRTypes.nativeStr)
+            MLIROp.LLVMOp (extractValueAt lenSSA str.SSA 1 MLIRTypes.nativeStr)
+        ]
 
-        // Allocate single-byte buffer for reading one char at a time
-        let oneSSA, z4 = MLIRZipper.witnessConstant 1L I64 z3
-        let charBufSSA, z5 = MLIRZipper.yieldSSA z4
-        let charAllocaText = sprintf "%s = llvm.alloca %s x i8 : (i64) -> !llvm.ptr" charBufSSA oneSSA
-        let z6 = MLIRZipper.witnessOpWithResult charAllocaText charBufSSA Pointer z5
+        // fd = 2 (stderr)
+        let fdSSA = freshSynthSSA z
+        let syscallNum = SyscallData.getWriteSyscall os
+        let sysNumSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let syscallOps = [
+            MLIROp.ArithOp (constI fdSSA 2L MLIRTypes.i64)
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdSSA; ptrArg ptrSSA; i64Arg lenSSA] (Some MLIRTypes.i64))
+        ]
+
+        let allOps = extractOps @ syscallOps
+        BoundOps (allOps, None)
+    | _ ->
+        NotSupported "Console.error requires (string) argument"
+
+/// Console.errorln(str) - write string + newline to stderr
+let bindConsoleErrorln (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+    match prim.Args with
+    | [str] when str.Type = MLIRTypes.nativeStr ->
+        let ptrSSA = freshSynthSSA z
+        let lenSSA = freshSynthSSA z
+        let extractOps = [
+            MLIROp.LLVMOp (extractValueAt ptrSSA str.SSA 0 MLIRTypes.nativeStr)
+            MLIROp.LLVMOp (extractValueAt lenSSA str.SSA 1 MLIRTypes.nativeStr)
+        ]
+
+        let fdSSA = freshSynthSSA z
+        let syscallNum = SyscallData.getWriteSyscall os
+        let sysNumSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let writeStrOps = [
+            MLIROp.ArithOp (constI fdSSA 2L MLIRTypes.i64)  // stderr
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdSSA; ptrArg ptrSSA; i64Arg lenSSA] (Some MLIRTypes.i64))
+        ]
+
+        let oneSSA = freshSynthSSA z
+        let nlPtrSSA = freshSynthSSA z
+        let nlCharSSA = freshSynthSSA z
+        let nlOps = [
+            MLIROp.ArithOp (constI oneSSA 1L MLIRTypes.i64)
+            MLIROp.LLVMOp (alloca nlPtrSSA oneSSA MLIRTypes.i8 None)
+            MLIROp.ArithOp (constI nlCharSSA 10L MLIRTypes.i8)
+            MLIROp.LLVMOp (storeNonAtomic nlCharSSA nlPtrSSA MLIRTypes.i8)
+        ]
+
+        let sysNumSSA2 = freshSynthSSA z
+        let resultSSA2 = freshSynthSSA z
+        let writeNlOps = [
+            MLIROp.ArithOp (constI sysNumSSA2 syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some resultSSA2) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA2; i64Arg fdSSA; ptrArg nlPtrSSA; i64Arg oneSSA] (Some MLIRTypes.i64))
+        ]
+
+        let allOps = extractOps @ writeStrOps @ nlOps @ writeNlOps
+        BoundOps (allOps, None)
+    | _ ->
+        NotSupported "Console.errorln requires (string) argument"
+
+// ===================================================================
+// Console.readln binding (complex: uses scf.while)
+// ===================================================================
+
+/// Console.readln() - read line from stdin, returns string
+let bindConsoleReadln (os: OSFamily) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+    // Accept no args, unit arg, or pseudo-unit
+    match prim.Args with
+    | [] | [{ Type = TUnit }] | [{ Type = TInt I32 }] ->
+        let syscallNum = SyscallData.getReadSyscall os
+
+        // Allocate main buffer (256 bytes) and single-char buffer
+        let bufSizeSSA = freshSynthSSA z
+        let bufPtrSSA = freshSynthSSA z
+        let oneSSA = freshSynthSSA z
+        let charBufSSA = freshSynthSSA z
+        let allocOps = [
+            MLIROp.ArithOp (constI bufSizeSSA 256L MLIRTypes.i64)
+            MLIROp.LLVMOp (alloca bufPtrSSA bufSizeSSA MLIRTypes.i8 None)
+            MLIROp.ArithOp (constI oneSSA 1L MLIRTypes.i64)
+            MLIROp.LLVMOp (alloca charBufSSA oneSSA MLIRTypes.i8 None)
+        ]
 
         // Constants
-        let zeroSSA, z7 = MLIRZipper.witnessConstant 0L I64 z6
-        let newlineSSA, z8 = MLIRZipper.witnessConstant 10L I8 z7  // '\n'
-        let fdSSA, z9 = MLIRZipper.witnessConstant 0L I64 z8  // stdin
+        let zeroSSA = freshSynthSSA z
+        let newlineSSA = freshSynthSSA z
+        let fdSSA = freshSynthSSA z
+        let maxPosSSA = freshSynthSSA z
+        let constOps = [
+            MLIROp.ArithOp (constI zeroSSA 0L MLIRTypes.i64)
+            MLIROp.ArithOp (constI newlineSSA 10L MLIRTypes.i8)
+            MLIROp.ArithOp (constI fdSSA 0L MLIRTypes.i64)  // stdin
+            MLIROp.ArithOp (constI maxPosSSA 255L MLIRTypes.i64)
+        ]
 
-        // Syscall number for read
-        let syscallNum = match platform.OS with Linux -> 0L | MacOS -> 0x2000003L | _ -> 0L
-        let syscallNumSSA, z10 = MLIRZipper.witnessConstant syscallNum I64 z9
+        // Build scf.while loop
+        // iter_arg: position (i64), starting at 0
+        // Guard: read byte, check (pos < 255 && bytes > 0 && char != '\n')
+        // Body: store char at buffer[pos], yield pos+1
 
-        // Build scf.while loop to read character by character
-        // Loop state: position in buffer (i64)
-        // Continue while: bytes_read > 0 AND char != '\n' AND pos < 255
+        let posArg = Arg 0
+        let posVal = { SSA = posArg; Type = MLIRTypes.i64 }
 
-        // Get unique SSA names for loop variables
-        let posResultSSA, z11 = MLIRZipper.yieldSSA z10
-        let posArgName = (posResultSSA.TrimStart('%')) + "_pos"
-        let pos = posArgName
+        // Guard block ops
+        let inBoundsSSA = freshSynthSSA z
+        let sysNumSSA = freshSynthSSA z
+        let bytesReadSSA = freshSynthSSA z
+        let gotByteSSA = freshSynthSSA z
+        let charSSA = freshSynthSSA z
+        let notNewlineSSA = freshSynthSSA z
+        let cont1SSA = freshSynthSSA z
+        let cont2SSA = freshSynthSSA z
 
-        // Guard block operations (all with unique names using pos prefix)
-        let guardOps =
-            [ sprintf "%%%s_max = arith.constant 255 : i64" pos
-              sprintf "%%%s_in_bounds = arith.cmpi slt, %%%s, %%%s_max : i64" pos pos pos
-              sprintf "%%%s_bytes = llvm.inline_asm has_side_effects \"syscall\", \"={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}\" %s, %s, %s, %s : (i64, i64, !llvm.ptr, i64) -> i64" pos syscallNumSSA fdSSA charBufSSA oneSSA
-              sprintf "%%%s_got_byte = arith.cmpi sgt, %%%s_bytes, %s : i64" pos pos zeroSSA
-              sprintf "%%%s_char = llvm.load %s : !llvm.ptr -> i8" pos charBufSSA
-              sprintf "%%%s_not_newline = arith.cmpi ne, %%%s_char, %s : i8" pos pos newlineSSA
-              sprintf "%%%s_cont1 = arith.andi %%%s_in_bounds, %%%s_got_byte : i1" pos pos pos
-              sprintf "%%%s_cont2 = arith.andi %%%s_cont1, %%%s_not_newline : i1" pos pos pos ]
-            |> String.concat "\n    "
+        let guardOps = [
+            // Check pos < 255
+            MLIROp.ArithOp (cmpI inBoundsSSA ICmpPred.Slt posArg maxPosSSA MLIRTypes.i64)
+            // Read one byte
+            MLIROp.ArithOp (constI sysNumSSA syscallNum MLIRTypes.i64)
+            MLIROp.LLVMOp (inlineAsmWithSideEffects (Some bytesReadSSA) "syscall"
+                "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"
+                [i64Arg sysNumSSA; i64Arg fdSSA; ptrArg charBufSSA; i64Arg oneSSA] (Some MLIRTypes.i64))
+            // Check bytes > 0
+            MLIROp.ArithOp (cmpI gotByteSSA ICmpPred.Sgt bytesReadSSA zeroSSA MLIRTypes.i64)
+            // Load char and check != '\n'
+            MLIROp.LLVMOp (loadNonAtomic charSSA charBufSSA MLIRTypes.i8)
+            MLIROp.ArithOp (cmpI notNewlineSSA ICmpPred.Ne charSSA newlineSSA MLIRTypes.i8)
+            // AND conditions
+            MLIROp.ArithOp (andI cont1SSA inBoundsSSA gotByteSSA MLIRTypes.i1)
+            MLIROp.ArithOp (andI cont2SSA cont1SSA notNewlineSSA MLIRTypes.i1)
+            // scf.condition
+            MLIROp.SCFOp (scfCondition cont2SSA [posArg])
+        ]
 
-        // Body block operations
-        let bodyOps =
-            [ sprintf "%%%s_char_to_store = llvm.load %s : !llvm.ptr -> i8" pos charBufSSA
-              sprintf "%%%s_store_ptr = llvm.getelementptr %s[%%%s_arg] : (!llvm.ptr, i64) -> !llvm.ptr, i8" pos bufPtrSSA pos
-              sprintf "llvm.store %%%s_char_to_store, %%%s_store_ptr : i8, !llvm.ptr" pos pos
-              sprintf "%%%s_one = arith.constant 1 : i64" pos
-              sprintf "%%%s_next = arith.addi %%%s_arg, %%%s_one : i64" pos pos pos ]
-            |> String.concat "\n    "
+        // Body block ops
+        let charToStoreSSA = freshSynthSSA z
+        let storePtrSSA = freshSynthSSA z
+        let oneBodySSA = freshSynthSSA z
+        let nextPosSSA = freshSynthSSA z
 
-        let whileText =
-            sprintf "%s = scf.while (%%%s = %s) : (i64) -> i64 {\n    %s\n    scf.condition(%%%s_cont2) %%%s : i64\n  } do {\n  ^bb0(%%%s_arg: i64):\n    %s\n    scf.yield %%%s_next : i64\n  }"
-                posResultSSA pos zeroSSA guardOps pos pos pos bodyOps pos
+        let bodyOps = [
+            // Load the char (already read in guard)
+            MLIROp.LLVMOp (loadNonAtomic charToStoreSSA charBufSSA MLIRTypes.i8)
+            // GEP to buffer[pos]
+            MLIROp.LLVMOp (gepSingle storePtrSSA bufPtrSSA posArg MLIRTypes.i64 MLIRTypes.i8)
+            // Store char
+            MLIROp.LLVMOp (storeNonAtomic charToStoreSSA storePtrSSA MLIRTypes.i8)
+            // pos + 1
+            MLIROp.ArithOp (constI oneBodySSA 1L MLIRTypes.i64)
+            MLIROp.ArithOp (addI nextPosSSA posArg oneBodySSA MLIRTypes.i64)
+            // Yield next pos
+            MLIROp.SCFOp (scfYieldVal nextPosSSA)
+        ]
 
-        let z12 = MLIRZipper.witnessOpWithResult whileText posResultSSA (Integer I64) z11
+        // Build regions
+        let guardRegion = singleBlockRegion "before" [blockArg posArg MLIRTypes.i64] guardOps
+        let bodyRegion = singleBlockRegion "do" [blockArg posArg MLIRTypes.i64] bodyOps
 
-        // Construct fat pointer (string) from buffer and final length
-        let undefSSA, z13 = MLIRZipper.yieldSSA z12
-        let undefText = sprintf "%s = llvm.mlir.undef : !llvm.struct<(ptr, i64)>" undefSSA
-        let z14 = MLIRZipper.witnessOpWithResult undefText undefSSA (Struct [Pointer; Integer I64]) z13
+        // scf.while op
+        let finalPosSSA = freshSynthSSA z
+        let whileOp = MLIROp.SCFOp (scfWhile [finalPosSSA] guardRegion bodyRegion [posVal])
 
-        let withPtrSSA, z15 = MLIRZipper.yieldSSA z14
-        let insertPtrText = sprintf "%s = llvm.insertvalue %s, %s[0] : !llvm.struct<(ptr, i64)>" withPtrSSA bufPtrSSA undefSSA
-        let z16 = MLIRZipper.witnessOpWithResult insertPtrText withPtrSSA (Struct [Pointer; Integer I64]) z15
+        // Build fat pointer result
+        let undefSSA = freshSynthSSA z
+        let withPtrSSA = freshSynthSSA z
+        let resultSSA = freshSynthSSA z
+        let buildStrOps = [
+            MLIROp.LLVMOp (undef undefSSA MLIRTypes.nativeStr)
+            MLIROp.LLVMOp (insertValueAt withPtrSSA undefSSA bufPtrSSA 0 MLIRTypes.nativeStr)
+            MLIROp.LLVMOp (insertValueAt resultSSA withPtrSSA finalPosSSA 1 MLIRTypes.nativeStr)
+        ]
 
-        let resultSSA, z17 = MLIRZipper.yieldSSA z16
-        let insertLenText = sprintf "%s = llvm.insertvalue %s, %s[1] : !llvm.struct<(ptr, i64)>" resultSSA posResultSSA withPtrSSA
-        let z18 = MLIRZipper.witnessOpWithResult insertLenText resultSSA (Struct [Pointer; Integer I64]) z17
+        // Init value for loop (start at 0)
+        let initOps = [MLIROp.ArithOp (constI (V -99) 0L MLIRTypes.i64)]  // placeholder, actual is zeroSSA
 
-        z18, WitnessedValue (resultSSA, Struct [Pointer; Integer I64])
+        let allOps = allocOps @ constOps @ [whileOp] @ buildStrOps
+        BoundOps (allOps, Some { SSA = resultSSA; Type = MLIRTypes.nativeStr })
     | _ ->
-        zipper, NotSupported "Console.readln takes no arguments"
+        NotSupported "Console.readln takes no arguments"
 
-/// Register Console intrinsic bindings
-let registerConsoleIntrinsics () =
+// ===================================================================
+// Registration
+// ===================================================================
+
+let registerBindings () =
     // Linux x86_64
-    PlatformDispatch.register Linux X86_64 "Console.write"
-        (fun prim zipper -> witnessConsoleWrite TargetPlatform.linux_x86_64 prim zipper)
-    PlatformDispatch.register Linux X86_64 "Console.writeln"
-        (fun prim zipper -> witnessConsoleWriteln TargetPlatform.linux_x86_64 prim zipper)
-    PlatformDispatch.register Linux X86_64 "Console.error"
-        (fun prim zipper -> witnessConsoleError TargetPlatform.linux_x86_64 prim zipper)
-    PlatformDispatch.register Linux X86_64 "Console.errorln"
-        (fun prim zipper -> witnessConsoleErrorln TargetPlatform.linux_x86_64 prim zipper)
-    PlatformDispatch.register Linux X86_64 "Console.readln"
-        (fun prim zipper -> witnessConsoleReadln TargetPlatform.linux_x86_64 prim zipper)
+    PlatformDispatch.register Linux X86_64 "writeBytes" (bindWriteBytes Linux)
+    PlatformDispatch.register Linux X86_64 "readBytes" (bindReadBytes Linux)
+    PlatformDispatch.register Linux X86_64 "Sys.write" (bindWriteBytes Linux)
+    PlatformDispatch.register Linux X86_64 "Sys.read" (bindReadBytes Linux)
 
     // Linux ARM64
-    PlatformDispatch.register Linux ARM64 "Console.write"
-        (fun prim zipper -> witnessConsoleWrite { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "Console.writeln"
-        (fun prim zipper -> witnessConsoleWriteln { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "Console.error"
-        (fun prim zipper -> witnessConsoleError { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "Console.errorln"
-        (fun prim zipper -> witnessConsoleErrorln { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
-    PlatformDispatch.register Linux ARM64 "Console.readln"
-        (fun prim zipper -> witnessConsoleReadln { TargetPlatform.linux_x86_64 with Arch = ARM64 } prim zipper)
+    PlatformDispatch.register Linux ARM64 "writeBytes" (bindWriteBytes Linux)
+    PlatformDispatch.register Linux ARM64 "readBytes" (bindReadBytes Linux)
+    PlatformDispatch.register Linux ARM64 "Sys.write" (bindWriteBytes Linux)
+    PlatformDispatch.register Linux ARM64 "Sys.read" (bindReadBytes Linux)
 
     // macOS x86_64
-    PlatformDispatch.register MacOS X86_64 "Console.write"
-        (fun prim zipper -> witnessConsoleWrite TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "Console.writeln"
-        (fun prim zipper -> witnessConsoleWriteln TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "Console.error"
-        (fun prim zipper -> witnessConsoleError TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "Console.errorln"
-        (fun prim zipper -> witnessConsoleErrorln TargetPlatform.macos_x86_64 prim zipper)
-    PlatformDispatch.register MacOS X86_64 "Console.readln"
-        (fun prim zipper -> witnessConsoleReadln TargetPlatform.macos_x86_64 prim zipper)
+    PlatformDispatch.register MacOS X86_64 "writeBytes" (bindWriteBytes MacOS)
+    PlatformDispatch.register MacOS X86_64 "readBytes" (bindReadBytes MacOS)
+    PlatformDispatch.register MacOS X86_64 "Sys.write" (bindWriteBytes MacOS)
+    PlatformDispatch.register MacOS X86_64 "Sys.read" (bindReadBytes MacOS)
 
     // macOS ARM64
-    PlatformDispatch.register MacOS ARM64 "Console.write"
-        (fun prim zipper -> witnessConsoleWrite TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "Console.writeln"
-        (fun prim zipper -> witnessConsoleWriteln TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "Console.error"
-        (fun prim zipper -> witnessConsoleError TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "Console.errorln"
-        (fun prim zipper -> witnessConsoleErrorln TargetPlatform.macos_arm64 prim zipper)
-    PlatformDispatch.register MacOS ARM64 "Console.readln"
-        (fun prim zipper -> witnessConsoleReadln TargetPlatform.macos_arm64 prim zipper)
+    PlatformDispatch.register MacOS ARM64 "writeBytes" (bindWriteBytes MacOS)
+    PlatformDispatch.register MacOS ARM64 "readBytes" (bindReadBytes MacOS)
+    PlatformDispatch.register MacOS ARM64 "Sys.write" (bindWriteBytes MacOS)
+    PlatformDispatch.register MacOS ARM64 "Sys.read" (bindReadBytes MacOS)
+
+let registerConsoleIntrinsics () =
+    // Linux x86_64
+    PlatformDispatch.register Linux X86_64 "Console.write" (bindConsoleWrite Linux)
+    PlatformDispatch.register Linux X86_64 "Console.writeln" (bindConsoleWriteln Linux)
+    PlatformDispatch.register Linux X86_64 "Console.error" (bindConsoleError Linux)
+    PlatformDispatch.register Linux X86_64 "Console.errorln" (bindConsoleErrorln Linux)
+    PlatformDispatch.register Linux X86_64 "Console.readln" (bindConsoleReadln Linux)
+
+    // Linux ARM64
+    PlatformDispatch.register Linux ARM64 "Console.write" (bindConsoleWrite Linux)
+    PlatformDispatch.register Linux ARM64 "Console.writeln" (bindConsoleWriteln Linux)
+    PlatformDispatch.register Linux ARM64 "Console.error" (bindConsoleError Linux)
+    PlatformDispatch.register Linux ARM64 "Console.errorln" (bindConsoleErrorln Linux)
+    PlatformDispatch.register Linux ARM64 "Console.readln" (bindConsoleReadln Linux)
+
+    // macOS x86_64
+    PlatformDispatch.register MacOS X86_64 "Console.write" (bindConsoleWrite MacOS)
+    PlatformDispatch.register MacOS X86_64 "Console.writeln" (bindConsoleWriteln MacOS)
+    PlatformDispatch.register MacOS X86_64 "Console.error" (bindConsoleError MacOS)
+    PlatformDispatch.register MacOS X86_64 "Console.errorln" (bindConsoleErrorln MacOS)
+    PlatformDispatch.register MacOS X86_64 "Console.readln" (bindConsoleReadln MacOS)
+
+    // macOS ARM64
+    PlatformDispatch.register MacOS ARM64 "Console.write" (bindConsoleWrite MacOS)
+    PlatformDispatch.register MacOS ARM64 "Console.writeln" (bindConsoleWriteln MacOS)
+    PlatformDispatch.register MacOS ARM64 "Console.error" (bindConsoleError MacOS)
+    PlatformDispatch.register MacOS ARM64 "Console.errorln" (bindConsoleErrorln MacOS)
+    PlatformDispatch.register MacOS ARM64 "Console.readln" (bindConsoleReadln MacOS)

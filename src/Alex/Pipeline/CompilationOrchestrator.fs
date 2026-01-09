@@ -12,8 +12,9 @@ open System
 open System.IO
 open Core.CompilerConfig
 open Core.Toolchain
-open Alex.Traversal.MLIRZipper
+open Alex.Traversal.PSGZipper
 open Alex.Bindings.BindingTypes
+open Alex.Bindings.PlatformTypes
 open Core.FNCS.Integration
 open Alex.Traversal.FNCSTransfer
 
@@ -56,12 +57,12 @@ type MLIRGenerationResult = {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Convert FNCS OutputKind to Firefly OutputKind
-let private toFireflyOutputKind (kind: OutputKind) : Core.Types.MLIRTypes.OutputKind =
+let private toFireflyOutputKind (kind: OutputKind) : Core.Types.Dialects.OutputKind =
     match kind with
-    | OutputKind.Freestanding -> Core.Types.MLIRTypes.OutputKind.Freestanding
-    | OutputKind.Console -> Core.Types.MLIRTypes.OutputKind.Console
-    | OutputKind.Library -> Core.Types.MLIRTypes.OutputKind.Console // Map to console for now
-    | OutputKind.Embedded -> Core.Types.MLIRTypes.OutputKind.Freestanding // Map to freestanding
+    | OutputKind.Freestanding -> Core.Types.Dialects.OutputKind.Freestanding
+    | OutputKind.Console -> Core.Types.Dialects.OutputKind.Console
+    | OutputKind.Library -> Core.Types.Dialects.OutputKind.Console // Map to console for now
+    | OutputKind.Embedded -> Core.Types.Dialects.OutputKind.Freestanding // Map to freestanding
 
 /// Determine target platform from triple
 let parsePlatform (triple: string) : TargetPlatform =
@@ -231,7 +232,7 @@ let compileProject (options: CompilationOptions) : int =
                 None
 
         // Step 2: Generate MLIR via FNCS
-        let isFreestanding = (outputKind = Core.Types.MLIRTypes.OutputKind.Freestanding)
+        let isFreestanding = (outputKind = Core.Types.Dialects.OutputKind.Freestanding)
         let mlirResult =
             Core.Timing.timePhase "MLIR" "MLIR Generation" (fun () ->
                 generateMLIR result targetTriple isFreestanding)

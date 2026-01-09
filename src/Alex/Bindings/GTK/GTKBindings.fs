@@ -1,124 +1,157 @@
 /// GTKBindings - Platform bindings for GTK3 on Linux
 ///
-/// ARCHITECTURAL FOUNDATION:
-/// GTK is dynamically linked at load time - the system's libgtk-3.so
-/// is already installed on Linux desktops. We declare external functions
-/// and let the loader resolve them.
+/// ARCHITECTURAL PRINCIPLE (January 2026):
+/// Bindings RETURN structured MLIROp lists - they do NOT emit.
+/// Uses dialect templates for all operations. ZERO sprintf.
 module Alex.Bindings.GTK.GTKBindings
 
-open Alex.CodeGeneration.MLIRTypes
-open Alex.Traversal.MLIRZipper
+open Alex.Dialects.Core.Types
+open Alex.Dialects.Arith.Templates
+open Alex.Dialects.LLVM.Templates
+open Alex.Traversal.PSGZipper
+open Alex.Bindings.PlatformTypes
 open Alex.Bindings.BindingTypes
+
+// ===================================================================
+// Type Constants
+// ===================================================================
+
+/// Fat string type: { ptr, i64 }
+let fatStringType = TStruct [MLIRTypes.ptr; MLIRTypes.i64]
 
 // ===================================================================
 // Helper Functions
 // ===================================================================
 
+/// Create a Val from SSA and type
+let inline val' ssa ty : Val = { SSA = ssa; Type = ty }
+
 /// Extract pointer from fat string for C string interop
-let private extractStringPointer (strSSA: string) (ty: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
+let extractStringPointer (z: PSGZipper) (strSSA: SSA) (ty: MLIRType) : SSA * MLIROp list =
     match ty with
-    | Struct _ ->
-        let ptrSSA, z = MLIRZipper.yieldSSA zipper
-        let extractText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let z' = MLIRZipper.witnessOpWithResult extractText ptrSSA Pointer z
-        ptrSSA, z'
-    | Pointer -> strSSA, zipper
-    | _ -> strSSA, zipper
+    | TStruct _ ->
+        let ptrSSA = freshSynthSSA z
+        let op = MLIROp.LLVMOp (extractValueAt ptrSSA strSSA 0 fatStringType)
+        ptrSSA, [op]
+    | TPtr _ ->
+        strSSA, []
+    | _ ->
+        strSSA, []
 
-/// Witness a call to a GTK function
-let witnessGtkCall (funcName: string) (args: (string * MLIRType) list) (returnType: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
-    let argTypes = args |> List.map snd
-    let argTypeStrs = argTypes |> List.map Serialize.mlirType
-    let retTypeStr = Serialize.mlirType returnType
-    let signature = sprintf "(%s) -> %s" (String.concat ", " argTypeStrs) retTypeStr
+/// Convert integer to pointer if needed (for nativeint args)
+let ensurePointer (z: PSGZipper) (ssa: SSA) (ty: MLIRType) : SSA * MLIROp list =
+    match ty with
+    | TPtr -> ssa, []
+    | TInt _ ->
+        let ptrSSA = freshSynthSSA z
+        let op = MLIROp.LLVMOp (intToPtr ptrSSA ssa MLIRTypes.i64)
+        ptrSSA, [op]
+    | _ -> ssa, []
 
-    let zipper1 = MLIRZipper.observeExternFunc funcName signature zipper
-    let argSSAs = args |> List.map fst
-    MLIRZipper.witnessCall funcName argSSAs argTypes returnType zipper1
+/// Create null pointer constant
+let nullPointer (z: PSGZipper) : SSA * MLIROp list =
+    let nullSSA = freshSynthSSA z
+    let op = MLIROp.LLVMOp (NullPtr nullSSA)
+    nullSSA, [op]
 
 // ===================================================================
 // GTK Platform Bindings
 // ===================================================================
 
-/// gtk_init - Initialize GTK
-let witnessGtkInit (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    // gtk_init(NULL, NULL) - we pass null pointers
-    let nullSSA, zipper1 = MLIRZipper.witnessConstant 0L I64 zipper
-    let nullPtrSSA, zipper2 = MLIRZipper.yieldSSA zipper1
-    let convText = sprintf "%s = llvm.inttoptr %s : i64 to !llvm.ptr" nullPtrSSA nullSSA
-    let zipper3 = MLIRZipper.witnessOpWithResult convText nullPtrSSA Pointer zipper2
+/// gtkInit - Initialize GTK with NULL args
+let bindGtkInit (z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
+    let nullSSA, nullOps = nullPointer z
+    let callOp = MLIROp.LLVMOp (callFunc None "gtk_init"
+        [val' nullSSA MLIRTypes.ptr; val' nullSSA MLIRTypes.ptr] MLIRTypes.unit)
+    BoundOps (nullOps @ [callOp], None)
 
-    let args = [ (nullPtrSSA, Pointer); (nullPtrSSA, Pointer) ]
-    let _, zipper4 = witnessGtkCall "gtk_init" args Unit zipper3
-    zipper4, WitnessedVoid
-
-/// gtk_window_new - Create a new window
-let witnessGtkWindowNew (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// gtkWindowNew - Create a new toplevel window
+let bindGtkWindowNew (z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
     // GTK_WINDOW_TOPLEVEL = 0
-    let zeroSSA, zipper1 = MLIRZipper.witnessConstant 0L I32 zipper
-    let args = [ (zeroSSA, Integer I32) ]
-    let resultSSA, zipper2 = witnessGtkCall "gtk_window_new" args Pointer zipper1
-    zipper2, WitnessedValue (resultSSA, Pointer)
+    let zeroSSA = freshSynthSSA z
+    let constOp = MLIROp.ArithOp (constI zeroSSA 0L MLIRTypes.i32)
+    let resultSSA = freshSynthSSA z
+    let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) "gtk_window_new"
+        [val' zeroSSA MLIRTypes.i32] MLIRTypes.ptr)
+    BoundOps ([constOp; callOp], Some { SSA = resultSSA; Type = MLIRTypes.ptr })
 
-/// gtk_window_set_title - Set window title
-let witnessGtkWindowSetTitle (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// gtkWindowSetTitle - Set window title
+let bindGtkWindowSetTitle (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(windowSSA, _); (titleSSA, titleTy)] ->
-        let titlePtrSSA, zipper1 = extractStringPointer titleSSA titleTy zipper
-        let args = [ (windowSSA, Pointer); (titlePtrSSA, Pointer) ]
-        let _, zipper2 = witnessGtkCall "gtk_window_set_title" args Unit zipper1
-        zipper2, WitnessedVoid
-    | _ -> zipper, NotSupported "gtk_window_set_title requires (window, title)"
+    | [window; title] ->
+        let windowPtr, windowOps = ensurePointer z window.SSA window.Type
+        let titlePtr, titleOps = extractStringPointer z title.SSA title.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "gtk_window_set_title"
+            [val' windowPtr MLIRTypes.ptr; val' titlePtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (windowOps @ titleOps @ [callOp], None)
+    | _ ->
+        NotSupported "gtkWindowSetTitle requires (window, title)"
 
-/// gtk_window_set_default_size - Set default window size
-let witnessGtkWindowSetDefaultSize (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// gtkWindowSetDefaultSize - Set default window size
+let bindGtkWindowSetDefaultSize (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(windowSSA, _); (widthSSA, _); (heightSSA, _)] ->
-        let args = [ (windowSSA, Pointer); (widthSSA, Integer I32); (heightSSA, Integer I32) ]
-        let _, zipper1 = witnessGtkCall "gtk_window_set_default_size" args Unit zipper
-        zipper1, WitnessedVoid
-    | _ -> zipper, NotSupported "gtk_window_set_default_size requires (window, width, height)"
+    | [window; width; height] ->
+        let windowPtr, windowOps = ensurePointer z window.SSA window.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "gtk_window_set_default_size"
+            [val' windowPtr MLIRTypes.ptr; val' width.SSA MLIRTypes.i32; val' height.SSA MLIRTypes.i32] MLIRTypes.unit)
+        BoundOps (windowOps @ [callOp], None)
+    | _ ->
+        NotSupported "gtkWindowSetDefaultSize requires (window, width, height)"
 
-/// gtk_container_add - Add widget to container
-let witnessGtkContainerAdd (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// gtkContainerAdd - Add widget to container
+let bindGtkContainerAdd (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(containerSSA, _); (widgetSSA, _)] ->
-        let args = [ (containerSSA, Pointer); (widgetSSA, Pointer) ]
-        let _, zipper1 = witnessGtkCall "gtk_container_add" args Unit zipper
-        zipper1, WitnessedVoid
-    | _ -> zipper, NotSupported "gtk_container_add requires (container, widget)"
+    | [container; widget] ->
+        let containerPtr, containerOps = ensurePointer z container.SSA container.Type
+        let widgetPtr, widgetOps = ensurePointer z widget.SSA widget.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "gtk_container_add"
+            [val' containerPtr MLIRTypes.ptr; val' widgetPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (containerOps @ widgetOps @ [callOp], None)
+    | _ ->
+        NotSupported "gtkContainerAdd requires (container, widget)"
 
-/// gtk_widget_show_all - Show widget and children
-let witnessGtkWidgetShowAll (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// gtkWidgetShowAll - Show widget and children
+let bindGtkWidgetShowAll (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(widgetSSA, _)] ->
-        let args = [ (widgetSSA, Pointer) ]
-        let _, zipper1 = witnessGtkCall "gtk_widget_show_all" args Unit zipper
-        zipper1, WitnessedVoid
-    | _ -> zipper, NotSupported "gtk_widget_show_all requires (widget)"
+    | [widget] ->
+        let widgetPtr, widgetOps = ensurePointer z widget.SSA widget.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "gtk_widget_show_all"
+            [val' widgetPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (widgetOps @ [callOp], None)
+    | _ ->
+        NotSupported "gtkWidgetShowAll requires (widget)"
 
-/// gtk_main - Run GTK main loop
-let witnessGtkMain (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    let _, zipper1 = witnessGtkCall "gtk_main" [] Unit zipper
-    zipper1, WitnessedVoid
+/// gtkMain - Run GTK main loop
+let bindGtkMain (z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
+    let callOp = MLIROp.LLVMOp (callFunc None "gtk_main" [] MLIRTypes.unit)
+    BoundOps ([callOp], None)
 
-/// gtk_main_quit - Quit GTK main loop
-let witnessGtkMainQuit (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
-    let _, zipper1 = witnessGtkCall "gtk_main_quit" [] Unit zipper
-    zipper1, WitnessedVoid
+/// gtkMainQuit - Quit GTK main loop
+let bindGtkMainQuit (z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
+    let callOp = MLIROp.LLVMOp (callFunc None "gtk_main_quit" [] MLIRTypes.unit)
+    BoundOps ([callOp], None)
 
 // ===================================================================
 // Registration
 // ===================================================================
 
 let registerBindings () =
-    // Register GTK bindings for Linux
-    // Entry point names match the Bindings.xxx function names
-    PlatformDispatch.register Linux X86_64 "gtkInit" witnessGtkInit
-    PlatformDispatch.register Linux X86_64 "gtkWindowNew" witnessGtkWindowNew
-    PlatformDispatch.register Linux X86_64 "gtkWindowSetTitle" witnessGtkWindowSetTitle
-    PlatformDispatch.register Linux X86_64 "gtkWindowSetDefaultSize" witnessGtkWindowSetDefaultSize
-    PlatformDispatch.register Linux X86_64 "gtkContainerAdd" witnessGtkContainerAdd
-    PlatformDispatch.register Linux X86_64 "gtkWidgetShowAll" witnessGtkWidgetShowAll
-    PlatformDispatch.register Linux X86_64 "gtkMain" witnessGtkMain
-    PlatformDispatch.register Linux X86_64 "gtkMainQuit" witnessGtkMainQuit
+    // Register GTK bindings for Linux x86_64
+    PlatformDispatch.register Linux X86_64 "gtkInit" bindGtkInit
+    PlatformDispatch.register Linux X86_64 "gtkWindowNew" bindGtkWindowNew
+    PlatformDispatch.register Linux X86_64 "gtkWindowSetTitle" bindGtkWindowSetTitle
+    PlatformDispatch.register Linux X86_64 "gtkWindowSetDefaultSize" bindGtkWindowSetDefaultSize
+    PlatformDispatch.register Linux X86_64 "gtkContainerAdd" bindGtkContainerAdd
+    PlatformDispatch.register Linux X86_64 "gtkWidgetShowAll" bindGtkWidgetShowAll
+    PlatformDispatch.register Linux X86_64 "gtkMain" bindGtkMain
+    PlatformDispatch.register Linux X86_64 "gtkMainQuit" bindGtkMainQuit
+
+    // Register for Linux ARM64
+    PlatformDispatch.register Linux ARM64 "gtkInit" bindGtkInit
+    PlatformDispatch.register Linux ARM64 "gtkWindowNew" bindGtkWindowNew
+    PlatformDispatch.register Linux ARM64 "gtkWindowSetTitle" bindGtkWindowSetTitle
+    PlatformDispatch.register Linux ARM64 "gtkWindowSetDefaultSize" bindGtkWindowSetDefaultSize
+    PlatformDispatch.register Linux ARM64 "gtkContainerAdd" bindGtkContainerAdd
+    PlatformDispatch.register Linux ARM64 "gtkWidgetShowAll" bindGtkWidgetShowAll
+    PlatformDispatch.register Linux ARM64 "gtkMain" bindGtkMain
+    PlatformDispatch.register Linux ARM64 "gtkMainQuit" bindGtkMainQuit

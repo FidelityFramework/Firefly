@@ -1,32 +1,90 @@
 /// SSA Assignment Pass - Alex preprocessing for MLIR emission
 ///
-/// This pass assigns SSA names to PSG nodes BEFORE MLIR emission.
+/// This pass assigns SSA values to PSG nodes BEFORE MLIR emission.
 /// SSA is an MLIR/LLVM concern, not F# semantics, so it lives in Alex.
 ///
 /// Key design:
 /// - SSA counter resets at each Lambda boundary (per-function scoping)
 /// - Post-order traversal ensures values are assigned before uses
-/// - Returns Map<NodeId, string> that FNCSTransfer reads (no generation during emission)
+/// - Returns Map<NodeId, NodeSSAAllocation> that witnesses read (coeffect lookup, no generation during emission)
+/// - Uses structured SSA type (V of int | Arg of int), not strings
+/// - Knows MLIR expansion costs: one PSG node may need multiple SSAs
 module Alex.Preprocessing.SSAAssignment
 
 open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open Alex.Dialects.Core.Types
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSA ALLOCATION FOR NODES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// SSA allocation for a node - supports multi-SSA expansion
+/// SSAs are in emission order; Result is the final SSA (what gets returned/used)
+type NodeSSAAllocation = {
+    /// All SSAs for this node in emission order
+    SSAs: SSA list
+    /// The result SSA (always the last one)
+    Result: SSA
+}
+
+module NodeSSAAllocation =
+    let single (ssa: SSA) = { SSAs = [ssa]; Result = ssa }
+    let multi (ssas: SSA list) =
+        match ssas with
+        | [] -> failwith "NodeSSAAllocation requires at least one SSA"
+        | _ -> { SSAs = ssas; Result = List.last ssas }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MLIR EXPANSION COSTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Get the number of SSAs needed for a literal value
+let private literalExpansionCost (lit: LiteralValue) : int =
+    match lit with
+    | LiteralValue.String _ -> 5  // addressof, constI(len), undef, insertvalue(ptr), insertvalue(len)
+    | LiteralValue.Unit -> 1     // constI
+    | LiteralValue.Bool _ -> 1   // constI
+    | LiteralValue.Int8 _ | LiteralValue.Int16 _ | LiteralValue.Int32 _ | LiteralValue.Int64 _ -> 1
+    | LiteralValue.UInt8 _ | LiteralValue.UInt16 _ | LiteralValue.UInt32 _ | LiteralValue.UInt64 _ -> 1
+    | LiteralValue.NativeInt _ | LiteralValue.UNativeInt _ -> 1
+    | LiteralValue.Char _ -> 1
+    | LiteralValue.Float32 _ | LiteralValue.Float64 _ -> 1
+    | _ -> 1  // Default
+
+/// Get the number of SSAs needed for a node based on its kind
+let private nodeExpansionCost (kind: SemanticKind) : int =
+    match kind with
+    | SemanticKind.Literal lit -> literalExpansionCost lit
+    // Most nodes produce one result
+    | _ -> 1
+
+// ═══════════════════════════════════════════════════════════════════════════
+// FUNCTION SCOPE STATE
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// SSA assignment state for a single function scope
 type private FunctionScope = {
     Counter: int
-    Assignments: Map<int, string>  // NodeId.value -> SSA name
+    Assignments: Map<int, NodeSSAAllocation>  // NodeId.value -> SSA allocation
 }
 
 module private FunctionScope =
     let empty = { Counter = 0; Assignments = Map.empty }
 
-    let yieldSSA (scope: FunctionScope) : string * FunctionScope =
-        let name = sprintf "%%v%d" scope.Counter
-        name, { scope with Counter = scope.Counter + 1 }
+    /// Yield a single SSA
+    let yieldSSA (scope: FunctionScope) : SSA * FunctionScope =
+        let ssa = V scope.Counter
+        ssa, { scope with Counter = scope.Counter + 1 }
 
-    let assign (nodeId: NodeId) (ssaName: string) (scope: FunctionScope) : FunctionScope =
-        { scope with Assignments = Map.add (NodeId.value nodeId) ssaName scope.Assignments }
+    /// Yield multiple SSAs based on expansion cost
+    let yieldSSAs (count: int) (scope: FunctionScope) : SSA list * FunctionScope =
+        let ssas = List.init count (fun i -> V (scope.Counter + i))
+        ssas, { scope with Counter = scope.Counter + count }
+
+    /// Assign a node's SSA allocation
+    let assign (nodeId: NodeId) (alloc: NodeSSAAllocation) (scope: FunctionScope) : FunctionScope =
+        { scope with Assignments = Map.add (NodeId.value nodeId) alloc scope.Assignments }
 
 /// Check if a node kind produces an SSA value
 let private producesValue (kind: SemanticKind) : bool =
@@ -76,8 +134,8 @@ let private producesValue (kind: SemanticKind) : bool =
 
 /// Result of SSA assignment pass
 type SSAAssignment = {
-    /// Map from NodeId.value to SSA name
-    NodeSSA: Map<int, string>
+    /// Map from NodeId.value to SSA allocation (supports multi-SSA expansion)
+    NodeSSA: Map<int, NodeSSAAllocation>
     /// Map from Lambda NodeId.value to its function name
     LambdaNames: Map<int, string>
     /// Set of entry point Lambda IDs
@@ -108,14 +166,16 @@ let rec private assignFunctionBody
             // Lambda itself gets an SSA in the PARENT scope (function pointer)
             if producesValue node.Kind then
                 let ssaName, scopeWithSSA = FunctionScope.yieldSSA scopeAfterChildren
-                FunctionScope.assign node.Id ssaName scopeWithSSA
+                FunctionScope.assign node.Id (NodeSSAAllocation.single ssaName) scopeWithSSA
             else
                 scopeAfterChildren
         | _ ->
-            // Regular node - assign SSA if it produces a value
+            // Regular node - assign SSAs based on expansion cost
             if producesValue node.Kind then
-                let ssaName, scopeWithSSA = FunctionScope.yieldSSA scopeAfterChildren
-                FunctionScope.assign node.Id ssaName scopeWithSSA
+                let cost = nodeExpansionCost node.Kind
+                let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
+                let alloc = NodeSSAAllocation.multi ssas
+                FunctionScope.assign node.Id alloc scopeWithSSAs
             else
                 scopeAfterChildren
 
@@ -200,9 +260,17 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
         EntryPointLambdas = entryPoints
     }
 
-/// Look up the SSA name for a node
-let lookupSSA (nodeId: NodeId) (assignment: SSAAssignment) : string option =
+/// Look up the full SSA allocation for a node (coeffect lookup)
+let lookupAllocation (nodeId: NodeId) (assignment: SSAAssignment) : NodeSSAAllocation option =
     Map.tryFind (NodeId.value nodeId) assignment.NodeSSA
+
+/// Look up just the result SSA for a node (most common use case)
+let lookupSSA (nodeId: NodeId) (assignment: SSAAssignment) : SSA option =
+    lookupAllocation nodeId assignment |> Option.map (fun a -> a.Result)
+
+/// Look up all SSAs for a node (for witnesses that need intermediates)
+let lookupSSAs (nodeId: NodeId) (assignment: SSAAssignment) : SSA list option =
+    lookupAllocation nodeId assignment |> Option.map (fun a -> a.SSAs)
 
 /// Look up the function name for a Lambda
 let lookupLambdaName (nodeId: NodeId) (assignment: SSAAssignment) : string option =

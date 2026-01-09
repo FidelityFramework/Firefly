@@ -143,19 +143,19 @@ let splat (result: SSA) (value: SSA) (resultTy: MLIRType) : VectorOp =
 
 /// Load a vector from memory: vector.load
 let load (result: SSA) (base': SSA) (indices: SSA list) : VectorOp =
-    VectorOp.Load (result, base', indices)
+    VectorOp.VectorLoad (result, base', indices)
 
 /// Load a vector from a single base pointer (no indices)
 let loadSimple (result: SSA) (base': SSA) : VectorOp =
-    VectorOp.Load (result, base', [])
+    VectorOp.VectorLoad (result, base', [])
 
 /// Store a vector to memory: vector.store
 let store (valueToStore: SSA) (base': SSA) (indices: SSA list) : VectorOp =
-    VectorOp.Store (valueToStore, base', indices)
+    VectorOp.VectorStore (valueToStore, base', indices)
 
 /// Store a vector to a single base pointer (no indices)
 let storeSimple (valueToStore: SSA) (base': SSA) : VectorOp =
-    VectorOp.Store (valueToStore, base', [])
+    VectorOp.VectorStore (valueToStore, base', [])
 
 /// Masked load: vector.maskedload
 let maskedLoad (result: SSA) (base': SSA) (indices: SSA list) (mask: SSA) (passthru: SSA) : VectorOp =

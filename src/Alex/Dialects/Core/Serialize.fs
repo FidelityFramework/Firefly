@@ -404,13 +404,14 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
         | _ -> sb.Append("atomic ") |> ignore; atomicOrdering ordering sb; sb.Append(" ") |> ignore
         ssa ptr sb; sb.Append(" : !llvm.ptr -> ") |> ignore
         llvmType ty sb
-    | LLVMOp.Store (v, ptr, ordering) ->
+    | LLVMOp.Store (v, ptr, valueTy, ordering) ->
         sb.Append("llvm.store ") |> ignore
         match ordering with
         | NotAtomic -> ()
         | _ -> sb.Append("atomic ") |> ignore; atomicOrdering ordering sb; sb.Append(" ") |> ignore
         ssa v sb; sb.Append(", ") |> ignore
-        ssa ptr sb; sb.Append(" : !llvm.ptr") |> ignore
+        ssa ptr sb; sb.Append(" : ") |> ignore
+        mlirType valueTy sb; sb.Append(", !llvm.ptr") |> ignore
     | GEP (r, base', indices, elemTy) ->
         ssa r sb; sb.Append(" = llvm.getelementptr ") |> ignore
         ssa base' sb
@@ -804,12 +805,19 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
         if hasSideEffects then sb.Append("has_side_effects ") |> ignore
         if isAlignStack then sb.Append("is_align_stack ") |> ignore
         sb.Append("\"").Append(asm).Append("\", \"").Append(constraints).Append("\" ") |> ignore
-        args |> List.iteri (fun i a ->
+        // Emit SSA values
+        args |> List.iteri (fun i (ssaVal, _) ->
             if i > 0 then sb.Append(", ") |> ignore
-            ssa a sb)
+            ssa ssaVal sb)
+        // Emit function type signature: (argTypes) -> retType
+        sb.Append(" : (") |> ignore
+        args |> List.iteri (fun i (_, argTy) ->
+            if i > 0 then sb.Append(", ") |> ignore
+            mlirType argTy sb)
+        sb.Append(") -> ") |> ignore
         match retTy with
-        | Some t -> sb.Append(" : ") |> ignore; llvmType t sb
-        | None -> sb.Append(" : () -> ()") |> ignore
+        | Some t -> mlirType t sb
+        | None -> sb.Append("()") |> ignore
 
     // === VA ARG ===
     | VaArg (r, vaList, ty) ->
@@ -818,11 +826,18 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
         llvmType ty sb
 
     // === RETURN ===
-    | Return value ->
+    | Return (value, valueTy) ->
         sb.Append("llvm.return") |> ignore
-        match value with
-        | Some v -> sb.Append(" ") |> ignore; ssa v sb
-        | None -> ()
+        match value, valueTy with
+        | Some v, Some ty ->
+            sb.Append(" ") |> ignore
+            ssa v sb
+            sb.Append(" : ") |> ignore
+            mlirType ty sb
+        | Some v, None ->
+            sb.Append(" ") |> ignore
+            ssa v sb
+        | None, _ -> ()
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS FOR DIALECT SERIALIZATION (before recursive group)
@@ -838,26 +853,31 @@ let private binaryIndex (opName: string) (r: SSA) (l: SSA) (rh: SSA) (sb: String
 // SCF DIALECT SERIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Emit region (helper for SCF ops)
+/// Emit region
+/// For single-block regions with no block args, emit ops directly (MLIR doesn't need labels)
+/// For multi-block or blocks with args, emit full block structure
 let rec region (r: Region) (indent: int) (sb: StringBuilder) : unit =
     sb.Append(" {") |> ignore
-    for blk in r.Blocks do
+    for i, blk in r.Blocks |> List.indexed do
         sb.AppendLine() |> ignore
-        for _ in 1..indent do sb.Append("  ") |> ignore
-        blockRef blk.Label sb
-        if not (List.isEmpty blk.Args) then
-            sb.Append("(") |> ignore
-            blk.Args |> List.iteri (fun i arg ->
-                if i > 0 then sb.Append(", ") |> ignore
-                ssa arg.SSA sb; sb.Append(" : ") |> ignore
-                mlirType arg.Type sb)
-            sb.Append(")") |> ignore
-        sb.Append(":") |> ignore
-        for op in blk.Ops do
+        // Only emit block label if: multiple blocks, or block has args, or not first block
+        let needsLabel = List.length r.Blocks > 1 || not (List.isEmpty blk.Args)
+        if needsLabel then
+            for _ in 1..indent do sb.Append("  ") |> ignore
+            blockRef blk.Label sb
+            if not (List.isEmpty blk.Args) then
+                sb.Append("(") |> ignore
+                blk.Args |> List.iteri (fun j arg ->
+                    if j > 0 then sb.Append(", ") |> ignore
+                    ssa arg.SSA sb; sb.Append(" : ") |> ignore
+                    mlirType arg.Type sb)
+                sb.Append(")") |> ignore
+            sb.Append(":") |> ignore
             sb.AppendLine() |> ignore
-            for _ in 1..(indent+1) do sb.Append("  ") |> ignore
+        for op in blk.Ops do
+            for _ in 1..(indent) do sb.Append("  ") |> ignore
             mlirOp op sb
-    sb.AppendLine() |> ignore
+            sb.AppendLine() |> ignore
     for _ in 1..(indent-1) do sb.Append("  ") |> ignore
     sb.Append("}") |> ignore
 
@@ -1366,14 +1386,14 @@ and vectorOp (op: VectorOp) (sb: StringBuilder) : unit =
         mlirType resultTy sb
 
     // === LOAD/STORE ===
-    | VectorOp.Load (r, base', indices) ->
+    | VectorLoad (r, base', indices) ->
         ssa r sb; sb.Append(" = vector.load ") |> ignore
         ssa base' sb; sb.Append("[") |> ignore
         indices |> List.iteri (fun i idx ->
             if i > 0 then sb.Append(", ") |> ignore
             ssa idx sb)
         sb.Append("]") |> ignore
-    | VectorOp.Store (v, base', indices) ->
+    | VectorStore (v, base', indices) ->
         sb.Append("vector.store ") |> ignore
         ssa v sb; sb.Append(", ") |> ignore
         ssa base' sb; sb.Append("[") |> ignore

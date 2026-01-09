@@ -1,239 +1,235 @@
-/// WebViewBindings - Platform-specific webview bindings (witness-based)
+/// WebViewBindings - Platform-specific webview bindings
 ///
-/// ARCHITECTURAL FOUNDATION:
-/// Uses the codata accumulator pattern from MLIRZipper.
-/// Bindings are witness functions that take primitive info and zipper,
-/// returning an updated zipper with the witnessed MLIR operations.
+/// ARCHITECTURAL PRINCIPLE (January 2026):
+/// Bindings RETURN structured MLIROp lists - they do NOT emit.
+/// Uses dialect templates for all operations. ZERO sprintf.
 module Alex.Bindings.WebView.WebViewBindings
 
-open Alex.CodeGeneration.MLIRTypes
-open Alex.Traversal.MLIRZipper
+open Alex.Dialects.Core.Types
+open Alex.Dialects.Arith.Templates
+open Alex.Dialects.LLVM.Templates
+open Alex.Traversal.PSGZipper
+open Alex.Bindings.PlatformTypes
 open Alex.Bindings.BindingTypes
 
 // ===================================================================
-// Helper Witness Functions
+// Type Constants
 // ===================================================================
+
+/// Fat string type: { ptr, i64 }
+let fatStringType = TStruct [MLIRTypes.ptr; MLIRTypes.i64]
+
+// ===================================================================
+// Helper Functions
+// ===================================================================
+
+/// Create a Val from SSA and type
+let inline val' ssa ty : Val = { SSA = ssa; Type = ty }
 
 /// Extract pointer from fat string (struct<ptr, i64>) for C string interop
-/// Fidelity strings are fat pointers; C APIs expect just the pointer
-let private extractStringPointer (strSSA: string) (ty: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
+let extractStringPointer (z: PSGZipper) (strSSA: SSA) (ty: MLIRType) : SSA * MLIROp list =
     match ty with
-    | Struct _ ->
-        // Fat string - extract the pointer (element 0)
-        let ptrSSA, z = MLIRZipper.yieldSSA zipper
-        let extractText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let z' = MLIRZipper.witnessOpWithResult extractText ptrSSA Pointer z
-        ptrSSA, z'
-    | NativeStrType ->
-        // Fat string (NativeStr alias) - extract the pointer (element 0)
-        let ptrSSA, z = MLIRZipper.yieldSSA zipper
-        let extractText = sprintf "%s = llvm.extractvalue %s[0] : !llvm.struct<(ptr, i64)>" ptrSSA strSSA
-        let z' = MLIRZipper.witnessOpWithResult extractText ptrSSA Pointer z
-        ptrSSA, z'
-    | Pointer ->
-        // Already a pointer (e.g., from NativePtr)
-        strSSA, zipper
+    | TStruct _ ->
+        let ptrSSA = freshSynthSSA z
+        let op = MLIROp.LLVMOp (extractValueAt ptrSSA strSSA 0 fatStringType)
+        ptrSSA, [op]
+    | TPtr _ ->
+        strSSA, []
     | _ ->
-        // Unknown type - pass through and hope for the best
-        strSSA, zipper
+        strSSA, []
 
-/// Convert a value to pointer if needed (for nativeint args)
-let private ensurePointer (ssa: string) (ty: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
+/// Convert integer to pointer if needed (for nativeint args)
+let ensurePointer (z: PSGZipper) (ssa: SSA) (ty: MLIRType) : SSA * MLIROp list =
     match ty with
-    | Pointer -> ssa, zipper
-    | Integer _ ->
-        let ssaName, z = MLIRZipper.yieldSSA zipper
-        let convText = sprintf "%s = llvm.inttoptr %s : i64 to !llvm.ptr" ssaName ssa
-        let z' = MLIRZipper.witnessOpWithResult convText ssaName Pointer z
-        ssaName, z'
-    | _ -> ssa, zipper
+    | TPtr _ -> ssa, []
+    | TInt _ ->
+        let ptrSSA = freshSynthSSA z
+        let op = MLIROp.LLVMOp (intToPtr ptrSSA ssa MLIRTypes.i64)
+        ptrSSA, [op]
+    | _ -> ssa, []
 
-/// Witness a call to a webview library function
-/// Returns: (resultSSA, updatedZipper)
-let witnessWebViewCall (funcName: string) (args: (string * MLIRType) list) (returnType: MLIRType) (zipper: MLIRZipper) : string * MLIRZipper =
-    // 1. Observe the external function requirement (coeffect)
-    // We need to construct the signature for the extern declaration
-    let argTypes = args |> List.map snd
-    let argTypeStrs = argTypes |> List.map Serialize.mlirType
-    let retTypeStr = Serialize.mlirType returnType
-    let signature = sprintf "(%s) -> %s" (String.concat ", " argTypeStrs) retTypeStr
-    
-    let zipper1 = MLIRZipper.observeExternFunc funcName signature zipper
-
-    // 2. Witness the call operation
-    let argSSAs = args |> List.map fst
-    // Use witnessCall which handles yielding SSA and emitting the op
-    MLIRZipper.witnessCall funcName argSSAs argTypes returnType zipper1
+/// Truncate i64 to i32 if needed
+let truncToI32 (z: PSGZipper) (ssa: SSA) (ty: MLIRType) : SSA * MLIROp list =
+    match ty with
+    | TInt I32 -> ssa, []
+    | TInt I64 ->
+        let i32SSA = freshSynthSSA z
+        let op = MLIROp.ArithOp (truncI i32SSA ssa MLIRTypes.i64 MLIRTypes.i32)
+        i32SSA, [op]
+    | TInt _ ->
+        let i32SSA = freshSynthSSA z
+        let op = MLIROp.ArithOp (truncI i32SSA ssa ty MLIRTypes.i32)
+        i32SSA, [op]
+    | _ -> ssa, []
 
 // ===================================================================
-// Platform Primitive Bindings (Witness-Based)
+// Platform Primitive Bindings
 // ===================================================================
 
-let witnessCreateWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// createWebview(debug: int, window: nativeint) -> nativeint
+let bindCreateWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(debugSSA, debugTy); (windowSSA, windowTy)] ->
-        // Convert debug to i32 if needed
-        let debug32SSA, zipper1 =
-            match debugTy with
-            | Integer I32 -> debugSSA, zipper
-            | Integer I64 ->
-                let ssaName, z = MLIRZipper.yieldSSA zipper
-                let truncText = sprintf "%s = arith.trunci %s : i64 to i32" ssaName debugSSA
-                let z' = MLIRZipper.witnessOpWithResult truncText ssaName (Integer I32) z
-                ssaName, z'
-            | _ -> debugSSA, zipper
-        // Convert window nativeint to pointer if needed
-        let windowPtrSSA, zipper2 =
-            match windowTy with
-            | Pointer -> windowSSA, zipper1
-            | Integer _ ->
-                let ssaName, z = MLIRZipper.yieldSSA zipper1
-                let convText = sprintf "%s = llvm.inttoptr %s : i64 to !llvm.ptr" ssaName windowSSA
-                let z' = MLIRZipper.witnessOpWithResult convText ssaName Pointer z
-                ssaName, z'
-            | _ -> windowSSA, zipper1
-        let args = [ (debug32SSA, Integer I32); (windowPtrSSA, Pointer) ]
-        let resultSSA, zipper3 = witnessWebViewCall "webview_create" args Pointer zipper2
-        zipper3, WitnessedValue (resultSSA, Pointer)
-    | _ -> zipper, NotSupported "createWebview requires (debug: int, window: nativeint)"
+    | [debug; window] ->
+        let debug32, debugOps = truncToI32 z debug.SSA debug.Type
+        let windowPtr, windowOps = ensurePointer z window.SSA window.Type
+        let resultSSA = freshSynthSSA z
+        let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) "webview_create"
+            [val' debug32 MLIRTypes.i32; val' windowPtr MLIRTypes.ptr] MLIRTypes.ptr)
+        let allOps = debugOps @ windowOps @ [callOp]
+        BoundOps (allOps, Some { SSA = resultSSA; Type = MLIRTypes.ptr })
+    | _ ->
+        NotSupported "createWebview requires (debug: int, window: nativeint)"
 
-let witnessDestroyWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// destroyWebview(webview: nativeint) -> unit
+let bindDestroyWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let args = [ (wPtrSSA, Pointer) ]
-        let _, zipper2 = witnessWebViewCall "webview_destroy" args Unit zipper1
-        zipper2, WitnessedVoid
-    | _ -> zipper, NotSupported "destroyWebview requires (webview: nativeint)"
+    | [w] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_destroy"
+            [val' wPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ [callOp], None)
+    | _ ->
+        NotSupported "destroyWebview requires (webview: nativeint)"
 
-let witnessRunWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// runWebview(webview: nativeint) -> unit
+let bindRunWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let args = [ (wPtrSSA, Pointer) ]
-        let _, zipper2 = witnessWebViewCall "webview_run" args Unit zipper1
-        zipper2, WitnessedVoid
-    | _ -> zipper, NotSupported "runWebview requires (webview: nativeint)"
+    | [w] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_run"
+            [val' wPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ [callOp], None)
+    | _ ->
+        NotSupported "runWebview requires (webview: nativeint)"
 
-let witnessTerminateWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// terminateWebview(webview: nativeint) -> unit
+let bindTerminateWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let args = [ (wPtrSSA, Pointer) ]
-        let _, zipper2 = witnessWebViewCall "webview_terminate" args Unit zipper1
-        zipper2, WitnessedVoid
-    | _ -> zipper, NotSupported "terminateWebview requires (webview: nativeint)"
+    | [w] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_terminate"
+            [val' wPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ [callOp], None)
+    | _ ->
+        NotSupported "terminateWebview requires (webview: nativeint)"
 
-let witnessSetWebViewTitle (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// setWebviewTitle(webview: nativeint, title: string) -> unit
+let bindSetWebViewTitle (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (titleSSA, titleTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let titlePtrSSA, zipper2 = extractStringPointer titleSSA titleTy zipper1
-        let args = [ (wPtrSSA, Pointer); (titlePtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebViewCall "webview_set_title" args Unit zipper2
-        zipper3, WitnessedVoid
-    | _ -> zipper, NotSupported "setWebviewTitle requires (webview: nativeint, title: string)"
+    | [w; title] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let titlePtr, titleOps = extractStringPointer z title.SSA title.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_set_title"
+            [val' wPtr MLIRTypes.ptr; val' titlePtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ titleOps @ [callOp], None)
+    | _ ->
+        NotSupported "setWebviewTitle requires (webview: nativeint, title: string)"
 
-let witnessSetWebViewSize (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// setWebviewSize(webview: nativeint, width: int, height: int, hints: int) -> unit
+let bindSetWebViewSize (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (widthSSA, _); (heightSSA, _); (hintsSSA, _)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let args = [
-            (wPtrSSA, Pointer);
-            (widthSSA, Integer I32);
-            (heightSSA, Integer I32);
-            (hintsSSA, Integer I32)
-        ]
-        let _, zipper2 = witnessWebViewCall "webview_set_size" args Unit zipper1
-        zipper2, WitnessedVoid
-    | _ -> zipper, NotSupported "setWebviewSize requires (webview, width, height, hints)"
+    | [w; width; height; hints] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let width32, wOps = truncToI32 z width.SSA width.Type
+        let height32, hOps = truncToI32 z height.SSA height.Type
+        let hints32, hintsOps = truncToI32 z hints.SSA hints.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_set_size"
+            [val' wPtr MLIRTypes.ptr; val' width32 MLIRTypes.i32; val' height32 MLIRTypes.i32; val' hints32 MLIRTypes.i32] MLIRTypes.unit)
+        BoundOps (ptrOps @ wOps @ hOps @ hintsOps @ [callOp], None)
+    | _ ->
+        NotSupported "setWebviewSize requires (webview, width, height, hints)"
 
-let witnessNavigateWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// navigateWebview(webview: nativeint, url: string) -> unit
+let bindNavigateWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (urlSSA, urlTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let urlPtrSSA, zipper2 = extractStringPointer urlSSA urlTy zipper1
-        let args = [ (wPtrSSA, Pointer); (urlPtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebViewCall "webview_navigate" args Unit zipper2
-        zipper3, WitnessedVoid
-    | _ -> zipper, NotSupported "navigateWebview requires (webview, url)"
+    | [w; url] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let urlPtr, urlOps = extractStringPointer z url.SSA url.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_navigate"
+            [val' wPtr MLIRTypes.ptr; val' urlPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ urlOps @ [callOp], None)
+    | _ ->
+        NotSupported "navigateWebview requires (webview, url)"
 
-let witnessSetWebViewHtml (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// setWebviewHtml(webview: nativeint, html: string) -> unit
+let bindSetWebViewHtml (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (htmlSSA, htmlTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let htmlPtrSSA, zipper2 = extractStringPointer htmlSSA htmlTy zipper1
-        let args = [ (wPtrSSA, Pointer); (htmlPtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebViewCall "webview_set_html" args Unit zipper2
-        zipper3, WitnessedVoid
-    | _ -> zipper, NotSupported "setWebviewHtml requires (webview, html)"
+    | [w; html] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let htmlPtr, htmlOps = extractStringPointer z html.SSA html.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_set_html"
+            [val' wPtr MLIRTypes.ptr; val' htmlPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ htmlOps @ [callOp], None)
+    | _ ->
+        NotSupported "setWebviewHtml requires (webview, html)"
 
-let witnessInitWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// initWebview(webview: nativeint, js: string) -> unit
+let bindInitWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (jsSSA, jsTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let jsPtrSSA, zipper2 = extractStringPointer jsSSA jsTy zipper1
-        let args = [ (wPtrSSA, Pointer); (jsPtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebViewCall "webview_init" args Unit zipper2
-        zipper3, WitnessedVoid
-    | _ -> zipper, NotSupported "initWebview requires (webview, js)"
+    | [w; js] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let jsPtr, jsOps = extractStringPointer z js.SSA js.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_init"
+            [val' wPtr MLIRTypes.ptr; val' jsPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ jsOps @ [callOp], None)
+    | _ ->
+        NotSupported "initWebview requires (webview, js)"
 
-let witnessEvalWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// evalWebview(webview: nativeint, js: string) -> unit
+let bindEvalWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (jsSSA, jsTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let jsPtrSSA, zipper2 = extractStringPointer jsSSA jsTy zipper1
-        let args = [ (wPtrSSA, Pointer); (jsPtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebViewCall "webview_eval" args Unit zipper2
-        zipper3, WitnessedVoid
-    | _ -> zipper, NotSupported "evalWebview requires (webview, js)"
+    | [w; js] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let jsPtr, jsOps = extractStringPointer z js.SSA js.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_eval"
+            [val' wPtr MLIRTypes.ptr; val' jsPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ jsOps @ [callOp], None)
+    | _ ->
+        NotSupported "evalWebview requires (webview, js)"
 
-let witnessBindWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// bindWebview(webview: nativeint, name: string) -> unit
+let bindBindWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (nameSSA, nameTy)] -> 
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let namePtrSSA, zipper2 = extractStringPointer nameSSA nameTy zipper1
-        let args = [ (wPtrSSA, Pointer); (namePtrSSA, Pointer) ]
-        let _, zipper3 = witnessWebViewCall "webview_bind" args Unit zipper2
-        zipper3, WitnessedVoid
-    | _ -> zipper, NotSupported "bindWebview arguments mismatch"
+    | [w; name] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let namePtr, nameOps = extractStringPointer z name.SSA name.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_bind"
+            [val' wPtr MLIRTypes.ptr; val' namePtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ nameOps @ [callOp], None)
+    | _ ->
+        NotSupported "bindWebview arguments mismatch"
 
-let witnessReturnWebView (prim: PlatformPrimitive) (zipper: MLIRZipper) : MLIRZipper * EmissionResult =
+/// returnWebview(webview: nativeint, id: string, status: int, result: string) -> unit
+let bindReturnWebView (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
-    | [(wSSA, wTy); (idSSA, idTy); (statusSSA, _); (resultSSA, resultTy)] ->
-        let wPtrSSA, zipper1 = ensurePointer wSSA wTy zipper
-        let idPtrSSA, zipper2 = extractStringPointer idSSA idTy zipper1
-        let resultPtrSSA, zipper3 = extractStringPointer resultSSA resultTy zipper2
-        let args = [ 
-            (wPtrSSA, Pointer); 
-            (idPtrSSA, Pointer); 
-            (statusSSA, Integer I32); 
-            (resultPtrSSA, Pointer) 
-        ]
-        let _, zipper4 = witnessWebViewCall "webview_return" args Unit zipper3
-        zipper4, WitnessedVoid
-    | _ -> zipper, NotSupported "returnWebview requires (webview, id, status, result)"
+    | [w; id; status; result] ->
+        let wPtr, ptrOps = ensurePointer z w.SSA w.Type
+        let idPtr, idOps = extractStringPointer z id.SSA id.Type
+        let status32, statusOps = truncToI32 z status.SSA status.Type
+        let resultPtr, resultOps = extractStringPointer z result.SSA result.Type
+        let callOp = MLIROp.LLVMOp (callFunc None "webview_return"
+            [val' wPtr MLIRTypes.ptr; val' idPtr MLIRTypes.ptr; val' status32 MLIRTypes.i32; val' resultPtr MLIRTypes.ptr] MLIRTypes.unit)
+        BoundOps (ptrOps @ idOps @ statusOps @ resultOps @ [callOp], None)
+    | _ ->
+        NotSupported "returnWebview requires (webview, id, status, result)"
 
 // ===================================================================
 // Registration
 // ===================================================================
 
 let registerBindings () =
-    // Register for Linux x86_64
-    // We register against the base entry point name (e.g. "createWebview")
-    // because CheckExpressions.fs extracts only the last part of the name.
-    let reg binding name = 
+    let register name binding =
         PlatformDispatch.register Linux X86_64 name binding
-    
-    reg witnessCreateWebView "createWebview"
-    reg witnessDestroyWebView "destroyWebview"
-    reg witnessRunWebView "runWebview"
-    reg witnessTerminateWebView "terminateWebview"
-    reg witnessSetWebViewTitle "setWebviewTitle"
-    reg witnessSetWebViewSize "setWebviewSize"
-    reg witnessNavigateWebView "navigateWebview"
-    reg witnessSetWebViewHtml "setWebviewHtml"
-    reg witnessInitWebView "initWebview"
-    reg witnessEvalWebView "evalWebview"
-    reg witnessBindWebView "bindWebview"
-    reg witnessReturnWebView "returnWebview"
+
+    register "createWebview" bindCreateWebView
+    register "destroyWebview" bindDestroyWebView
+    register "runWebview" bindRunWebView
+    register "terminateWebview" bindTerminateWebView
+    register "setWebviewTitle" bindSetWebViewTitle
+    register "setWebviewSize" bindSetWebViewSize
+    register "navigateWebview" bindNavigateWebView
+    register "setWebviewHtml" bindSetWebViewHtml
+    register "initWebview" bindInitWebView
+    register "evalWebview" bindEvalWebView
+    register "bindWebview" bindBindWebView
+    register "returnWebview" bindReturnWebView

@@ -194,9 +194,9 @@ type BinaryArithKind =
     | Add | Sub | Mul | Div | Rem
     | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight
 
-/// Comparison operation kinds
+/// Comparison operation kinds (prefixed to avoid collision with ICmpPred)
 type CompareKind =
-    | Lt | Le | Gt | Ge | Eq | Ne
+    | CmpLt | CmpLe | CmpGt | CmpGe | CmpEq | CmpNe
 
 /// Select integer binary template from kind
 let intBinary (kind: BinaryArithKind) (result: SSA) (lhs: SSA) (rhs: SSA) (ty: MLIRType) : ArithOp =
@@ -225,32 +225,32 @@ let floatBinary (kind: BinaryArithKind) (result: SSA) (lhs: SSA) (rhs: SSA) (ty:
 /// Map compare kind to signed integer predicate
 let signedPred (kind: CompareKind) : ICmpPred =
     match kind with
-    | Lt -> ICmpPred.Slt
-    | Le -> ICmpPred.Sle
-    | Gt -> ICmpPred.Sgt
-    | Ge -> ICmpPred.Sge
-    | Eq -> ICmpPred.Eq
-    | Ne -> ICmpPred.Ne
+    | CmpLt -> Slt
+    | CmpLe -> Sle
+    | CmpGt -> Sgt
+    | CmpGe -> Sge
+    | CmpEq -> Eq
+    | CmpNe -> Ne
 
 /// Map compare kind to unsigned integer predicate
 let unsignedPred (kind: CompareKind) : ICmpPred =
     match kind with
-    | Lt -> ICmpPred.Ult
-    | Le -> ICmpPred.Ule
-    | Gt -> ICmpPred.Ugt
-    | Ge -> ICmpPred.Uge
-    | Eq -> ICmpPred.Eq
-    | Ne -> ICmpPred.Ne
+    | CmpLt -> Ult
+    | CmpLe -> Ule
+    | CmpGt -> Ugt
+    | CmpGe -> Uge
+    | CmpEq -> Eq
+    | CmpNe -> Ne
 
 /// Map compare kind to ordered float predicate
 let orderedPred (kind: CompareKind) : FCmpPred =
     match kind with
-    | Lt -> FCmpPred.OLt
-    | Le -> FCmpPred.OLe
-    | Gt -> FCmpPred.OGt
-    | Ge -> FCmpPred.OGe
-    | Eq -> FCmpPred.OEq
-    | Ne -> FCmpPred.ONe
+    | CmpLt -> OLt
+    | CmpLe -> OLe
+    | CmpGt -> OGt
+    | CmpGe -> OGe
+    | CmpEq -> OEq
+    | CmpNe -> ONe
 
 /// Select integer comparison template from kind (signed)
 let intCompare (kind: CompareKind) (result: SSA) (lhs: SSA) (rhs: SSA) (ty: MLIRType) : ArithOp =

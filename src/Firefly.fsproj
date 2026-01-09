@@ -28,7 +28,6 @@
 
       <!-- Core Types -->
       <Compile Include="Core/Types/Dialects.fs" />
-      <Compile Include="Core/Types/MLIRTypes.fs" />
 
       <!-- Toolchain (needs OutputKind from MLIRTypes) -->
       <Compile Include="Core/Toolchain.fs" />
@@ -55,24 +54,25 @@
       <Compile Include="Alex/Dialects/Index/Templates.fs" />
       <Compile Include="Alex/Dialects/Vector/Templates.fs" />
 
-      <!-- Alex CodeGeneration (types first) - TO BE REPLACED by Dialects -->
-      <Compile Include="Alex/CodeGeneration/MLIRTypes.fs" />
+      <!-- Platform Types - OSFamily/Architecture (no dependencies, breaks cycles) -->
+      <Compile Include="Alex/Bindings/PlatformTypes.fs" />
 
-      <!-- Alex Templates - Quotation-based MLIR templates (before MLIRZipper so it can use them) -->
-      <Compile Include="Alex/Templates/TemplateTypes.fs" />
-      <Compile Include="Alex/Templates/ArithTemplates.fs" />
-      <Compile Include="Alex/Templates/MemoryTemplates.fs" />
-      <Compile Include="Alex/Templates/ControlFlowTemplates.fs" />
-      <Compile Include="Alex/Templates/LLVMTemplates.fs" />
-
-      <!-- Alex Preprocessing - coeffects before MLIRZipper -->
+      <!-- Alex Preprocessing - coeffects before PSGZipper -->
       <Compile Include="Alex/Preprocessing/SSAAssignment.fs" />
       <Compile Include="Alex/Preprocessing/MutabilityAnalysis.fs" />
+      <!-- Platform Config (depends on PlatformTypes) -->
+      <Compile Include="Alex/Preprocessing/PlatformConfig.fs" />
+      <Compile Include="Alex/Preprocessing/PlatformBindingResolution.fs" />
 
-      <!-- Alex Traversal - MLIRZipper MUST come before bindings that use it -->
-      <Compile Include="Alex/Traversal/MLIRZipper.fs" />
+      <!-- Alex Traversal - New architecture: Coeffects + Zipper + Fold -->
+      <Compile Include="Alex/Traversal/Coeffects.fs" />
+      <Compile Include="Alex/Traversal/Zipper.fs" />
+      <Compile Include="Alex/Traversal/WitnessFold.fs" />
 
-      <!-- Alex Bindings (platform as data, uses MLIRZipper) -->
+      <!-- Alex Traversal - PSGZipper (legacy, being replaced) -->
+      <Compile Include="Alex/Traversal/PSGZipper.fs" />
+
+      <!-- Alex Bindings - Base types (need PSGZipper for Binding type) -->
       <Compile Include="Alex/Bindings/BindingTypes.fs" />
       <Compile Include="Alex/Bindings/Console/ConsoleBindings.fs" />
       <Compile Include="Alex/Bindings/Time/TimeBindings.fs" />
@@ -95,19 +95,25 @@
       <!-- Alex Patterns - Active patterns for semantic classification -->
       <Compile Include="Alex/Patterns/SemanticPatterns.fs" />
 
+      <!-- Alex Traversal - Main witness (uses SemanticPatterns as lens) -->
+      <Compile Include="Alex/Traversal/Witness.fs" />
+
       <!-- Alex XParsec - Composable PSG pattern matchers -->
       <Compile Include="Alex/XParsec/PSGCombinators.fs" />
-      <Compile Include="Alex/XParsec/MLIREmitters.fs" />
 
-      <!-- Alex Witnesses - Category-based MLIR generation -->
+      <!-- Alex Witnesses - Category-based MLIR generation (legacy, being migrated) -->
       <Compile Include="Alex/Witnesses/LiteralWitness.fs" />
       <Compile Include="Alex/Witnesses/BindingWitness.fs" />
-      <Compile Include="Alex/Witnesses/ApplicationWitness.fs" />
+      <!-- Application Witnesses (factored from ApplicationWitness.fs) -->
+      <Compile Include="Alex/Witnesses/Application/Primitives.fs" />
+      <Compile Include="Alex/Witnesses/Application/Format.fs" />
+      <Compile Include="Alex/Witnesses/Application/Platform.fs" />
+      <Compile Include="Alex/Witnesses/Application/Witness.fs" />
       <Compile Include="Alex/Witnesses/ControlFlowWitness.fs" />
       <Compile Include="Alex/Witnesses/MemoryWitness.fs" />
       <Compile Include="Alex/Witnesses/LambdaWitness.fs" />
 
-      <!-- Alex Traversal - FNCS SemanticGraph → MLIRZipper (witnessing fold) -->
+      <!-- Alex Traversal - FNCS SemanticGraph → PSGZipper (witnessing fold) -->
       <Compile Include="Alex/Traversal/FNCSTransfer.fs" />
 
       <!-- Alex Pipeline Types -->

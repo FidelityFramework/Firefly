@@ -16,4 +16,4 @@ platform = { path = "/home/hhh/repos/Fidelity.Platform/Linux_x86_64" }
 [build]
 sources = ["HelloWorld.fs"]
 output = "helloworld"
-output_kind = "freestanding"
+output_kind = "console"
