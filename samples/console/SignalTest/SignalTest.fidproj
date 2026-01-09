@@ -1,0 +1,21 @@
+[package]
+name = "SignalTest"
+version = "0.1.0"
+description = "Test sample for Fidelity.Signal reactive primitives"
+authors = ["SpeakEZ LLC"]
+license = "MIT"
+
+[compilation]
+memory_model = "stack_only"
+target = "native"
+
+[dependencies]
+platform = { path = "/home/hhh/repos/Fidelity.Platform/Linux_x86_64" }
+signal = { path = "/home/hhh/repos/Fidelity.Signal" }
+
+[build]
+sources = [
+    "SignalTest.fs"
+]
+output = "signaltest"
+output_kind = "freestanding"

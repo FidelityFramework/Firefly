@@ -226,6 +226,45 @@ let (|ArrayOp|_|) (info: IntrinsicInfo) =
 let (|UncheckedOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.Unchecked then Some info.Operation else None
 
+/// Check if intrinsic is a Crypto operation (using IntrinsicInfo)
+/// Crypto intrinsics: sha1, base64Encode, base64Decode
+let (|CryptoOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Crypto then Some info.Operation else None
+
+/// Check if intrinsic is a Bits operation (using IntrinsicInfo)
+/// Bits intrinsics: htons, ntohs, htonl, ntohl, float32ToInt32Bits, int32BitsToFloat32, etc.
+let (|BitsOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Bits then Some info.Operation else None
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Reactive Signals (SolidJS-inspired native signals)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Check if intrinsic is a FnPtr operation (using IntrinsicInfo)
+/// FnPtr intrinsics: ofFunction, invoke, isNull, null
+let (|FnPtrOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.FnPtr then Some info.Operation else None
+
+/// Check if intrinsic is a Signal operation (using IntrinsicInfo)
+/// Signal intrinsics: create, get, set, update
+let (|SignalOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Signal then Some info.Operation else None
+
+/// Check if intrinsic is an Effect operation (using IntrinsicInfo)
+/// Effect intrinsics: create, createWithCleanup, dispose
+let (|EffectOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Effect then Some info.Operation else None
+
+/// Check if intrinsic is a Memo operation (using IntrinsicInfo)
+/// Memo intrinsics: create, get
+let (|MemoOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Memo then Some info.Operation else None
+
+/// Check if intrinsic is a Batch operation (using IntrinsicInfo)
+/// Batch intrinsics: run
+let (|BatchOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Batch then Some info.Operation else None
+
 /// Conversion function names
 let private conversionFunctions = 
     set ["int"; "int8"; "int16"; "int32"; "int64";

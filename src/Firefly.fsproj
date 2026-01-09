@@ -42,7 +42,20 @@
       <Compile Include="Core/Templates/TemplateTypes.fs" />
       <Compile Include="Core/Templates/TemplateLoader.fs" />
 
-      <!-- Alex CodeGeneration (types first) -->
+      <!-- Alex Dialects - Structured MLIR types (ZERO sprintf architecture) -->
+      <!-- Core types and serialization - MUST come first -->
+      <Compile Include="Alex/Dialects/Core/Types.fs" />
+      <Compile Include="Alex/Dialects/Core/Serialize.fs" />
+      <!-- Dialect templates - one per upstream MLIR dialect -->
+      <Compile Include="Alex/Dialects/Arith/Templates.fs" />
+      <Compile Include="Alex/Dialects/LLVM/Templates.fs" />
+      <Compile Include="Alex/Dialects/SCF/Templates.fs" />
+      <Compile Include="Alex/Dialects/CF/Templates.fs" />
+      <Compile Include="Alex/Dialects/Func/Templates.fs" />
+      <Compile Include="Alex/Dialects/Index/Templates.fs" />
+      <Compile Include="Alex/Dialects/Vector/Templates.fs" />
+
+      <!-- Alex CodeGeneration (types first) - TO BE REPLACED by Dialects -->
       <Compile Include="Alex/CodeGeneration/MLIRTypes.fs" />
 
       <!-- Alex Templates - Quotation-based MLIR templates (before MLIRZipper so it can use them) -->
@@ -52,8 +65,9 @@
       <Compile Include="Alex/Templates/ControlFlowTemplates.fs" />
       <Compile Include="Alex/Templates/LLVMTemplates.fs" />
 
-      <!-- Alex Preprocessing - SSA assignment coeffect (before MLIRZipper) -->
+      <!-- Alex Preprocessing - coeffects before MLIRZipper -->
       <Compile Include="Alex/Preprocessing/SSAAssignment.fs" />
+      <Compile Include="Alex/Preprocessing/MutabilityAnalysis.fs" />
 
       <!-- Alex Traversal - MLIRZipper MUST come before bindings that use it -->
       <Compile Include="Alex/Traversal/MLIRZipper.fs" />
@@ -71,11 +85,11 @@
 
       <!-- Alex CodeGeneration - TypeMapping uses FNCS types -->
       <Compile Include="Alex/CodeGeneration/TypeMapping.fs" />
+      <Compile Include="Alex/CodeGeneration/TypeSizing.fs" />
 
       <!-- Alex Preprocessing - analysis before emission -->
-      <!-- NOTE: SSAAssignment.fs moved earlier (before MLIRZipper) as it's a coeffect -->
+      <!-- NOTE: SSAAssignment.fs and MutabilityAnalysis.fs moved earlier (before MLIRZipper) as they're coeffects -->
       <!-- NOTE: SaturateApplications.fs removed - transforms moved to FNCS -->
-      <Compile Include="Alex/Preprocessing/MutabilityAnalysis.fs" />
       <Compile Include="Alex/Preprocessing/PatternBindingAnalysis.fs" />
 
       <!-- Alex Patterns - Active patterns for semantic classification -->

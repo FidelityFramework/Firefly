@@ -16,6 +16,16 @@ open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 // Types
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Information about a module-level mutable binding
+type ModuleLevelMutable = {
+    /// The binding's NodeId
+    BindingId: int
+    /// The variable name
+    Name: string
+    /// The initial value NodeId (first child of binding)
+    InitialValueId: int
+}
+
 /// Result of mutability analysis for a semantic graph
 type MutabilityAnalysisResult = {
     /// Set of NodeId values for mutable bindings whose address is taken (&& operator)
@@ -25,6 +35,10 @@ type MutabilityAnalysisResult = {
     /// Map from loop body NodeId to list of variable names modified in that body
     /// Used for SCF iter_args generation
     ModifiedVarsInLoopBodies: Map<int, string list>
+    
+    /// Module-level mutable bindings that need LLVM globals
+    /// These cannot use SSA (function-scoped) - they need addressof + load/store
+    ModuleLevelMutableBindings: ModuleLevelMutable list
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -107,6 +121,44 @@ let findAllModifiedVarsInLoops (graph: SemanticGraph) : Map<int, string list> =
     result
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Module-Level Mutable Analysis
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Find all module-level mutable bindings.
+/// These are mutable bindings that are direct children of ModuleDef nodes.
+/// They need to be emitted as LLVM globals (not SSA values) because:
+/// 1. SSA values are function-scoped
+/// 2. Module-level mutables are accessed across function boundaries
+/// 3. They need addressof + load/store semantics
+let findModuleLevelMutableBindings (graph: SemanticGraph) : ModuleLevelMutable list =
+    let result = System.Collections.Generic.List<ModuleLevelMutable>()
+    
+    // Find all ModuleDef nodes and check their direct children
+    for KeyValue(_, node) in graph.Nodes do
+        match node.Kind with
+        | SemanticKind.ModuleDef (_, memberIds) ->
+            // Check each member for mutable bindings
+            for memberId in memberIds do
+                match SemanticGraph.tryGetNode memberId graph with
+                | Some memberNode ->
+                    match memberNode.Kind with
+                    | SemanticKind.Binding (name, isMutable, _, _) when isMutable ->
+                        // Found a module-level mutable binding
+                        match memberNode.Children with
+                        | initialValueId :: _ ->
+                            result.Add({
+                                BindingId = NodeId.value memberId
+                                Name = name
+                                InitialValueId = NodeId.value initialValueId
+                            })
+                        | [] -> ()  // Binding without value - shouldn't happen
+                    | _ -> ()
+                | None -> ()
+        | _ -> ()
+    
+    result |> List.ofSeq
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Main Analysis Entry Point
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -116,6 +168,7 @@ let analyze (graph: SemanticGraph) : MutabilityAnalysisResult =
     {
         AddressedMutableBindings = findAddressedMutableBindings graph
         ModifiedVarsInLoopBodies = findAllModifiedVarsInLoops graph
+        ModuleLevelMutableBindings = findModuleLevelMutableBindings graph
     }
 
 // ═══════════════════════════════════════════════════════════════════════════

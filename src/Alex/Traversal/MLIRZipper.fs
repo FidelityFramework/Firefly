@@ -24,6 +24,7 @@ module Alex.Traversal.MLIRZipper
 open Alex.CodeGeneration.MLIRTypes
 open Alex.Templates.TemplateTypes
 module SSACoeffect = Alex.Preprocessing.SSAAssignment
+module MutAnalysis = Alex.Preprocessing.MutabilityAnalysis
 
 module ArithTemplates = Alex.Templates.ArithTemplates
 module LLVMTemplates = Alex.Templates.LLVMTemplates
@@ -72,6 +73,8 @@ type MLIRGlobal =
     | StringLiteral of name: string * content: string * length: int
     | ExternFunc of name: string * signature: string
     | StaticBuffer of name: string * size: int
+    /// Module-level mutable variable: name, MLIR type, initial value ops
+    | MutableGlobal of name: string * mlirType: string
 
 /// A complete MLIR module
 type MLIRModule = {
@@ -190,6 +193,10 @@ type MLIRState = {
     /// Pre-computed SSA assignments (coeffect from Preprocessing)
     /// SSA names are assigned BEFORE transfer, not computed during emission
     PrecomputedSSA: SSACoeffect.SSAAssignment option
+    /// Module-level mutable bindings that need LLVM globals
+    /// Map from binding name -> (bindingNodeId, globalName)
+    /// These cannot use SSA (function-scoped), need addressof + load/store
+    ModuleLevelMutables: Map<string, int * string>
 }
 
 module MLIRState =
@@ -216,6 +223,7 @@ module MLIRState =
         MutableAllocas = Map.empty
         ModifiedVarsInLoopBodies = Map.empty
         PrecomputedSSA = None
+        ModuleLevelMutables = Map.empty
     }
 
     /// Create state with entry point Lambda IDs
@@ -242,6 +250,7 @@ module MLIRState =
         MutableAllocas = Map.empty
         ModifiedVarsInLoopBodies = Map.empty
         PrecomputedSSA = None
+        ModuleLevelMutables = Map.empty
     }
 
     /// Create state with entry points and full mutability analysis result
@@ -249,30 +258,40 @@ module MLIRState =
         (entryPointLambdaIds: Set<int>)
         (addressedMutables: Set<int>)
         (modifiedVarsInLoopBodies: Map<int, string list>)
+        (moduleLevelMutables: MutAnalysis.ModuleLevelMutable list)
         (ssaAssignment: SSACoeffect.SSAAssignment)
-        : MLIRState = {
-        SSACounter = 0
-        LabelCounter = 0
-        LambdaCounter = 0
-        EntryPointLambdaIds = entryPointLambdaIds
-        NodeSSA = Map.empty
-        VarBindings = Map.empty
-        StringLiterals = Map.empty
-        ExternalFuncs = Set.empty
-        CurrentFunction = None
-        FuncReturnTypes = Map.empty
-        FuncParamCounts = Map.empty
-        FuncParamTypes = Map.empty
-        RegionStack = []
-        PendingRegions = Map.empty
-        CurrentSCFRegion = None
-        SCFVarSnapshots = Map.empty
-        SCFIterArgs = Map.empty
-        AddressedMutables = addressedMutables
-        MutableAllocas = Map.empty
-        ModifiedVarsInLoopBodies = modifiedVarsInLoopBodies
-        PrecomputedSSA = Some ssaAssignment
-    }
+        : MLIRState =
+        // Build map from variable name to (bindingId, globalName)
+        let moduleLevelMap =
+            moduleLevelMutables
+            |> List.fold (fun acc mlm ->
+                let globalName = sprintf "__mutable_%s" mlm.Name
+                Map.add mlm.Name (mlm.BindingId, globalName) acc
+            ) Map.empty
+        {
+            SSACounter = 0
+            LabelCounter = 0
+            LambdaCounter = 0
+            EntryPointLambdaIds = entryPointLambdaIds
+            NodeSSA = Map.empty
+            VarBindings = Map.empty
+            StringLiterals = Map.empty
+            ExternalFuncs = Set.empty
+            CurrentFunction = None
+            FuncReturnTypes = Map.empty
+            FuncParamCounts = Map.empty
+            FuncParamTypes = Map.empty
+            RegionStack = []
+            PendingRegions = Map.empty
+            CurrentSCFRegion = None
+            SCFVarSnapshots = Map.empty
+            SCFIterArgs = Map.empty
+            AddressedMutables = addressedMutables
+            MutableAllocas = Map.empty
+            ModifiedVarsInLoopBodies = modifiedVarsInLoopBodies
+            PrecomputedSSA = Some ssaAssignment
+            ModuleLevelMutables = moduleLevelMap
+        }
 
     /// Look up pre-computed SSA name for a node (from coeffect)
     let lookupPrecomputedSSA (nodeId: int) (state: MLIRState) : string option =
@@ -289,6 +308,15 @@ module MLIRState =
     /// Look up alloca for an addressed mutable binding
     let lookupMutableAlloca (bindingNodeId: int) (state: MLIRState) : (string * string) option =
         Map.tryFind bindingNodeId state.MutableAllocas
+
+    /// Check if a variable name is a module-level mutable
+    let isModuleLevelMutable (varName: string) (state: MLIRState) : bool =
+        Map.containsKey varName state.ModuleLevelMutables
+
+    /// Look up the global name for a module-level mutable
+    /// Returns (bindingNodeId, globalName) if found
+    let lookupModuleLevelMutable (varName: string) (state: MLIRState) : (int * string) option =
+        Map.tryFind varName state.ModuleLevelMutables
 
     /// Look up pre-computed modified variables for a loop body
     /// Returns the list of variable names that are modified in the given loop body
@@ -561,12 +589,13 @@ module MLIRZipper =
         (entryPointLambdaIds: Set<int>)
         (addressedMutables: Set<int>)
         (modifiedVarsInLoopBodies: Map<int, string list>)
+        (moduleLevelMutables: MutAnalysis.ModuleLevelMutable list)
         (ssaAssignment: SSACoeffect.SSAAssignment)
         : MLIRZipper = {
         Focus = AtModule
         Path = Top
         CurrentOps = []
-        State = MLIRState.createWithAnalysis entryPointLambdaIds addressedMutables modifiedVarsInLoopBodies ssaAssignment
+        State = MLIRState.createWithAnalysis entryPointLambdaIds addressedMutables modifiedVarsInLoopBodies moduleLevelMutables ssaAssignment
         Globals = []
         CompletedFunctions = []
         PlatformHelpers = Set.empty
@@ -667,6 +696,19 @@ module MLIRZipper =
                 | _ -> false) zipper.Globals
             then zipper.Globals
             else bufGlobal :: zipper.Globals
+        { zipper with Globals = newGlobals }
+
+    /// Observe a module-level mutable variable requirement
+    /// Emits an LLVM global for the mutable binding
+    let observeMutableGlobal (globalName: string) (mlirType: string) (zipper: MLIRZipper) : MLIRZipper =
+        let mutGlobal = MutableGlobal (globalName, mlirType)
+        let newGlobals =
+            if List.exists (fun g ->
+                match g with
+                | MutableGlobal (n, _) -> n = globalName
+                | _ -> false) zipper.Globals
+            then zipper.Globals
+            else mutGlobal :: zipper.Globals
         { zipper with Globals = newGlobals }
 
     // ─────────────────────────────────────────────────────────────────
@@ -954,6 +996,15 @@ module MLIRZipper =
     let lookupMutableAlloca (bindingNodeId: int) (zipper: MLIRZipper) : (string * string) option =
         MLIRState.lookupMutableAlloca bindingNodeId zipper.State
 
+    /// Check if a variable name is a module-level mutable
+    let isModuleLevelMutable (varName: string) (zipper: MLIRZipper) : bool =
+        MLIRState.isModuleLevelMutable varName zipper.State
+
+    /// Look up the global name for a module-level mutable
+    /// Returns (bindingNodeId, globalName) if found
+    let lookupModuleLevelMutable (varName: string) (zipper: MLIRZipper) : (int * string) option =
+        MLIRState.lookupModuleLevelMutable varName zipper.State
+
     /// Look up pre-computed modified variables for a loop body
     /// Returns the list of variable names that are modified in the given loop body
     let lookupModifiedVarsInLoop (bodyNodeId: int) (zipper: MLIRZipper) : string list =
@@ -990,6 +1041,29 @@ module MLIRZipper =
         // Parse the type string back to MLIRType for witnessOpWithResult
         let resultType = Serialize.deserializeType resultTypeStr
         resultSSA, witnessOpWithResult op resultSSA resultType zipper1
+
+    // ─────────────────────────────────────────────────────────────────
+    // Template Primitives - Global Access
+    // These are the INFRASTRUCTURE OF TRANSFORM, composable building blocks
+    // Note: witnessAddressOf is defined later in the file using templates
+    // ─────────────────────────────────────────────────────────────────
+
+    /// Store to a global (addressof ∘ store)
+    /// Uses the existing witnessAddressOf primitive defined below
+    let witnessGlobalStore (globalName: string) (valueSSA: string) (valueType: string) (zipper: MLIRZipper) : MLIRZipper =
+        // Inline addressof here since witnessAddressOf is defined later
+        let ptrSSA, zipper1 = yieldSSA zipper
+        let addrText = render LLVMTemplates.Quot.Memory.addressof {| Result = ptrSSA; GlobalName = globalName |}
+        let zipper2 = witnessOpWithResult addrText ptrSSA Pointer zipper1
+        witnessStore valueSSA valueType ptrSSA zipper2
+
+    /// Load from a global (addressof ∘ load)
+    let witnessGlobalLoad (globalName: string) (elemType: string) (zipper: MLIRZipper) : string * MLIRZipper =
+        // Inline addressof here since witnessAddressOf is defined later
+        let ptrSSA, zipper1 = yieldSSA zipper
+        let addrText = render LLVMTemplates.Quot.Memory.addressof {| Result = ptrSSA; GlobalName = globalName |}
+        let zipper2 = witnessOpWithResult addrText ptrSSA Pointer zipper1
+        witnessLoadStr ptrSSA elemType zipper2
 
     // ─────────────────────────────────────────────────────────────────
     // SCF Witness Functions - Emit structured control flow operations
@@ -1475,6 +1549,11 @@ module MLIRZipper =
                 // Zero-initialized buffer - no initializer needed
                 sb.AppendLine(sprintf "  llvm.mlir.global internal @%s() : !llvm.array<%d x i8>"
                     name size) |> ignore
+            | MutableGlobal (name, mlirType) ->
+                // Module-level mutable - zero-initialized global variable
+                // Use internal linkage (not exported)
+                sb.AppendLine(sprintf "  llvm.mlir.global internal @%s() : %s"
+                    name mlirType) |> ignore
 
         // Emit platform helper functions (func.func dialect, will be lowered to LLVM)
         for helperName in zipper.PlatformHelpers do

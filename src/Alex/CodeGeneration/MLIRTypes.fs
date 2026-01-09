@@ -122,6 +122,25 @@ module Serialize =
         | Slt -> "slt" | Sle -> "sle" | Sgt -> "sgt" | Sge -> "sge"
         | Ult -> "ult" | Ule -> "ule" | Ugt -> "ugt" | Uge -> "uge"
 
+    /// Serialize MLIRType to LLVM dialect type string
+    /// Unlike mlirType which emits standard MLIR types, this produces LLVM-compatible types.
+    /// Use this for llvm.func declarations and other LLVM dialect operations.
+    /// Key difference: Index → platform integer (i64 on 64-bit, i32 on 32-bit)
+    let rec llvmType = function
+        | Integer bitWidth -> integerBitWidth bitWidth
+        | Float precision -> floatPrecision precision
+        | Pointer -> "!llvm.ptr"
+        | Struct fields ->
+            let fieldTypes = fields |> List.map llvmType |> String.concat ", "
+            sprintf "!llvm.struct<(%s)>" fieldTypes
+        | Array (count, elementType) -> sprintf "!llvm.array<%d x %s>" count (llvmType elementType)
+        | Function (parameterTypes, returnType) ->
+            let parameterString = parameterTypes |> List.map llvmType |> String.concat ", "
+            sprintf "(%s) -> %s" parameterString (llvmType returnType)
+        | Unit -> "i32"
+        | Index -> "i64"  // Platform word: i64 on 64-bit (TODO: platform-switch for 32-bit)
+        | TypeError msg -> failwithf "COMPILER ERROR: Attempted to serialize TypeError to LLVM: %s" msg
+
     /// Escape string content for MLIR literals
     let escape (s: string) =
         s.Replace("\\", "\\\\")

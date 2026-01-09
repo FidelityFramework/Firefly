@@ -15,6 +15,7 @@ open Alex.Patterns.SemanticPatterns
 open Alex.Templates.TemplateTypes
 open Alex.Templates.ArithTemplates
 open Alex.Templates.MemoryTemplates
+open Alex.CodeGeneration.TypeSizing
 
 module LLVMTemplates = Alex.Templates.LLVMTemplates
 
@@ -29,11 +30,11 @@ let mapType = Alex.CodeGeneration.TypeMapping.mapNativeType
 // PRIMITIVE OPERATORS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Try to emit a binary primitive operation (arithmetic, comparison, bitwise)
+/// Try to emit a binary primitive operation (arithmetic, comparison, bitwise, boolean)
 /// Uses quotation-based templates for principled MLIR generation.
 let tryEmitPrimitiveBinaryOp (opName: string) (arg1SSA: string) (arg1Type: string) (arg2SSA: string) (arg2Type: string) (zipper: MLIRZipper) : (string * string * MLIRZipper) option =
     if arg1Type <> arg2Type then None
-    elif not (isIntegerType arg1Type || isFloatType arg1Type) then None
+    elif not (isIntegerType arg1Type || isFloatType arg1Type || isBoolType arg1Type) then None
     else
         let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
         let isInt = isIntegerType arg1Type
@@ -86,6 +87,9 @@ let tryEmitPrimitiveBinaryOp (opName: string) (arg1SSA: string) (arg1Type: strin
         | "op_ExclusiveOr", true -> emitBinaryOp Quot.IntBitwise.xorI arg1Type
         | "op_LeftShift", true -> emitBinaryOp Quot.IntBitwise.shlI arg1Type
         | "op_RightShift", true -> emitBinaryOp Quot.IntBitwise.shrSI arg1Type
+        // Boolean operations - use bitwise AND/OR on i1 type
+        | "op_BooleanAnd", _ when isBoolType arg1Type -> emitBinaryOp Quot.IntBitwise.andI "i1"
+        | "op_BooleanOr", _ when isBoolType arg1Type -> emitBinaryOp Quot.IntBitwise.orI "i1"
         | _ -> None
 
 /// Try to emit a unary primitive operation
@@ -923,13 +927,217 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                 zipper'', TRValue (resultSSA, "f64")
 
             | ConvertOp "toInt", [(argSSA, argType)] ->
-                // float -> int conversion (fptosi)
-                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
-                let fromType = if argType = "f32" then "f32" else "f64"  // Support both f32 and f64 input
-                let convParams : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = fromType; ToType = "i64" }
-                let convText = render Quot.Conversion.fpToSI convParams
-                let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA (Integer I64) zipper'
-                zipper'', TRValue (resultSSA, "i64")
+                // 'T -> int (i32) conversion
+                match argType with
+                | "i32" ->
+                    // Identity - no conversion needed
+                    zipper, TRValue (argSSA, "i32")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i32" }
+                            render Quot.Conversion.fpToSI p, Integer I32
+                        | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = "i64"; ToType = "i32" }
+                            render Quot.Conversion.truncI p, Integer I32
+                        | "i8" | "i16" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i32" }
+                            render Quot.Conversion.extSI p, Integer I32
+                        | other ->
+                            failwithf "toInt: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i32")
+
+            | ConvertOp "toInt64", [(argSSA, argType)] ->
+                // 'T -> int64 conversion
+                match argType with
+                | "i64" ->
+                    zipper, TRValue (argSSA, "i64")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i64" }
+                            render Quot.Conversion.fpToSI p, Integer I64
+                        | "i8" | "i16" | "i32" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i64" }
+                            render Quot.Conversion.extSI p, Integer I64
+                        | other ->
+                            failwithf "toInt64: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i64")
+
+            | ConvertOp "toByte", [(argSSA, argType)] ->
+                // 'T -> byte (uint8) conversion
+                match argType with
+                | "i8" ->
+                    zipper, TRValue (argSSA, "i8")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i8" }
+                            render Quot.Conversion.fpToUI p, Integer I8
+                        | "i16" | "i32" | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i8" }
+                            render Quot.Conversion.truncI p, Integer I8
+                        | other ->
+                            failwithf "toByte: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i8")
+
+            | ConvertOp "toSByte", [(argSSA, argType)] ->
+                // 'T -> sbyte (int8) conversion
+                match argType with
+                | "i8" ->
+                    zipper, TRValue (argSSA, "i8")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i8" }
+                            render Quot.Conversion.fpToSI p, Integer I8
+                        | "i16" | "i32" | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i8" }
+                            render Quot.Conversion.truncI p, Integer I8
+                        | other ->
+                            failwithf "toSByte: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i8")
+
+            | ConvertOp "toInt16", [(argSSA, argType)] ->
+                // 'T -> int16 conversion
+                match argType with
+                | "i16" ->
+                    zipper, TRValue (argSSA, "i16")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i16" }
+                            render Quot.Conversion.fpToSI p, Integer I16
+                        | "i32" | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i16" }
+                            render Quot.Conversion.truncI p, Integer I16
+                        | "i8" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = "i8"; ToType = "i16" }
+                            render Quot.Conversion.extSI p, Integer I16
+                        | other ->
+                            failwithf "toInt16: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i16")
+
+            | ConvertOp "toUInt16", [(argSSA, argType)] ->
+                // 'T -> uint16 conversion
+                match argType with
+                | "i16" ->
+                    zipper, TRValue (argSSA, "i16")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i16" }
+                            render Quot.Conversion.fpToUI p, Integer I16
+                        | "i32" | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i16" }
+                            render Quot.Conversion.truncI p, Integer I16
+                        | "i8" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = "i8"; ToType = "i16" }
+                            render Quot.Conversion.extUI p, Integer I16
+                        | other ->
+                            failwithf "toUInt16: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i16")
+
+            | ConvertOp "toUInt32", [(argSSA, argType)] ->
+                // 'T -> uint32 conversion
+                match argType with
+                | "i32" ->
+                    zipper, TRValue (argSSA, "i32")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i32" }
+                            render Quot.Conversion.fpToUI p, Integer I32
+                        | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = "i64"; ToType = "i32" }
+                            render Quot.Conversion.truncI p, Integer I32
+                        | "i8" | "i16" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i32" }
+                            render Quot.Conversion.extUI p, Integer I32
+                        | other ->
+                            failwithf "toUInt32: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i32")
+
+            | ConvertOp "toUInt64", [(argSSA, argType)] ->
+                // 'T -> uint64 conversion
+                match argType with
+                | "i64" ->
+                    zipper, TRValue (argSSA, "i64")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f32" | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i64" }
+                            render Quot.Conversion.fpToUI p, Integer I64
+                        | "i8" | "i16" | "i32" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i64" }
+                            render Quot.Conversion.extUI p, Integer I64
+                        | other ->
+                            failwithf "toUInt64: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i64")
+
+            | ConvertOp "toFloat32", [(argSSA, argType)] ->
+                // 'T -> float32 conversion
+                match argType with
+                | "f32" ->
+                    zipper, TRValue (argSSA, "f32")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "f64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = "f64"; ToType = "f32" }
+                            render Quot.Conversion.truncF p, Float F32
+                        | "i8" | "i16" | "i32" | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "f32" }
+                            render Quot.Conversion.siToFP p, Float F32
+                        | other ->
+                            failwithf "toFloat32: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "f32")
+
+            | ConvertOp "toChar", [(argSSA, argType)] ->
+                // 'T -> char (i32 in FNCS) conversion
+                match argType with
+                | "i32" ->
+                    zipper, TRValue (argSSA, "i32")
+                | _ ->
+                    let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let convText, mlirType =
+                        match argType with
+                        | "i8" | "i16" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = argType; ToType = "i32" }
+                            render Quot.Conversion.extUI p, Integer I32  // char is unsigned
+                        | "i64" ->
+                            let p : ConversionParams = { Result = resultSSA; Operand = argSSA; FromType = "i64"; ToType = "i32" }
+                            render Quot.Conversion.truncI p, Integer I32
+                        | other ->
+                            failwithf "toChar: unsupported source type %s" other
+                    let zipper'' = MLIRZipper.witnessOpWithResult convText resultSSA mlirType zipper'
+                    zipper'', TRValue (resultSSA, "i32")
 
             | StringOp "contains", [(strSSA, _); (charSSA, charType)] ->
                 // String.contains : string -> char -> bool
@@ -1007,6 +1215,313 @@ let witness (funcNodeId: NodeId) (argNodeIds: NodeId list) (returnType: NativeTy
                 let zipper22 = MLIRZipper.witnessOpWithResult insertLenText resultSSA NativeStrType zipper21
 
                 zipper22, TRValue (resultSSA, NativeStrTypeStr)
+
+            // Bits intrinsics - byte order conversion and bit casting
+            // These map directly to LLVM intrinsics/instructions
+            | BitsOp "htons", [(argSSA, _)] ->
+                // uint16 -> uint16 (host to network byte order - byte swap on little endian)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bswapText = sprintf "%s = \"llvm.intr.bswap\"(%s) : (i16) -> i16" resultSSA argSSA
+                let zipper'' = MLIRZipper.witnessOpWithResult bswapText resultSSA (Integer I16) zipper'
+                zipper'', TRValue (resultSSA, "i16")
+
+            | BitsOp "ntohs", [(argSSA, _)] ->
+                // uint16 -> uint16 (network to host byte order - byte swap on little endian)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bswapText = sprintf "%s = \"llvm.intr.bswap\"(%s) : (i16) -> i16" resultSSA argSSA
+                let zipper'' = MLIRZipper.witnessOpWithResult bswapText resultSSA (Integer I16) zipper'
+                zipper'', TRValue (resultSSA, "i16")
+
+            | BitsOp "htonl", [(argSSA, _)] ->
+                // uint32 -> uint32 (host to network byte order - byte swap on little endian)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bswapText = sprintf "%s = \"llvm.intr.bswap\"(%s) : (i32) -> i32" resultSSA argSSA
+                let zipper'' = MLIRZipper.witnessOpWithResult bswapText resultSSA (Integer I32) zipper'
+                zipper'', TRValue (resultSSA, "i32")
+
+            | BitsOp "ntohl", [(argSSA, _)] ->
+                // uint32 -> uint32 (network to host byte order - byte swap on little endian)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bswapText = sprintf "%s = \"llvm.intr.bswap\"(%s) : (i32) -> i32" resultSSA argSSA
+                let zipper'' = MLIRZipper.witnessOpWithResult bswapText resultSSA (Integer I32) zipper'
+                zipper'', TRValue (resultSSA, "i32")
+
+            | BitsOp "float32ToInt32Bits", [(argSSA, _)] ->
+                // float32 -> int32 (IEEE 754 bit reinterpretation)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bitcastParams : Quot.Conversion.BitcastParams = { Result = resultSSA; Operand = argSSA; FromType = "f32"; ToType = "i32" }
+                let bitcastText = render Quot.Conversion.bitcast bitcastParams
+                let zipper'' = MLIRZipper.witnessOpWithResult bitcastText resultSSA (Integer I32) zipper'
+                zipper'', TRValue (resultSSA, "i32")
+
+            | BitsOp "int32BitsToFloat32", [(argSSA, _)] ->
+                // int32 -> float32 (IEEE 754 bit reinterpretation)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bitcastParams : Quot.Conversion.BitcastParams = { Result = resultSSA; Operand = argSSA; FromType = "i32"; ToType = "f32" }
+                let bitcastText = render Quot.Conversion.bitcast bitcastParams
+                let zipper'' = MLIRZipper.witnessOpWithResult bitcastText resultSSA (Float F32) zipper'
+                zipper'', TRValue (resultSSA, "f32")
+
+            | BitsOp "float64ToInt64Bits", [(argSSA, _)] ->
+                // float64 -> int64 (IEEE 754 bit reinterpretation)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bitcastParams : Quot.Conversion.BitcastParams = { Result = resultSSA; Operand = argSSA; FromType = "f64"; ToType = "i64" }
+                let bitcastText = render Quot.Conversion.bitcast bitcastParams
+                let zipper'' = MLIRZipper.witnessOpWithResult bitcastText resultSSA (Integer I64) zipper'
+                zipper'', TRValue (resultSSA, "i64")
+
+            | BitsOp "int64BitsToFloat64", [(argSSA, _)] ->
+                // int64 -> float64 (IEEE 754 bit reinterpretation)
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let bitcastParams : Quot.Conversion.BitcastParams = { Result = resultSSA; Operand = argSSA; FromType = "i64"; ToType = "f64" }
+                let bitcastText = render Quot.Conversion.bitcast bitcastParams
+                let zipper'' = MLIRZipper.witnessOpWithResult bitcastText resultSSA (Float F64) zipper'
+                zipper'', TRValue (resultSSA, "f64")
+
+            // Crypto intrinsics - cryptographic operations for WREN WebSocket handshake
+            // Implemented as MLIR helper functions in PlatformHelpers
+            | CryptoOp "sha1", [(argSSA, _)] ->
+                // byte[] -> byte[] (20-byte SHA-1 hash per FIPS 180-4)
+                let resultSSA, zipper' = Alex.Bindings.PlatformHelpers.emitSha1Call argSSA zipper
+                zipper', TRValue (resultSSA, "!llvm.struct<(ptr, i64)>")
+
+            | CryptoOp "base64Encode", [(argSSA, _)] ->
+                // byte[] -> string (Base64 encoding per RFC 4648)
+                let resultSSA, zipper' = Alex.Bindings.PlatformHelpers.emitBase64EncodeCall argSSA zipper
+                zipper', TRValue (resultSSA, NativeStrTypeStr)
+
+            | CryptoOp "base64Decode", [(argSSA, _)] ->
+                // string -> byte[] (Base64 decoding per RFC 4648)
+                let resultSSA, zipper' = Alex.Bindings.PlatformHelpers.emitBase64DecodeCall argSSA zipper
+                zipper', TRValue (resultSSA, "!llvm.struct<(ptr, i64)>")
+
+            // ═══════════════════════════════════════════════════════════════════
+            // Reactive Signals (SolidJS-inspired native signals)
+            // These emit calls to signal runtime functions
+            // ═══════════════════════════════════════════════════════════════════
+
+            // FnPtr intrinsics - function pointer operations
+            // These are pure LLVM operations (no runtime calls)
+            | FnPtrOp "ofFunction", [(funcSSA, _)] ->
+                // ('T -> 'R) -> FnPtr<'T, 'R>
+                // Convert function reference to function pointer SSA value
+                // If funcSSA is a global reference (@name), need to emit addressof
+                if funcSSA.StartsWith("@") then
+                    let ptrSSA, zipper' = MLIRZipper.yieldSSA zipper
+                    let addrText = sprintf "%s = llvm.mlir.addressof %s : !llvm.ptr" ptrSSA funcSSA
+                    let zipper'' = MLIRZipper.witnessOpWithResult addrText ptrSSA Pointer zipper'
+                    zipper'', TRValue (ptrSSA, "!llvm.ptr")
+                else
+                    // Already an SSA value (unlikely path, but handle it)
+                    zipper, TRValue (funcSSA, "!llvm.ptr")
+
+            | FnPtrOp "invoke", [(fnPtrSSA, _); (argSSA, argType)] ->
+                // FnPtr<'T, 'R> -> 'T -> 'R - indirect call through function pointer
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let callText = sprintf "%s = llvm.call %s(%s) : !llvm.ptr, (%s) -> !llvm.ptr" resultSSA fnPtrSSA argSSA argType
+                let zipper'' = MLIRZipper.witnessOpWithResult callText resultSSA Pointer zipper'
+                zipper'', TRValue (resultSSA, "!llvm.ptr")
+
+            | FnPtrOp "isNull", [(fnPtrSSA, _)] ->
+                // FnPtr<'T, 'R> -> bool - check if function pointer is null
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let nullPtrSSA, zipper'' = MLIRZipper.yieldSSA zipper'
+                let nullText = sprintf "%s = llvm.mlir.zero : !llvm.ptr" nullPtrSSA
+                let zipper3 = MLIRZipper.witnessOpWithResult nullText nullPtrSSA Pointer zipper''
+                let cmpText = sprintf "%s = llvm.icmp \"eq\" %s, %s : !llvm.ptr" resultSSA fnPtrSSA nullPtrSSA
+                let zipper4 = MLIRZipper.witnessOpWithResult cmpText resultSSA (Integer I1) zipper3
+                zipper4, TRValue (resultSSA, "i1")
+
+            | FnPtrOp "null", [] ->
+                // unit -> FnPtr<'T, 'R> - create null function pointer
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+                let nullText = sprintf "%s = llvm.mlir.zero : !llvm.ptr" resultSSA
+                let zipper'' = MLIRZipper.witnessOpWithResult nullText resultSSA Pointer zipper'
+                zipper'', TRValue (resultSSA, "!llvm.ptr")
+
+            // Signal intrinsics - reactive value operations
+            // These call into Fidelity.Signal primitives (linked separately)
+            // API: byte-based storage with (ptr, size) parameters
+            | SignalOp "create", [(initSSA, initType)] ->
+                // 'T -> Signal<'T> - create signal with initial value
+                // Compute size from MLIR type, allocate stack slot, store value, call __signal_create
+                let size = computeSize initType
+
+                // Get the return type (Signal<'T>) and serialize for LLVM dialect
+                let signalType = mapType returnType
+                let signalTypeStr = Serialize.llvmType signalType
+                let platformWordStr = Serialize.llvmType Index
+
+                // Allocate stack slot for value
+                let oneSSA, z1 = MLIRZipper.yieldSSA zipper
+                let oneParams : ConstantParams = { Result = oneSSA; Value = "1"; Type = platformWordStr }
+                let z2 = MLIRZipper.witnessOpWithResult (render Quot.Constant.intConst oneParams) oneSSA Index z1
+
+                let slotSSA, z3 = MLIRZipper.yieldSSA z2
+                let allocaParams : AllocaParams = { Result = slotSSA; Count = oneSSA; ElementType = initType }
+                let z4 = MLIRZipper.witnessOpWithResult (render Quot.Core.alloca allocaParams) slotSSA Pointer z3
+
+                // Store value to stack slot
+                let storeParams : StoreParams = { Value = initSSA; Pointer = slotSSA; Type = initType }
+                let z5 = MLIRZipper.witnessVoidOp (render Quot.Core.store storeParams) z4
+
+                // Create size constant
+                let sizeSSA, z6 = MLIRZipper.yieldSSA z5
+                let sizeParams : ConstantParams = { Result = sizeSSA; Value = string size; Type = platformWordStr }
+                let z7 = MLIRZipper.witnessOpWithResult (render Quot.Constant.intConst sizeParams) sizeSSA Index z6
+
+                // Call __signal_create(ptr, size) -> platform word
+                let externSig = sprintf "(!llvm.ptr, %s) -> %s" platformWordStr signalTypeStr
+                let signalCreateParams : LLVMTemplates.Quot.Control.CallParams = {
+                    Result = "%0"  // Will be replaced
+                    Callee = "__signal_create"
+                    Args = sprintf "%s, %s" slotSSA sizeSSA
+                    ArgTypes = sprintf "!llvm.ptr, %s" platformWordStr
+                    ReturnType = signalTypeStr
+                }
+                let z8 = MLIRZipper.observeExternFunc "__signal_create" externSig z7
+                let resultSSA, z9 = MLIRZipper.yieldSSA z8
+                let callParams = { signalCreateParams with Result = resultSSA }
+                let z10 = MLIRZipper.witnessOpWithResult (render LLVMTemplates.Quot.Control.call callParams) resultSSA signalType z9
+                z10, TRValue (resultSSA, signalTypeStr)
+
+            | SignalOp "get", [(signalSSA, _)] ->
+                // Signal<'T> -> 'T - read current value (registers dependency if in effect)
+                // Use returnType to determine the value type
+                let mlirRetType = mapType returnType
+                let mlirTypeStr = Serialize.llvmType mlirRetType
+                let size = computeSize mlirTypeStr
+                let platformWordStr = Serialize.llvmType Index
+
+                // Allocate stack slot for result
+                let oneSSA, z1 = MLIRZipper.yieldSSA zipper
+                let oneParams : ConstantParams = { Result = oneSSA; Value = "1"; Type = platformWordStr }
+                let z2 = MLIRZipper.witnessOpWithResult (render Quot.Constant.intConst oneParams) oneSSA Index z1
+
+                let slotSSA, z3 = MLIRZipper.yieldSSA z2
+                let allocaParams : AllocaParams = { Result = slotSSA; Count = oneSSA; ElementType = mlirTypeStr }
+                let z4 = MLIRZipper.witnessOpWithResult (render Quot.Core.alloca allocaParams) slotSSA Pointer z3
+
+                // Create size constant
+                let sizeSSA, z5 = MLIRZipper.yieldSSA z4
+                let sizeParams : ConstantParams = { Result = sizeSSA; Value = string size; Type = platformWordStr }
+                let z6 = MLIRZipper.witnessOpWithResult (render Quot.Constant.intConst sizeParams) sizeSSA Index z5
+
+                // Call __signal_get(id, dest, size) -> ()
+                let externSig = sprintf "(%s, !llvm.ptr, %s) -> ()" platformWordStr platformWordStr
+                let z7 = MLIRZipper.observeExternFunc "__signal_get" externSig z6
+                let getCallText = sprintf "llvm.call @__signal_get(%s, %s, %s) : (%s, !llvm.ptr, %s) -> ()" signalSSA slotSSA sizeSSA platformWordStr platformWordStr
+                let z8 = MLIRZipper.witnessVoidOp getCallText z7
+
+                // Load result from stack slot
+                let resultSSA, z9 = MLIRZipper.yieldSSA z8
+                let loadParams : LoadParams = { Result = resultSSA; Pointer = slotSSA; Type = mlirTypeStr }
+                let z10 = MLIRZipper.witnessOpWithResult (render Quot.Core.load loadParams) resultSSA mlirRetType z9
+                z10, TRValue (resultSSA, mlirTypeStr)
+
+            | SignalOp "set", [(signalSSA, _); (valueSSA, valueType)] ->
+                // Signal<'T> -> 'T -> unit - set value and notify subscribers
+                let size = computeSize valueType
+                let platformWordStr = Serialize.llvmType Index
+
+                // Allocate stack slot for value
+                let oneSSA, z1 = MLIRZipper.yieldSSA zipper
+                let oneParams : ConstantParams = { Result = oneSSA; Value = "1"; Type = platformWordStr }
+                let z2 = MLIRZipper.witnessOpWithResult (render Quot.Constant.intConst oneParams) oneSSA Index z1
+
+                let slotSSA, z3 = MLIRZipper.yieldSSA z2
+                let allocaParams : AllocaParams = { Result = slotSSA; Count = oneSSA; ElementType = valueType }
+                let z4 = MLIRZipper.witnessOpWithResult (render Quot.Core.alloca allocaParams) slotSSA Pointer z3
+
+                // Store value to stack slot
+                let storeParams : StoreParams = { Value = valueSSA; Pointer = slotSSA; Type = valueType }
+                let z5 = MLIRZipper.witnessVoidOp (render Quot.Core.store storeParams) z4
+
+                // Create size constant
+                let sizeSSA, z6 = MLIRZipper.yieldSSA z5
+                let sizeParams : ConstantParams = { Result = sizeSSA; Value = string size; Type = platformWordStr }
+                let z7 = MLIRZipper.witnessOpWithResult (render Quot.Constant.intConst sizeParams) sizeSSA Index z6
+
+                // Call __signal_set(id, src, size) -> ()
+                let externSig = sprintf "(%s, !llvm.ptr, %s) -> ()" platformWordStr platformWordStr
+                let z8 = MLIRZipper.observeExternFunc "__signal_set" externSig z7
+                let setCallText = sprintf "llvm.call @__signal_set(%s, %s, %s) : (%s, !llvm.ptr, %s) -> ()" signalSSA slotSSA sizeSSA platformWordStr platformWordStr
+                let z9 = MLIRZipper.witnessVoidOp setCallText z8
+                z9, TRVoid
+
+            | SignalOp "update", [(signalSSA, _); (fnSSA, _)] ->
+                // Signal<'T> -> ('T -> 'T) -> unit - apply function and set result
+                let platformWordStr = Serialize.llvmType Index
+                let externSig = sprintf "(%s, !llvm.ptr) -> ()" platformWordStr
+                let z1 = MLIRZipper.observeExternFunc "__signal_update" externSig zipper
+                let callText = sprintf "llvm.call @__signal_update(%s, %s) : (%s, !llvm.ptr) -> ()" signalSSA fnSSA platformWordStr
+                let z2 = MLIRZipper.witnessVoidOp callText z1
+                z2, TRVoid
+
+            // Effect intrinsics - side effect registration
+            | EffectOp "create", [(fnPtrSSA, _)] ->
+                // FnPtr<unit, unit> -> Effect - register effect function
+                let effectType = mapType returnType
+                let effectTypeStr = Serialize.llvmType effectType
+                let externSig = sprintf "(!llvm.ptr) -> %s" effectTypeStr
+                let zipper0 = MLIRZipper.observeExternFunc "__effect_create" externSig zipper
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper0
+                let callText = sprintf "%s = llvm.call @__effect_create(%s) : (!llvm.ptr) -> %s" resultSSA fnPtrSSA effectTypeStr
+                let zipper'' = MLIRZipper.witnessOpWithResult callText resultSSA effectType zipper'
+                zipper'', TRValue (resultSSA, effectTypeStr)
+
+            | EffectOp "createWithCleanup", [(fnPtrSSA, _)] ->
+                // FnPtr<unit, FnPtr<unit, unit>> -> Effect - effect with cleanup
+                let effectType = mapType returnType
+                let effectTypeStr = Serialize.llvmType effectType
+                let externSig = sprintf "(!llvm.ptr) -> %s" effectTypeStr
+                let zipper0 = MLIRZipper.observeExternFunc "__effect_create_with_cleanup" externSig zipper
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper0
+                let callText = sprintf "%s = llvm.call @__effect_create_with_cleanup(%s) : (!llvm.ptr) -> %s" resultSSA fnPtrSSA effectTypeStr
+                let zipper'' = MLIRZipper.witnessOpWithResult callText resultSSA effectType zipper'
+                zipper'', TRValue (resultSSA, effectTypeStr)
+
+            | EffectOp "dispose", [(effectSSA, _)] ->
+                // Effect -> unit - remove effect from subscription graph
+                let platformWordStr = Serialize.llvmType Index
+                let externSig = sprintf "(%s) -> ()" platformWordStr
+                let zipper0 = MLIRZipper.observeExternFunc "__effect_dispose" externSig zipper
+                let callText = sprintf "llvm.call @__effect_dispose(%s) : (%s) -> ()" effectSSA platformWordStr
+                let zipper' = MLIRZipper.witnessOp callText [] zipper0
+                zipper', TRVoid
+
+            // Memo intrinsics - memoized computations
+            | MemoOp "create", [(fnPtrSSA, _)] ->
+                // FnPtr<unit, 'T> -> Memo<'T> - create memoized computation
+                let memoType = mapType returnType
+                let memoTypeStr = Serialize.llvmType memoType
+                let externSig = sprintf "(!llvm.ptr) -> %s" memoTypeStr
+                let zipper0 = MLIRZipper.observeExternFunc "__memo_create" externSig zipper
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper0
+                let callText = sprintf "%s = llvm.call @__memo_create(%s) : (!llvm.ptr) -> %s" resultSSA fnPtrSSA memoTypeStr
+                let zipper'' = MLIRZipper.witnessOpWithResult callText resultSSA memoType zipper'
+                zipper'', TRValue (resultSSA, memoTypeStr)
+
+            | MemoOp "get", [(memoSSA, _)] ->
+                // Memo<'T> -> 'T - get cached value (recomputes if dirty)
+                // NOTE: Memo.get returns the cached value, type determined by returnType
+                let mlirRetType = mapType returnType
+                let mlirTypeStr = Serialize.llvmType mlirRetType
+                let platformWordStr = Serialize.llvmType Index
+                let externSig = sprintf "(%s) -> %s" platformWordStr mlirTypeStr
+                let zipper0 = MLIRZipper.observeExternFunc "__memo_get" externSig zipper
+                let resultSSA, zipper' = MLIRZipper.yieldSSA zipper0
+                let callText = sprintf "%s = llvm.call @__memo_get(%s) : (%s) -> %s" resultSSA memoSSA platformWordStr mlirTypeStr
+                let zipper'' = MLIRZipper.witnessOpWithResult callText resultSSA mlirRetType zipper'
+                zipper'', TRValue (resultSSA, mlirTypeStr)
+
+            // Batch intrinsics - update batching
+            | BatchOp "run", [(fnPtrSSA, _)] ->
+                // FnPtr<unit, unit> -> unit - execute with batched notifications
+                let zipper0 = MLIRZipper.observeExternFunc "__batch_run" "(!llvm.ptr) -> ()" zipper
+                let callText = sprintf "llvm.call @__batch_run(%s) : (!llvm.ptr) -> ()" fnPtrSSA
+                let zipper' = MLIRZipper.witnessOp callText [] zipper0
+                zipper', TRVoid
 
             | info, [] ->
                 zipper, TRValue ("$intrinsic:" + info.FullName, "func")

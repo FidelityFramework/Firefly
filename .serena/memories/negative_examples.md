@@ -400,6 +400,406 @@ render ArithTemplates.Quot.Binary.addI params
 
 ---
 
+---
+
+## Mistake 14: Band-Aid Fixes to Config Defaults Instead of Architectural Fixes (January 2026)
+
+Discovered during TRecord→TApp unification when WrenHello failed without `-k` flag but succeeded with it.
+
+```fsharp
+// WRONG - "Fixing" reachability by changing config default
+let defaultConfig : NanopassConfig = {
+    // ...
+    SoftDeleteReachability = true  // "Must be true - hard-delete breaks field lookups"
+}
+```
+
+**What happened**:
+1. After unifying record types to use `TApp` with `SemanticGraph.tryGetRecordFields` lookup
+2. WrenHello failed: "Type 'Platform.WebView' not found in SemanticGraph.Types"
+3. But succeeded with `-k` flag (which enables soft-delete reachability)
+4. Initial "fix": change default from `false` to `true`
+
+**Why this is wrong**:
+- This masks the real bug: reachability analysis was NOT following type references
+- TypeDef nodes for record types were being pruned as "unreachable"
+- But they ARE reachable - through the types of reachable nodes!
+- Changing the default just hides the architectural deficiency
+
+**The Principled Fix**:
+The reachability analysis (`computeReachable`) must follow **type references**, not just expression edges:
+
+```fsharp
+/// Extract type names from a NativeType (for reachability of TypeDef nodes)
+let rec getTypeNames (ty: NativeType) : string list =
+    match ty with
+    | NativeType.TApp(tycon, args) ->
+        // TApp with FieldCount > 0 indicates a record type needing TypeDef
+        let tyconNames = if tycon.FieldCount > 0 then [tycon.Name] else []
+        tyconNames @ (args |> List.collect getTypeNames)
+    // ... recurse through TFun, TTuple, etc.
+
+/// Get TypeDef NodeIds for types referenced by a node
+let getTypeDefRefs (node: SemanticNode) (graph: SemanticGraph) : NodeId list =
+    getTypeNames node.Type
+    |> List.choose (fun name -> SemanticGraph.recallType name graph)
+
+/// Compute reachable - follows structural, semantic, AND type references
+let computeReachable (graph: SemanticGraph) (entries: NodeId list) : Set<NodeId> =
+    let rec walk visited nodeId =
+        // ...
+        let refs = getSemanticReferences node
+        let typeRefs = getTypeDefRefs node graph  // NEW: follow type graph
+        let allRefs = (node.Children @ refs @ typeRefs) |> List.distinct
+        allRefs |> List.fold walk visited
+```
+
+**The Principle**: When a reachable node's type references a TypeDef (record, union), that TypeDef is reachable too. This follows FCS's TyconRef.Deref pattern - type references create edges in the reachability graph.
+
+**When you see config-based "fixes"**:
+- STOP - this is hiding a bug, not fixing it
+- Ask: "What architectural invariant is being violated?"
+- Trace the actual data flow to find where the invariant breaks
+- Fix the architecture, not the config
+
+---
+
+## Mistake 15: Fresh Type Variables for Pattern Bindings (January 2026)
+
+Discovered during sample 06 (AddNumbersInteractive) failure after TRecord→TApp unification.
+
+```fsharp
+// WRONG - Pattern matching creates fresh type variables
+| SynArgPats.Pats pats ->
+    let (argPatterns, argBindings) =
+        pats
+        |> List.map (fun p ->
+            let argTy = freshTypeVar range  // WRONG: ignores constructor type
+            checkPattern env p argTy range)
+        |> List.unzip
+```
+
+**What happened**:
+1. Pattern `| IntVal x, FloatVal y -> FloatVal ((float x) + y)`
+2. Binding `x` got type `TVar { Parent = Unbound }` 
+3. But `y` got type `TVar { Parent = Bound(float) }`
+4. `float x` conversion failed with "Unbound type variable '?11'"
+
+**Why this is wrong**:
+- DU constructors have function types: `IntVal : int -> Number`
+- Pattern matching should extract payload type from constructor
+- Creating fresh type variables ignores known type information
+- Relies on downstream constraint solving that may not happen
+
+**The Principled Fix (FCS TyconRef.Deref Pattern)**:
+Look up the constructor binding and extract payload types from its function type:
+
+```fsharp
+| SynArgPats.Pats pats ->
+    // Look up constructor binding to get payload types
+    let payloadTypes =
+        match tryLookupBinding caseName env with
+        | Some binding ->
+            // Extract domain types from constructor's function type
+            let rec extractDomains ty acc =
+                match ty with
+                | NativeType.TFun(domain, range) -> extractDomains range (domain :: acc)
+                | _ -> List.rev acc
+            extractDomains binding.Type []
+        | None ->
+            pats |> List.map (fun _ -> freshTypeVar range)  // Fallback only
+
+    let (argPatterns, argBindings) =
+        List.zip pats payloadTypes
+        |> List.map (fun (p, argTy) -> checkPattern env p argTy range)
+        |> List.unzip
+```
+
+**The Principle**: Type information flows from definitions to uses. Constructor types define payload types. Pattern matching USES this information - it doesn't create new type information.
+
+---
+
+## Mistake 16: TRecord/TApp Dual Representation (January 2026 - ROOT CAUSE)
+
+This was the architectural pollution that caused Mistakes 14 and 15.
+
+```fsharp
+// WRONG - Two representations for the same semantic concept
+| TRecord of tycon: TypeConRef * fields: (string * NativeType) list
+| TApp of tycon: TypeConRef * args: NativeType list
+```
+
+**The Problem**:
+- `TRecord` embedded field info directly in the type
+- `TApp` referenced a type constructor, fields accessed via `SemanticGraph.Types`
+- Unification failed: "expected TApp, got TRecord" or vice versa
+- Some code paths used `TRecord`, others used `TApp`
+- Field access worked for `TRecord` but broke for `TApp`
+
+**Why this happened**:
+- Incremental development added `TRecord` as a convenience
+- But FCS uses single representation: `TType_app(tyconRef, typeInstantiation, nullness)`
+- Field info accessed via `TyconRef.Deref` in FCS, not embedded in type ref
+
+**The Principled Fix**:
+Align with FCS architecture - single representation with deferred field lookup:
+
+1. **Add FieldCount to TypeConRef** (not Fields - avoids forward reference):
+```fsharp
+type TypeConRef = {
+    Name: string
+    Module: ModulePath
+    ParamKinds: TypeParamKind list
+    Layout: TypeLayout
+    NTUKind: NTUKind option
+    FieldCount: int  // 0 = not a record, >0 = record with N fields
+}
+```
+
+2. **Use TApp consistently** for record types:
+```fsharp
+let recordType = mkSimpleType (mkRecordTypeConRef name path layout fieldCount)
+// NOT: TRecord(tycon, fields)
+```
+
+3. **Lookup fields via SemanticGraph.Types** (FCS TyconRef.Deref pattern):
+```fsharp
+let tryGetRecordFields (typeName: string) (graph: SemanticGraph) =
+    match recallType typeName graph with
+    | Some nodeId ->
+        match tryGetNode nodeId graph with
+        | Some { Kind = SemanticKind.TypeDef(_, TypeDefKind.RecordDef fields, _) } ->
+            Some fields
+        | _ -> None
+    | None -> None
+```
+
+**The Cascade Effect**:
+Fixing this root cause revealed downstream pollution:
+- Mistake 14: Reachability didn't follow type references
+- Mistake 15: Pattern bindings didn't use constructor types
+
+**The Principle**: FCS patterns exist for good reasons. When diverging from FCS creates type representation inconsistencies, align back with FCS. The "convenience" of embedded data creates pollution that cascades downstream.
+
+---
+
+## Mistake 17: Incomplete Conversion Witness Coverage (January 2026)
+
+When adding new intrinsics to FNCS, the corresponding Alex witnesses must cover ALL operations in that intrinsic category.
+
+```fsharp
+// FNCS defines 11 Convert intrinsics:
+// toFloat, toInt, toInt64, toByte, toSByte, toInt16, toUInt16, toUInt32, toUInt64, toFloat32, toChar
+
+// WRONG - ApplicationWitness.fs only handled 2:
+| ConvertOp "toFloat", [(argSSA, argType)] -> ...
+| ConvertOp "toInt", [(argSSA, argType)] -> ...
+// Missing: toInt64, toByte, toSByte, toInt16, toUInt16, toUInt32, toUInt64, toFloat32, toChar
+```
+
+**How the gap was discovered**: Test code using `uint32 0x12345678` failed with "Unknown intrinsic: uint32 with 1 args". The `uint32` conversion function was recognized by FNCS as `Convert.toUInt32` but had no Alex witness.
+
+**Why this matters**:
+- FNCS defines intrinsics with full type signatures
+- Alex witnesses must handle ALL intrinsic operations, not just common ones
+- Without complete coverage, valid F# code fails at MLIR generation
+
+**The fix**: Add witnesses for ALL conversion operations with proper type-based dispatch:
+
+```fsharp
+| ConvertOp "toUInt32", [(argSSA, argType)] ->
+    match argType with
+    | "i32" -> zipper, TRValue (argSSA, "i32")  // Identity - no conversion
+    | _ ->
+        let resultSSA, zipper' = MLIRZipper.yieldSSA zipper
+        let convText =
+            match argType with
+            | "f32" | "f64" -> render Quot.Conversion.fpToUI { ... }
+            | "i64" -> render Quot.Conversion.truncI { ... }
+            | "i8" | "i16" -> render Quot.Conversion.extUI { ... }
+            | other -> failwithf "toUInt32: unsupported source type %s" other
+        ...
+```
+
+**Additional lesson - Identity conversions**: MLIR does not allow no-op conversions like `arith.extui %x : i32 to i32`. When source and target types match, return the input value directly without emitting any MLIR operation.
+
+**The Principle**: When adding intrinsic support, create a verification checklist:
+1. List ALL operations in the intrinsic module
+2. Add witnesses for EVERY operation
+3. Test with code that exercises each operation
+4. Identity cases must be handled specially (pass through, don't convert)
+
+---
+
+---
+
+## Mistake 18: sprintf-Based MLIR Generation Instead of Composable Templates (CRITICAL - January 2026)
+
+This is the **FOUNDATIONAL ARCHITECTURAL VIOLATION** that polluted the entire Alex layer.
+
+```fsharp
+// WRONG - sprintf everywhere in templates and witnesses
+let addI = <@ fun p -> sprintf "%s = arith.addi %s, %s : %s" p.Res p.Lhs p.Rhs p.Ty @>
+
+// WRONG - Direct sprintf in witnesses
+let text = sprintf "%s = llvm.mlir.addressof @%s : !llvm.ptr" result globalName
+```
+
+**The Horror Show**:
+- 532+ sprintf calls scattered throughout Alex
+- Templates wrap sprintf in quotations (architectural nonsense)
+- XParsec reduced to pattern matching instead of template composition
+- MLIR becomes "stringly typed" instead of structured
+- SSA values treated as strings instead of typed references
+
+**Why This Is FUNDAMENTALLY WRONG**:
+
+1. **MLIR HAS STRUCTURE** - SSA is NOT stringly typed
+   - MLIR operations are structured with typed operands and results
+   - sprintf erases all type information into strings
+   - Type errors manifest at runtime (MLIR verifier) instead of compile-time
+
+2. **Templates Should Compose UPWARD**
+   - The "Library of Alexandria" metaphor: miniaturized templates compose into larger constructs
+   - Like LEMMAS composing into PROOFS
+   - sprintf produces flat strings that cannot compose
+
+3. **XParsec Is THE Glue Layer**
+   - XParsec should COMPOSE templates at build time
+   - Instead it's reduced to pattern matching, calling sprintf
+   - The composition engine was stripped out
+
+**The Correct Architecture**:
+
+```
+Dialect Templates (STRUCTURED TYPES, not strings)
+    └── Arith/AddI, SubI, etc.  ← Returns MLIROp.Arith.AddI record
+    └── LLVM/AddressOf, Load    ← Returns MLIROp.LLVM.AddressOf record
+    └── SCF/If, While, For      ← Returns MLIROp.SCF.If with regions
+              ↓
+XParsec (COMPOSITION ENGINE)
+    - Matches PSG patterns
+    - COMPOSES templates upward into larger structures
+    - Like assembling lemmas into proofs
+    - Type-safe: SSA types must match at composition boundaries
+              ↓
+Boundary (SERIALIZATION - ONLY HERE)
+    - Structured MLIROp → MLIR text string
+    - THE ONLY PLACE sprintf exists
+```
+
+**What Was Wrong**:
+```fsharp
+// sprintf at EVERY level (scattered 500+ times)
+let addressOf result globalName =
+    sprintf "%s = llvm.mlir.addressof @%s : !llvm.ptr" result globalName
+
+// XParsec reduced to calling sprintf
+let emitAddressOf = 
+    pGlobalRef >>= fun ref ->
+    let text = LLVMTemplates.addressOf resultSSA ref.Name  // Returns string!
+    witnessOp text  // Accumulates strings!
+```
+
+**What Should Be**:
+```fsharp
+// Templates return STRUCTURED TYPES
+type LLVMAddressOf = { Result: SSA; GlobalName: string }
+
+let addressOf result globalName : LLVMOp =
+    LLVMOp.AddressOf { Result = result; GlobalName = globalName }
+
+// XParsec COMPOSES templates into larger structures
+let pLoadGlobalString : XParsec<MLIRExpr> =
+    pGlobalStringRef >>= fun globalRef ->
+    template LLVM.addressOf globalRef.Name >>= fun addrOp ->  // Returns LLVMOp
+    template LLVM.load addrOp.Result >>= fun loadOp ->        // Returns LLVMOp
+    return (MLIRExpr.Composed [addrOp; loadOp])               // Composed structure!
+
+// Serialization ONLY at boundary
+module Serialize =
+    let emit (op: MLIROp) : string =
+        match op with
+        | LLVMOp.AddressOf a -> 
+            sprintf "%s = llvm.mlir.addressof @%s : !llvm.ptr" 
+                (ssaName a.Result) a.GlobalName  // sprintf ONLY HERE
+```
+
+**Dialect Folder Structure (Target State)**:
+```
+Alex/Dialects/
+├── Core/
+│   ├── Types.fs          # MLIROp, SSA, Val, Block, Region
+│   └── Serialize.fs      # THE ONLY PLACE FOR sprintf
+├── Arith/
+│   ├── Types.fs          # ArithOp DU
+│   ├── Templates.fs      # Returns structured ArithOp values
+│   └── Combinators.fs    # XParsec combinators that compose templates
+├── LLVM/
+│   ├── Types.fs          # LLVMOp DU
+│   ├── Templates.fs      # Returns structured LLVMOp values
+│   └── Combinators.fs    # XParsec combinators
+├── SCF/
+│   ├── Types.fs          # SCFOp DU with Region support
+│   ├── Templates.fs      # Region-aware structured templates
+│   └── Combinators.fs    # XParsec combinators for control flow
+└── Func/
+    ├── Types.fs          # FuncOp DU
+    ├── Templates.fs      # Function-level structured templates
+    └── Combinators.fs    # XParsec combinators
+```
+
+**Why sprintf Pollution Is So Damaging**:
+
+1. **No Compile-Time Type Safety** - String concatenation doesn't know about MLIR types
+2. **No Composition** - Can't compose "arith.addi" string with "llvm.load" string meaningfully
+3. **Deferred Errors** - Malformed MLIR discovered by verifier, not compiler
+4. **Testing Nightmare** - Can't unit test template composition, only string output
+5. **Refactoring Impossible** - Changing a template requires global search-replace
+
+**The Remediation Scope**:
+
+- 500+ sprintf calls must be eliminated
+- Each dialect needs structured types (MLIROp variants)
+- XParsec combinators must compose templates, not call sprintf
+- Serialize.fs becomes the ONLY place strings are produced
+- MLIRZipper witnesses structured ops, not text strings
+
+**When You Find Yourself Writing sprintf in Alex**:
+STOP. You are about to pollute the architecture. Create a structured type for the operation and compose it via XParsec. Serialization happens ONLY at the boundary.
+
+---
+
+## Mistake 19: Quotations in Alex Templates (Related to Mistake 18)
+
+```fsharp
+// WRONG - Quotations wrapping sprintf in templates
+type MLIRTemplate<'Params> = {
+    Quotation: Expr<'Params -> string>  // WHY is this a quotation?
+    ...
+}
+
+let addI = <@ fun p -> sprintf "%s = arith.addi ..." @>  // Quotation wrapping sprintf!
+```
+
+**What's Wrong**:
+- Quotations have a SPECIFIC role in a SPECIFIC stratum
+- Quotations define semantic structure at the BINDING level (libraries → PSG)
+- Quotations do NOT belong in Alex templates
+- Wrapping sprintf in a quotation provides ZERO benefit
+
+**Where Quotations Belong**:
+- In platform bindings at library level
+- Captured INTO the PSG as semantic structure
+- Represent WHAT operations mean at source level
+
+**Where Quotations Do NOT Belong**:
+- Alex templates (templates are structured types)
+- MLIR generation (generation uses type-safe composition)
+
+**The Confusion**:
+Someone thought "quotations are cool, let's use them everywhere." But quotations are for **defining semantics at the source level**, not for **generating MLIR at the target level**. Using quotations to wrap sprintf is cargo-culting without understanding.
+
 # The Acid Test
 
 Before committing any change, ask:

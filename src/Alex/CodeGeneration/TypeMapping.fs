@@ -184,6 +184,9 @@ and mapNTUKind (ctx: PlatformContext) (kind: NTUKind) (args: NativeType list) : 
     // Pointer type (no payload - union case takes no data)
     | NTUKind.NTUptr -> "!llvm.ptr"
 
+    // Function pointer type (pointer-sized, used for callbacks)
+    | NTUKind.NTUfnptr -> "!llvm.ptr"
+
     // String type (fat pointer: ptr + length)
     | NTUKind.NTUstring -> fatPointerType ctx
 
@@ -430,7 +433,29 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
                 | TypeLayout.FatPointer ->
                     NativeStrType  // Fat pointer {ptr, len}
                 | TypeLayout.PlatformWord ->
-                    Pointer  // Platform word types are pointer-sized
+                    // Platform word: check NTUKind to distinguish pointers from integers
+                    match tycon.NTUKind with
+                    // Pointer types → !llvm.ptr
+                    | Some NTUKind.NTUptr | Some NTUKind.NTUfnptr ->
+                        Pointer
+                    // Platform integer types → index
+                    | Some NTUKind.NTUint | Some NTUKind.NTUuint
+                    | Some NTUKind.NTUnint | Some NTUKind.NTUunint
+                    | Some NTUKind.NTUsize | Some NTUKind.NTUdiff ->
+                        Index
+                    // No NTUKind = user-defined handle type (Signal, Effect, Memo) → index
+                    | None ->
+                        Index
+                    // Fixed-width types should NOT have PlatformWord layout
+                    | Some NTUKind.NTUint8 | Some NTUKind.NTUint16 | Some NTUKind.NTUint32 | Some NTUKind.NTUint64
+                    | Some NTUKind.NTUuint8 | Some NTUKind.NTUuint16 | Some NTUKind.NTUuint32 | Some NTUKind.NTUuint64
+                    | Some NTUKind.NTUfloat32 | Some NTUKind.NTUfloat64 ->
+                        TypeError (sprintf "Fixed-width type '%s' has PlatformWord layout - FNCS type definition error" tycon.Name)
+                    // Other types should NOT have PlatformWord layout
+                    | Some NTUKind.NTUstring | Some NTUKind.NTUbool | Some NTUKind.NTUchar | Some NTUKind.NTUunit
+                    | Some NTUKind.NTUdecimal | Some NTUKind.NTUuuid | Some NTUKind.NTUdatetime | Some NTUKind.NTUtimespan
+                    | Some NTUKind.NTUother ->
+                        TypeError (sprintf "Type '%s' with NTUKind %A should not have PlatformWord layout" tycon.Name tycon.NTUKind)
                 | TypeLayout.Opaque ->
                     // CRITICAL: Opaque layout means FNCS doesn't know the type structure
                     // This is an FNCS issue - the type definition wasn't resolved

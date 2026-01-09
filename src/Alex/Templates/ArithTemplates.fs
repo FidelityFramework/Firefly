@@ -397,7 +397,25 @@ module Quot =
             IsTerminator = false
             Category = "conversion"
         }
-    
+
+        /// Unsigned integer to float (uint -> float)
+        let uiToFP : MLIRTemplate<ConversionParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.uitofp %s : %s to %s" p.Result p.Operand p.FromType p.ToType @>
+            Dialect = "arith"
+            OpName = "uitofp"
+            IsTerminator = false
+            Category = "conversion"
+        }
+
+        /// Float to unsigned integer (float -> uint)
+        let fpToUI : MLIRTemplate<ConversionParams> = {
+            Quotation = <@ fun p -> sprintf "%s = arith.fptoui %s : %s to %s" p.Result p.Operand p.FromType p.ToType @>
+            Dialect = "arith"
+            OpName = "fptoui"
+            IsTerminator = false
+            Category = "conversion"
+        }
+
     /// Constants
     module Constant =
         let intConst : MLIRTemplate<ConstantParams> = {

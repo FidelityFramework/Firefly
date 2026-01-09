@@ -160,18 +160,23 @@ let witnessNode (graph: SemanticGraph) (node: SemanticNode) (zipper: MLIRZipper)
 
     // Mutable set
     | SemanticKind.Set (targetId, valueId) ->
-        // Pure SSA rebinding for mutable variables (no store)
-        // This enables SCF iter_args for loops
         match SemanticGraph.tryGetNode targetId graph with
         | Some targetNode ->
             match targetNode.Kind with
             | SemanticKind.VarRef (name, _) ->
-                // Mutable variable assignment - rebind to new SSA value
+                // Get the value SSA first
                 match MLIRZipper.recallNodeSSA (string (NodeId.value valueId)) zipper with
                 | Some (valueSSA, valueType) ->
-                    // Rebind the variable to the new SSA value
-                    let zipper' = MLIRZipper.bindVar name valueSSA valueType zipper
-                    zipper', TRVoid
+                    // Check if this is a module-level mutable
+                    match MLIRZipper.lookupModuleLevelMutable name zipper with
+                    | Some (_bindingId, globalName) ->
+                        // Module-level mutable: use global store template primitive
+                        let zipper' = MLIRZipper.witnessGlobalStore globalName valueSSA valueType zipper
+                        zipper', TRVoid
+                    | None ->
+                        // Local mutable: pure SSA rebinding (for SCF iter_args)
+                        let zipper' = MLIRZipper.bindVar name valueSSA valueType zipper
+                        zipper', TRVoid
                 | None ->
                     zipper, TRError (sprintf "Set: value for '%s' not computed" name)
             | _ ->
@@ -307,6 +312,7 @@ let private transferGraphCore
             entryPointLambdaIds
             analysisResult.AddressedMutableBindings
             analysisResult.ModifiedVarsInLoopBodies
+            analysisResult.ModuleLevelMutableBindings
             ssaAssignment
     let scfHook = CFWitness.createSCFRegionHook graph
 

@@ -52,39 +52,88 @@ Witness files:
 - `MemoryWitness.fs` - Load/store, alloca, GEP
 - `LambdaWitness.fs` - Lambda expressions
 
-### 3. Templates (`Alex/Templates/`)
+### 3. Templates (`Alex/Dialects/` - TARGET ARCHITECTURE)
 
-Quotation-based MLIR structure definitions:
-- `TemplateTypes.fs` - Core template infrastructure
-- `ArithTemplates.fs` - Arithmetic operations
-- `MemoryTemplates.fs` - Memory operations
-- `ControlFlowTemplates.fs` - Control flow (SCF dialect)
-- `LLVMTemplates.fs` - LLVM dialect operations
+**CRITICAL: Templates are STRUCTURED TYPES that COMPOSE UPWARD, not sprintf wrappers.**
 
-```fsharp
-type MLIRTemplate<'Params> = Expr<'Params -> string>
+Each dialect has its own folder with:
+- `Types.fs` - DU defining structured operations for that dialect
+- `Templates.fs` - Functions returning structured MLIROp values
+- `Combinators.fs` - XParsec combinators that compose templates
 
-let addI = <@ fun p -> sprintf "%s = arith.addi %s, %s : %s" p.Res p.Lhs p.Rhs p.Ty @>
+```
+Alex/Dialects/
+├── Core/
+│   ├── Types.fs          # MLIROp, SSA, Val, Block, Region
+│   └── Serialize.fs      # THE ONLY PLACE for string generation
+├── Arith/
+│   ├── Types.fs          # type ArithOp = AddI of BinaryParams | SubI of ... 
+│   ├── Templates.fs      # let addI p = ArithOp.AddI p (returns structured type!)
+│   └── Combinators.fs    # let pBinaryArith = ... (XParsec composing templates)
+├── LLVM/
+│   ├── Types.fs          # type LLVMOp = AddressOf of ... | Load of ...
+│   ├── Templates.fs      # let addressOf r n = LLVMOp.AddressOf { Result=r; Name=n }
+│   └── Combinators.fs    # let pLoadGlobal = ... (composes addressOf + load)
+├── SCF/
+│   └── ...
+└── Func/
+    └── ...
 ```
 
-### 4. XParsec Combinators (`Alex/XParsec/`)
+**Templates are LEMMAS, XParsec COMPOSES them into PROOFS**:
+```fsharp
+// Template returns STRUCTURED TYPE (not string!)
+let addressOf (result: SSA) (globalName: string) : LLVMOp =
+    LLVMOp.AddressOf { Result = result; GlobalName = globalName }
 
-**NEW (January 2026)**: Combinator-based pattern recognition and emission.
+// XParsec COMPOSES templates upward
+let pLoadGlobalString : XParsec<MLIRExpr> =
+    pGlobalStringRef >>= fun globalRef ->
+    template LLVM.addressOf globalRef.Name >>= fun addrOp ->
+    template LLVM.load addrOp.Result >>= fun loadOp ->
+    return (MLIRExpr.Composed [addrOp; loadOp])
 
-- `PSGCombinators.fs` - XParsec-style parser combinators for PSG nodes
-- `MLIREmitters.fs` - Combinator-based MLIR emission
+// Serialization ONLY at boundary (Serialize.fs)
+let emit (op: MLIROp) : string = sprintf ... // ONLY HERE
+```
+
+**WRONG (Current Polluted State)**:
+```fsharp
+// DON'T DO THIS - sprintf wrapped in quotation
+let addI = <@ fun p -> sprintf "%s = arith.addi %s, %s : %s" ... @>
+```
+
+### 4. XParsec Combinators (`Alex/XParsec/`) - THE GLUE LAYER
+
+**XParsec is THE composition engine. It composes templates UPWARD into larger structures.**
+
+XParsec is NOT just pattern matching - it is the glue that:
+1. Matches PSG patterns
+2. COMPOSES dialect templates into larger MLIR structures
+3. Threads SSA state through composition
+4. Produces structured MLIROp trees (NOT strings)
 
 ```fsharp
-type PSGParser<'T> = PSGParserState -> PSGMatchResult<'T> * PSGParserState
+// XParsec composes templates like lemmas compose into proofs
+let pLoadStructField : XParsec<MLIRExpr> =
+    pStructPtr >>= fun structPtr ->           // Match: we have struct ptr
+    pFieldIndex >>= fun fieldIdx ->           // Match: we have field index
+    template LLVM.gep structPtr fieldIdx >>= fun gepOp ->   // Compose: GEP template
+    template LLVM.load gepOp.Result >>= fun loadOp ->       // Compose: Load template
+    return (MLIRExpr.Sequence [gepOp; loadOp])              // Result: composed structure
 
-// Composite patterns
-let pBinaryArithApp : PSGParser<IntrinsicInfo * NodeId * NodeId>
-let pComparisonApp : PSGParser<IntrinsicInfo * NodeId * NodeId>
-
-// Full emitters using computation expression
-let emitBinaryArithOp : EmitterParser
-let emitComparisonOp : EmitterParser
+// Complex control flow - XParsec composes SCF templates
+let pWhileLoop : XParsec<MLIRExpr> =
+    pCondition >>= fun cond ->
+    pBody >>= fun body ->
+    template SCF.whileOp cond body >>= fun whileOp ->  // SCF template
+    return (MLIRExpr.ControlFlow whileOp)
 ```
+
+**Files**:
+- `PSGCombinators.fs` - PSG pattern matching combinators
+- `TemplateComposers.fs` - Combinators that compose dialect templates
+- `MLIRExpr.fs` - Structured MLIR expression type (result of composition)
 
 ### 5. Preprocessing (`Alex/Preprocessing/`)
 
