@@ -186,7 +186,42 @@ let checkNullAssignment targetType sourceExpr =
     | _ -> ()
 ```
 
-### 5. BCL-Sympathetic API Surface
+### 5. Inline Expansion for Escape Analysis
+
+FNCS captures function bodies for functions marked `inline` and expands them at call sites during type checking. This is critical for **escape analysis** of stack-allocated memory.
+
+**The Problem**: When a function allocates via `NativePtr.stackalloc` and returns a pointer, that pointer is invalid after the function returns (stack frame deallocated).
+
+**The Solution**: FNCS expands `inline` function bodies at call sites, lifting allocations to the caller's frame:
+
+```fsharp
+// In Platform/Console.fs
+let inline readln () : string =
+    let buffer = NativePtr.stackalloc<byte> 256  // Allocation
+    let len = readLineInto buffer 256
+    NativeStr.fromPointer buffer len             // Returns fat pointer
+
+// In user code
+let hello() =
+    Console.readln() |> greet
+    // FNCS expands readln inline:
+    // - stackalloc now in hello's frame
+    // - fat pointer valid through hello's scope
+```
+
+**Implementation**:
+- `Bindings.fs`: Captures `InlineBody` for functions with `isInline = true`
+- `Applications.fs`: Checks `InlineBody` at call sites and expands when present
+- Environment substitution binds parameters to argument values
+
+**When to Mark Functions `inline`**:
+- Allocates via `stackalloc` or `Arena.alloc`
+- Returns pointer/reference/fat pointer to that allocation
+- Caller needs returned value to remain valid
+
+This enables **Level 1 (Implicit) memory management** - developers write standard F# while the compiler ensures safety via inline expansion.
+
+### 6. BCL-Sympathetic API Surface
 
 Despite native semantics, the API surface remains familiar:
 
