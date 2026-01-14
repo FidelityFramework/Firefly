@@ -5,6 +5,7 @@
 /// ZERO sprintf. Function bodies are Regions containing structured ops.
 module Alex.Bindings.PlatformHelpers
 
+open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Dialects.Arith.Templates
 open Alex.Dialects.LLVM.Templates
@@ -97,16 +98,20 @@ let buildParseIntFunc () : FuncOp =
     let selectStart = MLIROp.ArithOp (Select (startPos, isNeg, c1, c0, MLIRTypes.i64))
 
     // Build the while loop body for parsing digits
+    // Block arguments as typed vals
+    let valArg = { SSA = Arg 0; Type = MLIRTypes.i64 }    // accumulated value
+    let posArg = { SSA = Arg 1; Type = MLIRTypes.i64 }    // current position
+
     // This is the condition region
     let condInBounds = ssa.Next()
     let condOps = [
-        MLIROp.ArithOp (CmpI (condInBounds, Slt, Arg 1, lenSSA, MLIRTypes.i64))  // pos < len
+        MLIROp.ArithOp (CmpI (condInBounds, Slt, posArg.SSA, lenSSA, MLIRTypes.i64))  // pos < len
     ]
     let condRegion = {
         Blocks = [{
             Label = BlockRef "cond"
             Args = []
-            Ops = condOps @ [MLIROp.SCFOp (Condition (condInBounds, [Arg 0; Arg 1]))]
+            Ops = condOps @ [MLIROp.SCFOp (scfCondition condInBounds [valArg; posArg])]
         }]
     }
 
@@ -119,19 +124,19 @@ let buildParseIntFunc () : FuncOp =
     let newVal = ssa.Next()
     let newPos = ssa.Next()
     let bodyOps = [
-        MLIROp.LLVMOp (GEP (charPtr, ptrSSA, [(Arg 1, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (GEP (charPtr, ptrSSA, [(posArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (Load (char', charPtr, MLIRTypes.i8, NotAtomic))
         MLIROp.ArithOp (ExtUI (charI64, char', MLIRTypes.i8, MLIRTypes.i64))
         MLIROp.ArithOp (SubI (digit, charI64, c48, MLIRTypes.i64))
-        MLIROp.ArithOp (MulI (valTimes10, Arg 0, c10, MLIRTypes.i64))
+        MLIROp.ArithOp (MulI (valTimes10, valArg.SSA, c10, MLIRTypes.i64))
         MLIROp.ArithOp (AddI (newVal, valTimes10, digit, MLIRTypes.i64))
-        MLIROp.ArithOp (AddI (newPos, Arg 1, c1, MLIRTypes.i64))
-        MLIROp.SCFOp (Yield [newVal; newPos])
+        MLIROp.ArithOp (AddI (newPos, posArg.SSA, c1, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [{ SSA = newVal; Type = MLIRTypes.i64 }; { SSA = newPos; Type = MLIRTypes.i64 }])
     ]
     let bodyRegion = {
         Blocks = [{
             Label = BlockRef "body"
-            Args = [{SSA = Arg 0; Type = MLIRTypes.i64}; {SSA = Arg 1; Type = MLIRTypes.i64}]
+            Args = [valArg; posArg]
             Ops = bodyOps
         }]
     }
@@ -227,6 +232,10 @@ let buildParseFloatFunc () : FuncOp =
     ]
 
     // Integer part parsing while loop (until decimal point)
+    // Block arguments as typed vals
+    let intValArg = { SSA = Arg 0; Type = MLIRTypes.f64 }    // accumulated value
+    let intPosArg = { SSA = Arg 1; Type = MLIRTypes.i64 }    // current position
+
     // Condition: pos < len AND char != '.'
     let intCondCharPtr = ssa.Next()
     let intCondChar = ssa.Next()
@@ -234,12 +243,12 @@ let buildParseFloatFunc () : FuncOp =
     let intCondNotDot = ssa.Next()
     let intCondContinue = ssa.Next()
     let intCondOps = [
-        MLIROp.ArithOp (CmpI (intCondInBounds, Slt, Arg 1, lenSSA, MLIRTypes.i64))
-        MLIROp.LLVMOp (GEP (intCondCharPtr, ptrSSA, [(Arg 1, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.ArithOp (CmpI (intCondInBounds, Slt, intPosArg.SSA, lenSSA, MLIRTypes.i64))
+        MLIROp.LLVMOp (GEP (intCondCharPtr, ptrSSA, [(intPosArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (Load (intCondChar, intCondCharPtr, MLIRTypes.i8, NotAtomic))
         MLIROp.ArithOp (CmpI (intCondNotDot, Ne, intCondChar, c46_i8, MLIRTypes.i8))
         MLIROp.ArithOp (AndI (intCondContinue, intCondInBounds, intCondNotDot, MLIRTypes.i1))
-        MLIROp.SCFOp (Condition (intCondContinue, [Arg 0; Arg 1]))
+        MLIROp.SCFOp (scfCondition intCondContinue [intValArg; intPosArg])
     ]
     let intCondRegion = { Blocks = [{ Label = BlockRef "intcond"; Args = []; Ops = intCondOps }] }
 
@@ -252,19 +261,19 @@ let buildParseFloatFunc () : FuncOp =
     let intNewVal = ssa.Next()
     let intNewPos = ssa.Next()
     let intBodyOps = [
-        MLIROp.LLVMOp (GEP (intCharPtr, ptrSSA, [(Arg 1, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (GEP (intCharPtr, ptrSSA, [(intPosArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (Load (intChar, intCharPtr, MLIRTypes.i8, NotAtomic))
         MLIROp.ArithOp (ExtUI (intCharI64, intChar, MLIRTypes.i8, MLIRTypes.i64))
         MLIROp.ArithOp (SubI (intDigit, intCharI64, c48, MLIRTypes.i64))
-        MLIROp.ArithOp (MulI (intValTimes10, Arg 0, c10_i64, MLIRTypes.i64))
+        MLIROp.ArithOp (MulI (intValTimes10, intValArg.SSA, c10_i64, MLIRTypes.i64))
         MLIROp.ArithOp (AddI (intNewVal, intValTimes10, intDigit, MLIRTypes.i64))
-        MLIROp.ArithOp (AddI (intNewPos, Arg 1, c1_i64, MLIRTypes.i64))
-        MLIROp.SCFOp (Yield [intNewVal; intNewPos])
+        MLIROp.ArithOp (AddI (intNewPos, intPosArg.SSA, c1_i64, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [{ SSA = intNewVal; Type = MLIRTypes.i64 }; { SSA = intNewPos; Type = MLIRTypes.i64 }])
     ]
     let intBodyRegion = {
         Blocks = [{
             Label = BlockRef "intbody"
-            Args = [{SSA = Arg 0; Type = MLIRTypes.i64}; {SSA = Arg 1; Type = MLIRTypes.i64}]
+            Args = [intValArg; intPosArg]
             Ops = intBodyOps
         }]
     }
@@ -291,12 +300,17 @@ let buildParseFloatFunc () : FuncOp =
     ]
 
     // Fractional part while loop
+    // Block arguments as typed vals
+    let fracFracArg = { SSA = Arg 0; Type = MLIRTypes.f64 }    // accumulated fraction
+    let fracDivArg = { SSA = Arg 1; Type = MLIRTypes.f64 }     // divisor
+    let fracPosArg = { SSA = Arg 2; Type = MLIRTypes.i64 }     // current position
+
     let fracCondInBounds = ssa.Next()
     let fracCondContinue = ssa.Next()
     let fracCondOps = [
-        MLIROp.ArithOp (CmpI (fracCondInBounds, Slt, Arg 2, lenSSA, MLIRTypes.i64))
+        MLIROp.ArithOp (CmpI (fracCondInBounds, Slt, fracPosArg.SSA, lenSSA, MLIRTypes.i64))
         MLIROp.ArithOp (AndI (fracCondContinue, hasDecimal, fracCondInBounds, MLIRTypes.i1))
-        MLIROp.SCFOp (Condition (fracCondContinue, [Arg 0; Arg 1; Arg 2]))
+        MLIROp.SCFOp (scfCondition fracCondContinue [fracFracArg; fracDivArg; fracPosArg])
     ]
     let fracCondRegion = { Blocks = [{ Label = BlockRef "fraccond"; Args = []; Ops = fracCondOps }] }
 
@@ -310,25 +324,21 @@ let buildParseFloatFunc () : FuncOp =
     let fracNewFrac = ssa.Next()
     let fracNewPos = ssa.Next()
     let fracBodyOps = [
-        MLIROp.LLVMOp (GEP (fracCharPtr, ptrSSA, [(Arg 2, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (GEP (fracCharPtr, ptrSSA, [(fracPosArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (Load (fracChar, fracCharPtr, MLIRTypes.i8, NotAtomic))
         MLIROp.ArithOp (ExtUI (fracCharI64, fracChar, MLIRTypes.i8, MLIRTypes.i64))
         MLIROp.ArithOp (SubI (fracDigitI64, fracCharI64, c48, MLIRTypes.i64))
         MLIROp.ArithOp (ArithOp.SIToFP (fracDigitF64, fracDigitI64, MLIRTypes.i64, MLIRTypes.f64))
-        MLIROp.ArithOp (MulF (fracNewDiv, Arg 1, c10_f64, MLIRTypes.f64))
+        MLIROp.ArithOp (MulF (fracNewDiv, fracDivArg.SSA, c10_f64, MLIRTypes.f64))
         MLIROp.ArithOp (DivF (fracScaledDigit, fracDigitF64, fracNewDiv, MLIRTypes.f64))
-        MLIROp.ArithOp (AddF (fracNewFrac, Arg 0, fracScaledDigit, MLIRTypes.f64))
-        MLIROp.ArithOp (AddI (fracNewPos, Arg 2, c1_i64, MLIRTypes.i64))
-        MLIROp.SCFOp (Yield [fracNewFrac; fracNewDiv; fracNewPos])
+        MLIROp.ArithOp (AddF (fracNewFrac, fracFracArg.SSA, fracScaledDigit, MLIRTypes.f64))
+        MLIROp.ArithOp (AddI (fracNewPos, fracPosArg.SSA, c1_i64, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [{ SSA = fracNewFrac; Type = MLIRTypes.f64 }; { SSA = fracNewDiv; Type = MLIRTypes.f64 }; { SSA = fracNewPos; Type = MLIRTypes.i64 }])
     ]
     let fracBodyRegion = {
         Blocks = [{
             Label = BlockRef "fracbody"
-            Args = [
-                {SSA = Arg 0; Type = MLIRTypes.f64}
-                {SSA = Arg 1; Type = MLIRTypes.f64}
-                {SSA = Arg 2; Type = MLIRTypes.i64}
-            ]
+            Args = [fracFracArg; fracDivArg; fracPosArg]
             Ops = fracBodyOps
         }]
     }
@@ -404,14 +414,18 @@ let buildStringContainsCharFunc () : FuncOp =
     ]
 
     // Condition: in_bounds AND not_found
+    // Block arguments as typed vals
+    let foundArg = { SSA = Arg 0; Type = MLIRTypes.i1 }    // found flag
+    let posArg = { SSA = Arg 1; Type = MLIRTypes.i64 }     // current position
+
     let condInBounds = ssa.Next()
     let condNotFound = ssa.Next()
     let condContinue = ssa.Next()
     let condOps = [
-        MLIROp.ArithOp (CmpI (condInBounds, Slt, Arg 1, lenSSA, MLIRTypes.i64))
-        MLIROp.ArithOp (CmpI (condNotFound, Eq, Arg 0, cFalse, MLIRTypes.i1))
+        MLIROp.ArithOp (CmpI (condInBounds, Slt, posArg.SSA, lenSSA, MLIRTypes.i64))
+        MLIROp.ArithOp (CmpI (condNotFound, Eq, foundArg.SSA, cFalse, MLIRTypes.i1))
         MLIROp.ArithOp (AndI (condContinue, condInBounds, condNotFound, MLIRTypes.i1))
-        MLIROp.SCFOp (Condition (condContinue, [Arg 0; Arg 1]))
+        MLIROp.SCFOp (scfCondition condContinue [foundArg; posArg])
     ]
     let condRegion = { Blocks = [{ Label = BlockRef "cond"; Args = []; Ops = condOps }] }
 
@@ -420,16 +434,16 @@ let buildStringContainsCharFunc () : FuncOp =
     let isMatch = ssa.Next()
     let newPos = ssa.Next()
     let bodyOps = [
-        MLIROp.LLVMOp (GEP (charPtr, ptrSSA, [(Arg 1, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (GEP (charPtr, ptrSSA, [(posArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (Load (char', charPtr, MLIRTypes.i8, NotAtomic))
         MLIROp.ArithOp (CmpI (isMatch, Eq, char', targetArg, MLIRTypes.i8))
-        MLIROp.ArithOp (AddI (newPos, Arg 1, c1, MLIRTypes.i64))
-        MLIROp.SCFOp (Yield [isMatch; newPos])
+        MLIROp.ArithOp (AddI (newPos, posArg.SSA, c1, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [{ SSA = isMatch; Type = MLIRTypes.i1 }; { SSA = newPos; Type = MLIRTypes.i64 }])
     ]
     let bodyRegion = {
         Blocks = [{
             Label = BlockRef "body"
-            Args = [{SSA = Arg 0; Type = MLIRTypes.i1}; {SSA = Arg 1; Type = MLIRTypes.i64}]
+            Args = [foundArg; posArg]
             Ops = bodyOps
         }]
     }
@@ -478,33 +492,36 @@ let private ensureHelper (name: string) (builder: unit -> FuncOp) (z: PSGZipper)
 let inline val' ssa ty : Val = { SSA = ssa; Type = ty }
 
 /// Emit call to fidelity_parse_int
-let bindParseInt (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+/// Uses pre-assigned SSA from Application node
+let bindParseInt (appNodeId: NodeId) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
     | [str] ->
         let helperOps = ensureHelper ParseIntHelper buildParseIntFunc z
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA appNodeId z
         let callOp = MLIROp.FuncOp (FuncCall (Some resultSSA, ParseIntHelper, [str], MLIRTypes.i64))
         BoundOps (helperOps @ [callOp], Some { SSA = resultSSA; Type = MLIRTypes.i64 })
     | _ ->
         NotSupported "parseint requires (string)"
 
 /// Emit call to fidelity_parse_float
-let bindParseFloat (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+/// Uses pre-assigned SSA from Application node
+let bindParseFloat (appNodeId: NodeId) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
     | [str] ->
         let helperOps = ensureHelper ParseFloatHelper buildParseFloatFunc z
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA appNodeId z
         let callOp = MLIROp.FuncOp (FuncCall (Some resultSSA, ParseFloatHelper, [str], MLIRTypes.f64))
         BoundOps (helperOps @ [callOp], Some { SSA = resultSSA; Type = MLIRTypes.f64 })
     | _ ->
         NotSupported "parsefloat requires (string)"
 
 /// Emit call to fidelity_string_contains_char
-let bindStringContainsChar (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+/// Uses pre-assigned SSA from Application node
+let bindStringContainsChar (appNodeId: NodeId) (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
     match prim.Args with
     | [str; char'] ->
         let helperOps = ensureHelper StringContainsCharHelper buildStringContainsCharFunc z
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA appNodeId z
         let callOp = MLIROp.FuncOp (FuncCall (Some resultSSA, StringContainsCharHelper, [str; char'], MLIRTypes.i1))
         BoundOps (helperOps @ [callOp], Some { SSA = resultSSA; Type = MLIRTypes.i1 })
     | _ ->
@@ -515,13 +532,13 @@ let bindStringContainsChar (z: PSGZipper) (prim: PlatformPrimitive) : BindingRes
 // These are more complex and will be added incrementally
 // ═══════════════════════════════════════════════════════════════════════════
 
-let bindBase64Encode (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+let bindBase64Encode (_appNodeId: NodeId) (_z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
     NotSupported "base64Encode not yet implemented with structured ops"
 
-let bindBase64Decode (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+let bindBase64Decode (_appNodeId: NodeId) (_z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
     NotSupported "base64Decode not yet implemented with structured ops"
 
-let bindSha1 (z: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+let bindSha1 (_appNodeId: NodeId) (_z: PSGZipper) (_prim: PlatformPrimitive) : BindingResult =
     NotSupported "sha1 not yet implemented with structured ops"
 
 // ═══════════════════════════════════════════════════════════════════════════

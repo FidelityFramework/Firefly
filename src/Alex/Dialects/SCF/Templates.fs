@@ -50,7 +50,7 @@ let scfForSimple (iv: SSA) (start: SSA) (stop: SSA) (step: SSA) (bodyRegion: Reg
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Yield values from region: scf.yield
-let scfYield (values: SSA list) : SCFOp =
+let scfYield (values: Val list) : SCFOp =
     SCFOp.Yield values
 
 /// Yield no values (void)
@@ -58,11 +58,11 @@ let scfYieldVoid : SCFOp =
     SCFOp.Yield []
 
 /// Yield single value
-let scfYieldVal (value: SSA) : SCFOp =
+let scfYieldVal (value: Val) : SCFOp =
     SCFOp.Yield [value]
 
 /// While condition: scf.condition
-let scfCondition (cond: SSA) (args: SSA list) : SCFOp =
+let scfCondition (cond: SSA) (args: Val list) : SCFOp =
     SCFOp.Condition (cond, args)
 
 /// Simple while condition without forwarding args
@@ -92,6 +92,19 @@ let singleBlockRegion (label: string) (args: BlockArg list) (ops: MLIROp list) :
             {
                 Label = BlockRef label
                 Args = args
+                Ops = ops
+            }
+        ]
+    }
+
+/// Create a region with implicit entry block (no label, no args)
+/// Used for SCF while/for regions where block args are defined by the operation
+let implicitEntryRegion (ops: MLIROp list) : Region =
+    {
+        Blocks = [
+            {
+                Label = BlockRef ""  // Empty = no label (implicit entry)
+                Args = []            // Args defined by operation signature
                 Ops = ops
             }
         ]

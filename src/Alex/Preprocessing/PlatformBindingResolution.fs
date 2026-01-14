@@ -20,8 +20,8 @@ open Alex.Dialects.Core.Types
 /// Check if intrinsic is a platform intrinsic that needs resolution
 let private isPlatformIntrinsic (info: IntrinsicInfo) : bool =
     match info.Module with
-    | IntrinsicModule.Sys
-    | IntrinsicModule.Console -> true
+    | IntrinsicModule.Sys -> true
+    // NOTE: Console is NOT an intrinsic - see fsnative-spec/spec/platform-bindings.md
     | _ -> false
 
 /// Resolve a single intrinsic to a concrete binding based on runtime mode
@@ -44,17 +44,8 @@ let private resolveIntrinsic
         | IntrinsicModule.Sys, "exit" ->
             let syscallNum = SyscallNumbers.getExitSyscall os
             Some (Syscall (syscallNum, "={rax},{rax},{rdi},~{rcx},~{r11},~{memory}"))
-        | IntrinsicModule.Console, "write"
-        | IntrinsicModule.Console, "writeln"
-        | IntrinsicModule.Console, "error"
-        | IntrinsicModule.Console, "errorln" ->
-            // Console operations use write syscall internally
-            let syscallNum = SyscallNumbers.getWriteSyscall os
-            Some (Syscall (syscallNum, "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"))
-        | IntrinsicModule.Console, "readln" ->
-            // Console readln uses read syscall internally
-            let syscallNum = SyscallNumbers.getReadSyscall os
-            Some (Syscall (syscallNum, "={rax},{rax},{rdi},{rsi},{rdx},~{rcx},~{r11},~{memory}"))
+        // NOTE: Console.* is NOT an intrinsic - it's Layer 3 user code in Fidelity.Platform
+        // that uses Sys.* intrinsics. See fsnative-spec/spec/platform-bindings.md
         | _ -> None  // Not a platform-resolvable intrinsic
 
     | Console ->
@@ -63,13 +54,8 @@ let private resolveIntrinsic
         | IntrinsicModule.Sys, "write" -> Some (LibcCall "write")
         | IntrinsicModule.Sys, "read" -> Some (LibcCall "read")
         | IntrinsicModule.Sys, "exit" -> Some (LibcCall "exit")
-        | IntrinsicModule.Console, "write"
-        | IntrinsicModule.Console, "writeln"
-        | IntrinsicModule.Console, "error"
-        | IntrinsicModule.Console, "errorln" ->
-            Some (LibcCall "write")  // Console uses write
-        | IntrinsicModule.Console, "readln" ->
-            Some (LibcCall "read")  // Console uses read
+        // NOTE: Console.* is NOT an intrinsic - it's Layer 3 user code in Fidelity.Platform
+        // that uses Sys.* intrinsics. See fsnative-spec/spec/platform-bindings.md
         | _ -> None  // Not a platform-resolvable intrinsic
 
 // ═══════════════════════════════════════════════════════════════════════════

@@ -1,11 +1,14 @@
 /// Application/Format - Value to String Conversions
 ///
-/// ARCHITECTURAL PRINCIPLE: Returns STRUCTURED MLIROp lists, no sprintf.
-/// Uses PSGZipper for SSA allocation, builds SCF regions for loops.
+/// ARCHITECTURAL PRINCIPLE (January 2026):
+/// Witnesses OBSERVE and RETURN structured MLIROp lists.
+/// All SSAs come from pre-computed SSAAssignment coeffect.
+/// No freshSynthSSA - all SSAs are pre-assigned.
 ///
 /// Migrated from ApplicationWitness.fs emitIntToString, emitFloatToString, emitStringToInt
 module Alex.Witnesses.Application.Format
 
+open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Dialects.SCF.Templates
 open Alex.Traversal.PSGZipper
@@ -22,24 +25,32 @@ open Alex.Traversal.PSGZipper
 
 /// Convert an integer value to a string (fat pointer)
 /// Uses a while loop to extract digits, handles sign, zero case
-let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
+/// Uses ~40 pre-assigned SSAs
+let intToString (nodeId: NodeId) (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
     // If input is i32, extend to i64 first
     let int64SSA, extOps =
         match intVal.Type with
         | TInt I32 ->
-            let extSSA = freshSynthSSA z
+            let extSSA = nextSSA ()
             let extOp = MLIROp.ArithOp (ArithOp.ExtSI (extSSA, intVal.SSA, MLIRTypes.i32, MLIRTypes.i64))
             (extSSA, [extOp])
         | _ -> (intVal.SSA, [])
 
     // Constants
-    let zeroSSA = freshSynthSSA z
-    let oneSSA = freshSynthSSA z
-    let tenSSA = freshSynthSSA z
-    let asciiZeroSSA = freshSynthSSA z
-    let bufSizeSSA = freshSynthSSA z
-    let minusCharSSA = freshSynthSSA z
-    let startPosSSA = freshSynthSSA z
+    let zeroSSA = nextSSA ()
+    let oneSSA = nextSSA ()
+    let tenSSA = nextSSA ()
+    let asciiZeroSSA = nextSSA ()
+    let bufSizeSSA = nextSSA ()
+    let minusCharSSA = nextSSA ()
+    let startPosSSA = nextSSA ()
 
     let constOps = [
         MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, MLIRTypes.i64))
@@ -52,16 +63,16 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
     ]
 
     // Allocate buffer
-    let bufSSA = freshSynthSSA z
+    let bufSSA = nextSSA ()
     let allocOp = MLIROp.LLVMOp (LLVMOp.Alloca (bufSSA, bufSizeSSA, MLIRTypes.i8, None))
 
     // Check if negative
-    let isNegSSA = freshSynthSSA z
+    let isNegSSA = nextSSA ()
     let isNegOp = MLIROp.ArithOp (ArithOp.CmpI (isNegSSA, ICmpPred.Slt, int64SSA, zeroSSA, MLIRTypes.i64))
 
     // Get absolute value: abs = select(isNeg, -n, n)
-    let negatedSSA = freshSynthSSA z
-    let absSSA = freshSynthSSA z
+    let negatedSSA = nextSSA ()
+    let absSSA = nextSSA ()
     let absOps = [
         MLIROp.ArithOp (ArithOp.SubI (negatedSSA, zeroSSA, int64SSA, MLIRTypes.i64))
         MLIROp.ArithOp (ArithOp.Select (absSSA, isNegSSA, negatedSSA, int64SSA, MLIRTypes.i64))
@@ -72,25 +83,27 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
     // Guard: number > 0
     // Body: digit = n % 10, store '0' + digit at buf[pos], pos--, n = n / 10
 
-    // Block arguments for the loop
-    let nArgSSA = freshSynthSSA z      // Current number
-    let posArgSSA = freshSynthSSA z    // Current position
+    // Block arguments for the loop (typed vals used consistently)
+    let nArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }      // Current number
+    let posArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }    // Current position
+    let nArgSSA = nArg.SSA
+    let posArgSSA = posArg.SSA
 
     // Condition region: check if n > 0
-    let condSSA = freshSynthSSA z
+    let condSSA = nextSSA ()
     let condOps = [
         MLIROp.ArithOp (ArithOp.CmpI (condSSA, ICmpPred.Sgt, nArgSSA, zeroSSA, MLIRTypes.i64))
-        MLIROp.SCFOp (SCFOp.Condition (condSSA, [nArgSSA; posArgSSA]))
+        MLIROp.SCFOp (scfCondition condSSA [nArg; posArg])
     ]
-    let condRegion = singleBlockRegion "before" [blockArg nArgSSA MLIRTypes.i64; blockArg posArgSSA MLIRTypes.i64] condOps
+    let condRegion = singleBlockRegion "before" [nArg; posArg] condOps
 
     // Body region: extract digit, store, decrement
-    let digitSSA = freshSynthSSA z
-    let digit8SSA = freshSynthSSA z
-    let charSSA = freshSynthSSA z
-    let gepSSA = freshSynthSSA z
-    let newPosSSA = freshSynthSSA z
-    let newNSSA = freshSynthSSA z
+    let digitSSA = nextSSA ()
+    let digit8SSA = nextSSA ()
+    let charSSA = nextSSA ()
+    let gepSSA = nextSSA ()
+    let newPosSSA = nextSSA ()
+    let newNSSA = nextSSA ()
 
     let bodyOps = [
         // digit = n % 10
@@ -107,14 +120,14 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
         MLIROp.ArithOp (ArithOp.SubI (newPosSSA, posArgSSA, oneSSA, MLIRTypes.i64))
         // newN = n / 10
         MLIROp.ArithOp (ArithOp.DivSI (newNSSA, nArgSSA, tenSSA, MLIRTypes.i64))
-        // yield newN, newPos
-        MLIROp.SCFOp (SCFOp.Yield [newNSSA; newPosSSA])
+        // yield newN, newPos (same types as block args)
+        MLIROp.SCFOp (scfYield [{ SSA = newNSSA; Type = MLIRTypes.i64 }; { SSA = newPosSSA; Type = MLIRTypes.i64 }])
     ]
-    let bodyRegion = singleBlockRegion "do" [blockArg nArgSSA MLIRTypes.i64; blockArg posArgSSA MLIRTypes.i64] bodyOps
+    let bodyRegion = singleBlockRegion "do" [nArg; posArg] bodyOps
 
     // The while loop itself
-    let loopResultSSA = freshSynthSSA z
-    let loopResult2SSA = freshSynthSSA z
+    let loopResultSSA = nextSSA ()
+    let loopResult2SSA = nextSSA ()
     let whileOp = MLIROp.SCFOp (SCFOp.While (
         [loopResultSSA; loopResult2SSA],
         condRegion,
@@ -123,19 +136,19 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
     ))
 
     // Get final position (second element of tuple + 1)
-    let finalPosSSA = freshSynthSSA z
+    let finalPosSSA = nextSSA ()
     let finalPosOp = MLIROp.ArithOp (ArithOp.AddI (finalPosSSA, loopResult2SSA, oneSSA, MLIRTypes.i64))
 
     // Handle special case: input was 0 (loop didn't execute)
-    let wasZeroSSA = freshSynthSSA z
+    let wasZeroSSA = nextSSA ()
     let wasZeroOp = MLIROp.ArithOp (ArithOp.CmpI (wasZeroSSA, ICmpPred.Eq, absSSA, zeroSSA, MLIRTypes.i64))
 
     // If zero, write '0' at position 20
-    let zeroCharSSA = freshSynthSSA z
+    let zeroCharSSA = nextSSA ()
     let zeroCharOp = MLIROp.ArithOp (ArithOp.ConstI (zeroCharSSA, 48L, MLIRTypes.i8))
 
     // Build scf.if for zero case
-    let gepZeroSSA = freshSynthSSA z
+    let gepZeroSSA = nextSSA ()
     let zeroIfOps = [
         MLIROp.LLVMOp (LLVMOp.GEP (gepZeroSSA, bufSSA, [(startPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (LLVMOp.Store (zeroCharSSA, gepZeroSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
@@ -144,15 +157,15 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
     let zeroIfOp = MLIROp.SCFOp (SCFOp.If ([], wasZeroSSA, zeroIfRegion, None, []))
 
     // Adjust position for zero case
-    let adjPosSSA = freshSynthSSA z
+    let adjPosSSA = nextSSA ()
     let adjPosOp = MLIROp.ArithOp (ArithOp.Select (adjPosSSA, wasZeroSSA, startPosSSA, finalPosSSA, MLIRTypes.i64))
 
     // Handle negative: write '-' at pos-1 if negative
-    let negPosSSA = freshSynthSSA z
+    let negPosSSA = nextSSA ()
     let negPosOp = MLIROp.ArithOp (ArithOp.SubI (negPosSSA, adjPosSSA, oneSSA, MLIRTypes.i64))
 
     // Build scf.if for negative case
-    let gepNegSSA = freshSynthSSA z
+    let gepNegSSA = nextSSA ()
     let negIfOps = [
         MLIROp.LLVMOp (LLVMOp.GEP (gepNegSSA, bufSSA, [(negPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
         MLIROp.LLVMOp (LLVMOp.Store (minusCharSSA, gepNegSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
@@ -161,25 +174,25 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
     let negIfOp = MLIROp.SCFOp (SCFOp.If ([], isNegSSA, negIfRegion, None, []))
 
     // Select start position based on sign
-    let startPtrPosSSA = freshSynthSSA z
+    let startPtrPosSSA = nextSSA ()
     let startPtrPosOp = MLIROp.ArithOp (ArithOp.Select (startPtrPosSSA, isNegSSA, negPosSSA, adjPosSSA, MLIRTypes.i64))
 
     // Get pointer to start of string
-    let strPtrSSA = freshSynthSSA z
+    let strPtrSSA = nextSSA ()
     let strPtrOp = MLIROp.LLVMOp (LLVMOp.GEP (strPtrSSA, bufSSA, [(startPtrPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
 
     // Calculate length: 21 - startPos
-    let strLenSSA = freshSynthSSA z
+    let strLenSSA = nextSSA ()
     let strLenOp = MLIROp.ArithOp (ArithOp.SubI (strLenSSA, bufSizeSSA, startPtrPosSSA, MLIRTypes.i64))
 
     // Build fat string struct
-    let undefSSA = freshSynthSSA z
+    let undefSSA = nextSSA ()
     let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, MLIRTypes.nativeStr))
 
-    let withPtrSSA = freshSynthSSA z
+    let withPtrSSA = nextSSA ()
     let insertPtrOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, strPtrSSA, [0], MLIRTypes.nativeStr))
 
-    let fatStrSSA = freshSynthSSA z
+    let fatStrSSA = nextSSA ()
     let insertLenOp = MLIROp.LLVMOp (LLVMOp.InsertValue (fatStrSSA, withPtrSSA, strLenSSA, [1], MLIRTypes.nativeStr))
 
     // Combine all operations
@@ -197,37 +210,291 @@ let intToString (z: PSGZipper) (intVal: Val) : MLIROp list * Val =
 // FLOAT TO STRING CONVERSION
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Convert a float value to a string
-/// Handles integer part, decimal point, and fractional part
-let floatToString (z: PSGZipper) (floatVal: Val) : MLIROp list * Val =
-    // For now, this is a simplified implementation
-    // TODO: Implement full float-to-string with proper formatting
-    // The logic follows the same pattern as intToString but with:
-    // 1. Split into integer and fractional parts
-    // 2. Convert integer part
-    // 3. Add decimal point
-    // 4. Convert fractional part (fixed precision)
+/// Convert a float value to a string (fat pointer)
+/// Format: [-]digits.digits (6 decimal places)
+/// Uses ~70 pre-assigned SSAs
+let floatToString (nodeId: NodeId) (z: PSGZipper) (floatVal: Val) : MLIROp list * Val =
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
 
-    // Allocate buffer for "0.000000" style output (simplified)
-    let bufSizeSSA = freshSynthSSA z
-    let bufSSA = freshSynthSSA z
+    // Determine float type (f32 or f64)
+    let floatType = floatVal.Type
 
-    let allocOps = [
-        MLIROp.ArithOp (ArithOp.ConstI (bufSizeSSA, 32L, MLIRTypes.i64))
-        MLIROp.LLVMOp (LLVMOp.Alloca (bufSSA, bufSizeSSA, MLIRTypes.i8, None))
+    // ─────────────────────────────────────────────────────────────────────────
+    // CONSTANTS
+    // ─────────────────────────────────────────────────────────────────────────
+    let zeroI64SSA = nextSSA ()
+    let oneI64SSA = nextSSA ()
+    let tenI64SSA = nextSSA ()
+    let asciiZeroSSA = nextSSA ()
+    let dotCharSSA = nextSSA ()
+    let minusCharSSA = nextSSA ()
+    let bufSizeSSA = nextSSA ()
+    let precisionSSA = nextSSA ()       // 1000000 for 6 decimal places
+    let sixSSA = nextSSA ()             // Number of fractional digits
+
+    let zeroFSSA = nextSSA ()
+    let oneFSSA = nextSSA ()
+    let precisionFSSA = nextSSA ()      // 1000000.0
+
+    let constOps = [
+        MLIROp.ArithOp (ArithOp.ConstI (zeroI64SSA, 0L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (oneI64SSA, 1L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (tenI64SSA, 10L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (asciiZeroSSA, 48L, MLIRTypes.i8))
+        MLIROp.ArithOp (ArithOp.ConstI (dotCharSSA, 46L, MLIRTypes.i8))      // '.'
+        MLIROp.ArithOp (ArithOp.ConstI (minusCharSSA, 45L, MLIRTypes.i8))    // '-'
+        MLIROp.ArithOp (ArithOp.ConstI (bufSizeSSA, 32L, MLIRTypes.i64))     // Max buffer size
+        MLIROp.ArithOp (ArithOp.ConstI (precisionSSA, 1000000L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (sixSSA, 6L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstF (zeroFSSA, 0.0, floatType))
+        MLIROp.ArithOp (ArithOp.ConstF (oneFSSA, 1.0, floatType))
+        MLIROp.ArithOp (ArithOp.ConstF (precisionFSSA, 1000000.0, floatType))
     ]
 
-    // Convert float to integer part
-    let intPartSSA = freshSynthSSA z
-    let intPartOp = MLIROp.ArithOp (ArithOp.FPToSI (intPartSSA, floatVal.SSA, floatVal.Type, MLIRTypes.i64))
+    // ─────────────────────────────────────────────────────────────────────────
+    // BUFFER ALLOCATION
+    // ─────────────────────────────────────────────────────────────────────────
+    let bufSSA = nextSSA ()
+    let allocOp = MLIROp.LLVMOp (LLVMOp.Alloca (bufSSA, bufSizeSSA, MLIRTypes.i8, None))
 
-    // Convert integer part to string (reuse intToString logic via recursion conceptually)
-    // For now, emit a simplified version - just the integer part
-    let intVal = { SSA = intPartSSA; Type = MLIRTypes.i64 }
-    let intOps, intResult = intToString z intVal
+    // ─────────────────────────────────────────────────────────────────────────
+    // SIGN HANDLING
+    // ─────────────────────────────────────────────────────────────────────────
+    let isNegSSA = nextSSA ()
+    let negatedFSSA = nextSSA ()
+    let absFSSA = nextSSA ()
 
-    // Return the integer part as a string (simplified)
-    (allocOps @ [intPartOp] @ intOps, intResult)
+    let signOps = [
+        // Check if negative
+        MLIROp.ArithOp (ArithOp.CmpF (isNegSSA, FCmpPred.OLt, floatVal.SSA, zeroFSSA, floatType))
+        // Negate: -f
+        MLIROp.ArithOp (ArithOp.NegF (negatedFSSA, floatVal.SSA, floatType))
+        // Select absolute value (Select is type-polymorphic)
+        MLIROp.ArithOp (ArithOp.Select (absFSSA, isNegSSA, negatedFSSA, floatVal.SSA, floatType))
+    ]
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SPLIT INTO INTEGER AND FRACTIONAL PARTS
+    // ─────────────────────────────────────────────────────────────────────────
+    let intPartI64SSA = nextSSA ()      // Integer part as i64
+    let intPartFSSA = nextSSA ()        // Integer part back to float
+    let fracPartFSSA = nextSSA ()       // Fractional part as float
+    let fracScaledFSSA = nextSSA ()     // Fractional * 1000000
+    let fracPartI64SSA = nextSSA ()     // Fractional part as i64
+
+    let splitOps = [
+        // Integer part = trunc(abs)
+        MLIROp.ArithOp (ArithOp.FPToSI (intPartI64SSA, absFSSA, floatType, MLIRTypes.i64))
+        // Convert back to float for subtraction
+        MLIROp.ArithOp (ArithOp.SIToFP (intPartFSSA, intPartI64SSA, MLIRTypes.i64, floatType))
+        // Fractional = abs - intPart
+        MLIROp.ArithOp (ArithOp.SubF (fracPartFSSA, absFSSA, intPartFSSA, floatType))
+        // Scale fractional: frac * 1000000
+        MLIROp.ArithOp (ArithOp.MulF (fracScaledFSSA, fracPartFSSA, precisionFSSA, floatType))
+        // Convert scaled frac to i64
+        MLIROp.ArithOp (ArithOp.FPToSI (fracPartI64SSA, fracScaledFSSA, floatType, MLIRTypes.i64))
+    ]
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WRITE FRACTIONAL DIGITS (RIGHT TO LEFT, 6 DIGITS WITH LEADING ZEROS)
+    // Position 31..26 in buffer (6 digits)
+    // ─────────────────────────────────────────────────────────────────────────
+    let startFracPosSSA = nextSSA ()
+    let startFracPosOp = MLIROp.ArithOp (ArithOp.ConstI (startFracPosSSA, 31L, MLIRTypes.i64))
+
+    // Fractional digit loop - always writes 6 digits
+    let fracNArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let fracPosArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let fracCountArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+
+    let fracCondSSA = nextSSA ()
+    let fracCondOps = [
+        MLIROp.ArithOp (ArithOp.CmpI (fracCondSSA, ICmpPred.Sgt, fracCountArg.SSA, zeroI64SSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfCondition fracCondSSA [fracNArg; fracPosArg; fracCountArg])
+    ]
+    let fracCondRegion = singleBlockRegion "before" [fracNArg; fracPosArg; fracCountArg] fracCondOps
+
+    let fracDigitSSA = nextSSA ()
+    let fracDigit8SSA = nextSSA ()
+    let fracCharSSA = nextSSA ()
+    let fracGepSSA = nextSSA ()
+    let fracNewPosSSA = nextSSA ()
+    let fracNewNSSA = nextSSA ()
+    let fracNewCountSSA = nextSSA ()
+
+    let fracBodyOps = [
+        MLIROp.ArithOp (ArithOp.RemSI (fracDigitSSA, fracNArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.TruncI (fracDigit8SSA, fracDigitSSA, MLIRTypes.i64, MLIRTypes.i8))
+        MLIROp.ArithOp (ArithOp.AddI (fracCharSSA, fracDigit8SSA, asciiZeroSSA, MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.GEP (fracGepSSA, bufSSA, [(fracPosArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Store (fracCharSSA, fracGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+        MLIROp.ArithOp (ArithOp.SubI (fracNewPosSSA, fracPosArg.SSA, oneI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.DivSI (fracNewNSSA, fracNArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.SubI (fracNewCountSSA, fracCountArg.SSA, oneI64SSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [
+            { SSA = fracNewNSSA; Type = MLIRTypes.i64 }
+            { SSA = fracNewPosSSA; Type = MLIRTypes.i64 }
+            { SSA = fracNewCountSSA; Type = MLIRTypes.i64 }
+        ])
+    ]
+    let fracBodyRegion = singleBlockRegion "do" [fracNArg; fracPosArg; fracCountArg] fracBodyOps
+
+    let fracLoopResult1SSA = nextSSA ()
+    let fracLoopResult2SSA = nextSSA ()
+    let fracLoopResult3SSA = nextSSA ()
+    let fracWhileOp = MLIROp.SCFOp (SCFOp.While (
+        [fracLoopResult1SSA; fracLoopResult2SSA; fracLoopResult3SSA],
+        fracCondRegion,
+        fracBodyRegion,
+        [
+            { SSA = fracPartI64SSA; Type = MLIRTypes.i64 }
+            { SSA = startFracPosSSA; Type = MLIRTypes.i64 }
+            { SSA = sixSSA; Type = MLIRTypes.i64 }
+        ]
+    ))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WRITE DECIMAL POINT AT POSITION 25
+    // ─────────────────────────────────────────────────────────────────────────
+    let dotPosSSA = nextSSA ()
+    let dotGepSSA = nextSSA ()
+    let dotOps = [
+        MLIROp.ArithOp (ArithOp.ConstI (dotPosSSA, 25L, MLIRTypes.i64))
+        MLIROp.LLVMOp (LLVMOp.GEP (dotGepSSA, bufSSA, [(dotPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Store (dotCharSSA, dotGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+    ]
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WRITE INTEGER PART (RIGHT TO LEFT FROM POSITION 24)
+    // ─────────────────────────────────────────────────────────────────────────
+    let startIntPosSSA = nextSSA ()
+    let startIntPosOp = MLIROp.ArithOp (ArithOp.ConstI (startIntPosSSA, 24L, MLIRTypes.i64))
+
+    let intNArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let intPosArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+
+    let intCondSSA = nextSSA ()
+    let intCondOps = [
+        MLIROp.ArithOp (ArithOp.CmpI (intCondSSA, ICmpPred.Sgt, intNArg.SSA, zeroI64SSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfCondition intCondSSA [intNArg; intPosArg])
+    ]
+    let intCondRegion = singleBlockRegion "before" [intNArg; intPosArg] intCondOps
+
+    let intDigitSSA = nextSSA ()
+    let intDigit8SSA = nextSSA ()
+    let intCharSSA = nextSSA ()
+    let intGepSSA = nextSSA ()
+    let intNewPosSSA = nextSSA ()
+    let intNewNSSA = nextSSA ()
+
+    let intBodyOps = [
+        MLIROp.ArithOp (ArithOp.RemSI (intDigitSSA, intNArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.TruncI (intDigit8SSA, intDigitSSA, MLIRTypes.i64, MLIRTypes.i8))
+        MLIROp.ArithOp (ArithOp.AddI (intCharSSA, intDigit8SSA, asciiZeroSSA, MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.GEP (intGepSSA, bufSSA, [(intPosArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Store (intCharSSA, intGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+        MLIROp.ArithOp (ArithOp.SubI (intNewPosSSA, intPosArg.SSA, oneI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.DivSI (intNewNSSA, intNArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [
+            { SSA = intNewNSSA; Type = MLIRTypes.i64 }
+            { SSA = intNewPosSSA; Type = MLIRTypes.i64 }
+        ])
+    ]
+    let intBodyRegion = singleBlockRegion "do" [intNArg; intPosArg] intBodyOps
+
+    let intLoopResult1SSA = nextSSA ()
+    let intLoopResult2SSA = nextSSA ()
+    let intWhileOp = MLIROp.SCFOp (SCFOp.While (
+        [intLoopResult1SSA; intLoopResult2SSA],
+        intCondRegion,
+        intBodyRegion,
+        [
+            { SSA = intPartI64SSA; Type = MLIRTypes.i64 }
+            { SSA = startIntPosSSA; Type = MLIRTypes.i64 }
+        ]
+    ))
+
+    // Get final position after integer loop
+    let finalIntPosSSA = nextSSA ()
+    let finalIntPosOp = MLIROp.ArithOp (ArithOp.AddI (finalIntPosSSA, intLoopResult2SSA, oneI64SSA, MLIRTypes.i64))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HANDLE ZERO INTEGER PART (write '0' if intPart was 0)
+    // ─────────────────────────────────────────────────────────────────────────
+    let wasZeroSSA = nextSSA ()
+    let wasZeroOp = MLIROp.ArithOp (ArithOp.CmpI (wasZeroSSA, ICmpPred.Eq, intPartI64SSA, zeroI64SSA, MLIRTypes.i64))
+
+    let zeroCharConstSSA = nextSSA ()
+    let zeroGepSSA = nextSSA ()
+    let zeroIfOps = [
+        MLIROp.ArithOp (ArithOp.ConstI (zeroCharConstSSA, 48L, MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.GEP (zeroGepSSA, bufSSA, [(startIntPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Store (zeroCharConstSSA, zeroGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+    ]
+    let zeroIfRegion = singleBlockRegion "then" [] zeroIfOps
+    let zeroIfOp = MLIROp.SCFOp (SCFOp.If ([], wasZeroSSA, zeroIfRegion, None, []))
+
+    // Adjust position for zero case
+    let adjIntPosSSA = nextSSA ()
+    let adjIntPosOp = MLIROp.ArithOp (ArithOp.Select (adjIntPosSSA, wasZeroSSA, startIntPosSSA, finalIntPosSSA, MLIRTypes.i64))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // HANDLE NEGATIVE SIGN
+    // ─────────────────────────────────────────────────────────────────────────
+    let negPosSSA = nextSSA ()
+    let negPosOp = MLIROp.ArithOp (ArithOp.SubI (negPosSSA, adjIntPosSSA, oneI64SSA, MLIRTypes.i64))
+
+    let negGepSSA = nextSSA ()
+    let negIfOps = [
+        MLIROp.LLVMOp (LLVMOp.GEP (negGepSSA, bufSSA, [(negPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Store (minusCharSSA, negGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+    ]
+    let negIfRegion = singleBlockRegion "then" [] negIfOps
+    let negIfOp = MLIROp.SCFOp (SCFOp.If ([], isNegSSA, negIfRegion, None, []))
+
+    // Select start position based on sign
+    let startPtrPosSSA = nextSSA ()
+    let startPtrPosOp = MLIROp.ArithOp (ArithOp.Select (startPtrPosSSA, isNegSSA, negPosSSA, adjIntPosSSA, MLIRTypes.i64))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // BUILD FAT STRING
+    // ─────────────────────────────────────────────────────────────────────────
+    let strPtrSSA = nextSSA ()
+    let strPtrOp = MLIROp.LLVMOp (LLVMOp.GEP (strPtrSSA, bufSSA, [(startPtrPosSSA, MLIRTypes.i64)], MLIRTypes.i8))
+
+    // Length = 32 - startPos (covers integer + '.' + 6 fractional digits)
+    let strLenSSA = nextSSA ()
+    let strLenOp = MLIROp.ArithOp (ArithOp.SubI (strLenSSA, bufSizeSSA, startPtrPosSSA, MLIRTypes.i64))
+
+    let undefSSA = nextSSA ()
+    let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, MLIRTypes.nativeStr))
+
+    let withPtrSSA = nextSSA ()
+    let insertPtrOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, strPtrSSA, [0], MLIRTypes.nativeStr))
+
+    let fatStrSSA = nextSSA ()
+    let insertLenOp = MLIROp.LLVMOp (LLVMOp.InsertValue (fatStrSSA, withPtrSSA, strLenSSA, [1], MLIRTypes.nativeStr))
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // COMBINE ALL OPERATIONS
+    // ─────────────────────────────────────────────────────────────────────────
+    let allOps =
+        constOps @
+        [allocOp] @
+        signOps @
+        splitOps @
+        [startFracPosOp; fracWhileOp] @
+        dotOps @
+        [startIntPosOp; intWhileOp; finalIntPosOp; wasZeroOp; zeroIfOp; adjIntPosOp] @
+        [negPosOp; negIfOp; startPtrPosOp] @
+        [strPtrOp; strLenOp; undefOp; insertPtrOp; insertLenOp]
+
+    (allOps, { SSA = fatStrSSA; Type = MLIRTypes.nativeStr })
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STRING TO INTEGER CONVERSION
@@ -235,13 +502,21 @@ let floatToString (z: PSGZipper) (floatVal: Val) : MLIROp list * Val =
 
 /// Convert a string to an integer
 /// Handles sign prefix and digit characters
-let stringToInt (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
+/// Uses ~30 pre-assigned SSAs
+let stringToInt (nodeId: NodeId) (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
     // Constants
-    let zeroSSA = freshSynthSSA z
-    let oneSSA = freshSynthSSA z
-    let tenSSA = freshSynthSSA z
-    let asciiZeroSSA = freshSynthSSA z
-    let minusCharSSA = freshSynthSSA z
+    let zeroSSA = nextSSA ()
+    let oneSSA = nextSSA ()
+    let tenSSA = nextSSA ()
+    let asciiZeroSSA = nextSSA ()
+    let minusCharSSA = nextSSA ()
 
     let constOps = [
         MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, MLIRTypes.i64))
@@ -252,25 +527,25 @@ let stringToInt (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
     ]
 
     // Extract pointer and length from fat string
-    let ptrSSA = freshSynthSSA z
-    let lenSSA = freshSynthSSA z
+    let ptrSSA = nextSSA ()
+    let lenSSA = nextSSA ()
     let extractOps = [
         MLIROp.LLVMOp (LLVMOp.ExtractValue (ptrSSA, strVal.SSA, [0], strVal.Type))
         MLIROp.LLVMOp (LLVMOp.ExtractValue (lenSSA, strVal.SSA, [1], strVal.Type))
     ]
 
     // Check first character for minus sign
-    let firstCharSSA = freshSynthSSA z
-    let isNegSSA = freshSynthSSA z
+    let firstCharSSA = nextSSA ()
+    let isNegSSA = nextSSA ()
     let signCheckOps = [
         MLIROp.LLVMOp (LLVMOp.Load (firstCharSSA, ptrSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
         MLIROp.ArithOp (ArithOp.CmpI (isNegSSA, ICmpPred.Eq, firstCharSSA, minusCharSSA, MLIRTypes.i8))
     ]
 
     // Starting index: 1 if negative, 0 otherwise
-    let zeroIdxSSA = freshSynthSSA z
-    let oneIdxSSA = freshSynthSSA z
-    let startIdxSSA = freshSynthSSA z
+    let zeroIdxSSA = nextSSA ()
+    let oneIdxSSA = nextSSA ()
+    let startIdxSSA = nextSSA ()
     let idxOps = [
         MLIROp.ArithOp (ArithOp.ConstI (zeroIdxSSA, 0L, MLIRTypes.i64))
         MLIROp.ArithOp (ArithOp.ConstI (oneIdxSSA, 1L, MLIRTypes.i64))
@@ -282,26 +557,28 @@ let stringToInt (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
     // Guard: index < length
     // Body: acc = acc * 10 + (char - '0'), index++
 
-    let accArgSSA = freshSynthSSA z
-    let idxArgSSA = freshSynthSSA z
+    let accArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let idxArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let accArgSSA = accArg.SSA
+    let idxArgSSA = idxArg.SSA
 
     // Condition region
-    let condSSA = freshSynthSSA z
+    let condSSA = nextSSA ()
     let condOps = [
         MLIROp.ArithOp (ArithOp.CmpI (condSSA, ICmpPred.Slt, idxArgSSA, lenSSA, MLIRTypes.i64))
-        MLIROp.SCFOp (SCFOp.Condition (condSSA, [accArgSSA; idxArgSSA]))
+        MLIROp.SCFOp (scfCondition condSSA [accArg; idxArg])
     ]
-    let condRegion = singleBlockRegion "before" [blockArg accArgSSA MLIRTypes.i64; blockArg idxArgSSA MLIRTypes.i64] condOps
+    let condRegion = singleBlockRegion "before" [accArg; idxArg] condOps
 
     // Body region
-    let gepSSA = freshSynthSSA z
-    let charSSA = freshSynthSSA z
-    let char64SSA = freshSynthSSA z
-    let asciiZero64SSA = freshSynthSSA z
-    let digitSSA = freshSynthSSA z
-    let acc10SSA = freshSynthSSA z
-    let newAccSSA = freshSynthSSA z
-    let newIdxSSA = freshSynthSSA z
+    let gepSSA = nextSSA ()
+    let charSSA = nextSSA ()
+    let char64SSA = nextSSA ()
+    let asciiZero64SSA = nextSSA ()
+    let digitSSA = nextSSA ()
+    let acc10SSA = nextSSA ()
+    let newAccSSA = nextSSA ()
+    let newIdxSSA = nextSSA ()
 
     let bodyOps = [
         // gep = ptr[idx]
@@ -320,14 +597,14 @@ let stringToInt (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
         MLIROp.ArithOp (ArithOp.AddI (newAccSSA, acc10SSA, digitSSA, MLIRTypes.i64))
         // newIdx = idx + 1
         MLIROp.ArithOp (ArithOp.AddI (newIdxSSA, idxArgSSA, oneSSA, MLIRTypes.i64))
-        // yield
-        MLIROp.SCFOp (SCFOp.Yield [newAccSSA; newIdxSSA])
+        // yield (same types as block args)
+        MLIROp.SCFOp (scfYield [{ SSA = newAccSSA; Type = MLIRTypes.i64 }; { SSA = newIdxSSA; Type = MLIRTypes.i64 }])
     ]
-    let bodyRegion = singleBlockRegion "do" [blockArg accArgSSA MLIRTypes.i64; blockArg idxArgSSA MLIRTypes.i64] bodyOps
+    let bodyRegion = singleBlockRegion "do" [accArg; idxArg] bodyOps
 
     // While loop
-    let loopResultSSA = freshSynthSSA z
-    let loopResult2SSA = freshSynthSSA z
+    let loopResultSSA = nextSSA ()
+    let loopResult2SSA = nextSSA ()
     let whileOp = MLIROp.SCFOp (SCFOp.While (
         [loopResultSSA; loopResult2SSA],
         condRegion,
@@ -336,8 +613,8 @@ let stringToInt (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
     ))
 
     // Apply sign: result = select(isNeg, -acc, acc)
-    let negatedSSA = freshSynthSSA z
-    let resultSSA = freshSynthSSA z
+    let negatedSSA = nextSSA ()
+    let resultSSA = nextSSA ()
     let signOps = [
         MLIROp.ArithOp (ArithOp.SubI (negatedSSA, zeroSSA, loopResultSSA, MLIRTypes.i64))
         MLIROp.ArithOp (ArithOp.Select (resultSSA, isNegSSA, negatedSSA, loopResultSSA, MLIRTypes.i64))

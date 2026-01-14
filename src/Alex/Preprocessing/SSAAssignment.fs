@@ -52,10 +52,59 @@ let private literalExpansionCost (lit: LiteralValue) : int =
     | LiteralValue.Float32 _ | LiteralValue.Float64 _ -> 1
     | _ -> 1  // Default
 
+/// Calculate SSA cost for interpolated string based on parts
+let private interpolatedStringCost (parts: InterpolatedPart list) : int =
+    // Count string parts (each needs 5 SSAs for fat pointer construction)
+    let stringPartCount =
+        parts |> List.sumBy (fun p ->
+            match p with
+            | InterpolatedPart.StringPart _ -> 1
+            | InterpolatedPart.ExprPart _ -> 0)  // Already computed, no new SSAs
+
+    // Concatenations: each needs 10 SSAs (4 extract, 1 add, 1 alloca, 1 gep, 3 build)
+    let concatCount = max 0 (List.length parts - 1)
+
+    // Total: 5 per string part + 10 per concat
+    (stringPartCount * 5) + (concatCount * 10)
+
 /// Get the number of SSAs needed for a node based on its kind
 let private nodeExpansionCost (kind: SemanticKind) : int =
     match kind with
     | SemanticKind.Literal lit -> literalExpansionCost lit
+    // InterpolatedString needs dynamic SSA count based on parts
+    | SemanticKind.InterpolatedString parts -> interpolatedStringCost parts
+    // ForLoop needs 2 SSAs: ivSSA (induction variable) + stepSSA (step constant)
+    | SemanticKind.ForLoop _ -> 2
+    // Lambda needs 1 SSA for potential return value synthesis (type reconciliation)
+    | SemanticKind.Lambda _ -> 1
+    // Application nodes may call syscalls (5 SSAs), string ops (10+ SSAs),
+    // or Format operations (intToString ~40, floatToString ~70, stringToInt ~30)
+    // Allocate generously - unused SSAs are harmless
+    | SemanticKind.Application _ -> 80
+    // IfThenElse needs up to 3 SSAs: result + zero for void then + zero for void else
+    | SemanticKind.IfThenElse _ -> 3
+    // Match needs many SSAs: discrim + (tag+cmp per case) + zero yields + result
+    // Allocate generously for typical match expressions
+    | SemanticKind.Match _ -> 15
+    // Binding may need SSAs for mutable alloca
+    | SemanticKind.Binding _ -> 3
+    // Memory operations
+    | SemanticKind.IndexGet _ -> 2        // gep + load
+    | SemanticKind.IndexSet _ -> 1        // gep (store doesn't produce SSA)
+    | SemanticKind.AddressOf _ -> 2       // const + alloca (if immutable)
+    // VarRef may need SSAs for loading mutable values:
+    // - Module-level mutable: addressof + load (2 SSAs)
+    // - Addressed mutable: load result (1 SSA)
+    | SemanticKind.VarRef _ -> 2
+    | SemanticKind.FieldGet _ -> 1        // extract
+    | SemanticKind.FieldSet _ -> 1        // insert
+    | SemanticKind.TraitCall _ -> 1       // extract typically
+    // Data structure construction - use generous estimates
+    | SemanticKind.TupleExpr _ -> 10      // undef + inserts
+    | SemanticKind.RecordExpr _ -> 10     // undef + inserts
+    | SemanticKind.ArrayExpr _ -> 20      // allocs + stores + fat pointer
+    | SemanticKind.ListExpr _ -> 20       // same as array
+    | SemanticKind.UnionCase _ -> 4       // tag + undef + insert(s)
     // Most nodes produce one result
     | _ -> 1
 
@@ -90,7 +139,6 @@ module private FunctionScope =
 let private producesValue (kind: SemanticKind) : bool =
     match kind with
     | SemanticKind.Literal _ -> true
-    | SemanticKind.VarRef _ -> true
     | SemanticKind.Application _ -> true
     | SemanticKind.Lambda _ -> true
     | SemanticKind.Binding _ -> true
@@ -108,6 +156,7 @@ let private producesValue (kind: SemanticKind) : bool =
     | SemanticKind.Downcast _ -> true
     | SemanticKind.TypeTest _ -> true
     | SemanticKind.AddressOf _ -> true
+    | SemanticKind.VarRef _ -> true
     | SemanticKind.Deref _ -> true
     | SemanticKind.TraitCall _ -> true
     | SemanticKind.Intrinsic _ -> true
@@ -160,7 +209,7 @@ let rec private assignFunctionBody
         // Special handling for nested Lambdas - they get their own scope
         // (but we still assign this Lambda node an SSA in parent scope)
         match node.Kind with
-        | SemanticKind.Lambda(_, bodyId) ->
+        | SemanticKind.Lambda(_params, bodyId) ->
             // Process Lambda body in a NEW scope (SSA counter resets)
             let _innerScope = assignFunctionBody graph FunctionScope.empty bodyId
             // Lambda itself gets an SSA in the PARENT scope (function pointer)
@@ -169,6 +218,17 @@ let rec private assignFunctionBody
                 FunctionScope.assign node.Id (NodeSSAAllocation.single ssaName) scopeWithSSA
             else
                 scopeAfterChildren
+        // VarRef now gets SSAs for mutable variable loads
+        // (Regular VarRefs to immutable values may not use their SSAs, but unused SSAs are harmless)
+
+        // ForLoop needs SSAs for internal operation (ivSSA + stepSSA)
+        // even though it doesn't "produce a value" in the semantic sense
+        | SemanticKind.ForLoop _ ->
+            let cost = nodeExpansionCost node.Kind  // Returns 2
+            let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
+            let alloc = NodeSSAAllocation.multi ssas
+            FunctionScope.assign node.Id alloc scopeWithSSAs
+
         | _ ->
             // Regular node - assign SSAs based on expansion cost
             if producesValue node.Kind then
@@ -186,6 +246,7 @@ let private collectLambdas (graph: SemanticGraph) : Map<int, string> * Set<int> 
     let mutable entryPoints = Set.empty
 
     // First, identify entry point lambdas
+    // Entry points may be ModuleDef nodes containing Binding nodes with isEntryPoint=true
     for entryId in graph.EntryPoints do
         match Map.tryFind entryId graph.Nodes with
         | Some node ->
@@ -197,10 +258,45 @@ let private collectLambdas (graph: SemanticGraph) : Map<int, string> * Set<int> 
                 | _ -> ()
             | SemanticKind.Lambda _ ->
                 entryPoints <- Set.add (NodeId.value entryId) entryPoints
+            | SemanticKind.ModuleDef (_, memberIds) ->
+                // ModuleDef entry point - check members for entry point Binding
+                for memberId in memberIds do
+                    match Map.tryFind memberId graph.Nodes with
+                    | Some memberNode ->
+                        match memberNode.Kind with
+                        | SemanticKind.Binding(_, _, _, isEntryPoint) when isEntryPoint ->
+                            match memberNode.Children with
+                            | lambdaId :: _ -> entryPoints <- Set.add (NodeId.value lambdaId) entryPoints
+                            | _ -> ()
+                        | _ -> ()
+                    | None -> ()
             | _ -> ()
         | None -> ()
 
+    // Build reverse index: Lambda NodeId -> Binding name
+    // This handles the case where Parent field isn't set on Lambdas
+    let mutable lambdaToBindingName = Map.empty
+    for kvp in graph.Nodes do
+        let node = kvp.Value
+        match node.Kind with
+        | SemanticKind.Binding (bindingName, _, _, _) ->
+            // Check if first child is a Lambda
+            match node.Children with
+            | childId :: _ ->
+                match Map.tryFind childId graph.Nodes with
+                | Some childNode ->
+                    match childNode.Kind with
+                    | SemanticKind.Lambda _ ->
+                        // This Binding contains a Lambda - record the mapping
+                        lambdaToBindingName <- Map.add (NodeId.value childId) bindingName lambdaToBindingName
+                    | _ -> ()
+                | None -> ()
+            | [] -> ()
+        | _ -> ()
+
     // Now assign names to all Lambdas
+    // ARCHITECTURAL PRINCIPLE: When a Lambda is bound via `let name = ...`,
+    // use the binding name as the function name. This preserves programmer intent.
     for kvp in graph.Nodes do
         let node = kvp.Value
         match node.Kind with
@@ -210,10 +306,43 @@ let private collectLambdas (graph: SemanticGraph) : Map<int, string> * Set<int> 
                 if Set.contains nodeIdVal entryPoints then
                     "main"
                 else
-                    let n = sprintf "lambda_%d" lambdaCounter
-                    lambdaCounter <- lambdaCounter + 1
-                    n
+                    // First check our reverse index (handles Parent = None case)
+                    match Map.tryFind nodeIdVal lambdaToBindingName with
+                    | Some bindingName -> bindingName
+                    | None ->
+                        // Fallback: check Parent field directly
+                        match node.Parent with
+                        | Some parentId ->
+                            match Map.tryFind parentId graph.Nodes with
+                            | Some parentNode ->
+                                match parentNode.Kind with
+                                | SemanticKind.Binding (bindingName, _, _, _) ->
+                                    bindingName
+                                | _ ->
+                                    let n = sprintf "lambda_%d" lambdaCounter
+                                    lambdaCounter <- lambdaCounter + 1
+                                    n
+                            | None ->
+                                let n = sprintf "lambda_%d" lambdaCounter
+                                lambdaCounter <- lambdaCounter + 1
+                                n
+                        | None ->
+                            let n = sprintf "lambda_%d" lambdaCounter
+                            lambdaCounter <- lambdaCounter + 1
+                            n
             lambdaNames <- Map.add nodeIdVal name lambdaNames
+            // CRITICAL: Also add the parent Binding's NodeId with the same name
+            // VarRefs point to Bindings, not Lambdas. Both must resolve to the function name.
+            match node.Parent with
+            | Some parentId ->
+                match Map.tryFind parentId graph.Nodes with
+                | Some parentNode ->
+                    match parentNode.Kind with
+                    | SemanticKind.Binding _ ->
+                        lambdaNames <- Map.add (NodeId.value parentId) name lambdaNames
+                    | _ -> ()
+                | None -> ()
+            | None -> ()
         | _ -> ()
 
     lambdaNames, entryPoints
@@ -229,21 +358,30 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
         let node = kvp.Value
         match node.Kind with
         | SemanticKind.Lambda(params', bodyId) ->
-            // Start with parameter SSAs (%arg0, %arg1, etc.)
+            // Assign SSAs to parameter PatternBindings (Arg 0, Arg 1, etc.)
+            // This allows VarRefs to parameters to look up their SSAs
             let paramScope =
                 params'
-                |> List.mapi (fun i (name, _ty) -> i, name)
-                |> List.fold (fun (scope: FunctionScope) (i, _name) ->
-                    // Parameters use %argN naming, don't count toward SSA counter
-                    scope
+                |> List.mapi (fun i (_name, _ty, nodeId) -> i, nodeId)
+                |> List.fold (fun (scope: FunctionScope) (i, nodeId) ->
+                    // Parameters get Arg N SSAs, mapped to their PatternBinding NodeId
+                    FunctionScope.assign nodeId (NodeSSAAllocation.single (Arg i)) scope
                 ) FunctionScope.empty
 
             // Assign SSAs to body nodes
             let bodyScope = assignFunctionBody graph paramScope bodyId
 
-            // Merge into global assignments
+            // Merge into global assignments (including parameter SSAs)
+            for kvp in paramScope.Assignments do
+                allAssignments <- Map.add kvp.Key kvp.Value allAssignments
             for kvp in bodyScope.Assignments do
                 allAssignments <- Map.add kvp.Key kvp.Value allAssignments
+
+            // CRITICAL: Lambda node itself needs an SSA for return value synthesis
+            // Used by createDefaultReturn and reconcileReturnType in LambdaWitness
+            // Use next available SSA in the Lambda's scope
+            let lambdaSSA = V bodyScope.Counter
+            allAssignments <- Map.add (NodeId.value node.Id) (NodeSSAAllocation.single lambdaSSA) allAssignments
         | _ -> ()
 
     // Also process top-level nodes (module bindings, etc.)

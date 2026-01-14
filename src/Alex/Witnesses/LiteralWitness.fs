@@ -49,6 +49,13 @@ let private getStringSSAs (nodeId: NodeId) (z: PSGZipper) : SSA * SSA * SSA * SS
 /// nodeId: The ID of the literal node being witnessed (passed from traversal)
 /// Returns: (operations generated, result info)
 let witness (z: PSGZipper) (nodeId: NodeId) (lit: LiteralValue) : MLIROp list * TransferResult =
+    // Look up the node to determine the expected type (e.g. NTUint -> TIndex)
+    // This handles the case where a literal '0' (Int32) is assigned to a 'nativeint' (TIndex/i64) binding
+    let expectedType =
+        match SemanticGraph.tryGetNode nodeId z.Graph with
+        | Some node -> Alex.CodeGeneration.TypeMapping.mapNativeType node.Type
+        | None -> MLIRTypes.i32 // Fallback
+
     match lit with
     | LiteralValue.Unit ->
         // Unit is represented as i32 0 (consistent with C ABI)
@@ -64,54 +71,63 @@ let witness (z: PSGZipper) (nodeId: NodeId) (lit: LiteralValue) : MLIROp list * 
 
     | LiteralValue.Int8 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i8))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i8 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i8
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.Int16 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i16))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i16 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i16
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.Int32 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i32))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i32 }
+        // Respect expected type if it's TIndex (for NTUint/nativeint compatibility)
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i32
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.Int64 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, n, MLIRTypes.i64))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i64 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i64
+        let op = MLIROp.ArithOp (ConstI (ssaName, n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.UInt8 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i8))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i8 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i8
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.UInt16 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i16))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i16 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i16
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.UInt32 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i32))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i32 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i32
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.UInt64 n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i64))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i64 }
+        let ty = if expectedType = MLIRTypes.index then MLIRTypes.index else MLIRTypes.i64
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
     | LiteralValue.NativeInt n ->
         // Platform word size - assume 64-bit for now
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i64))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i64 }
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.index)) // NativeInt IS index
+        [op], TRValue { SSA = ssaName; Type = MLIRTypes.index }
 
     | LiteralValue.UNativeInt n ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.i64))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i64 }
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, MLIRTypes.index)) // UNativeInt IS index
+        [op], TRValue { SSA = ssaName; Type = MLIRTypes.index }
 
     | LiteralValue.Char c ->
         // Char is i32 (Unicode codepoint)
@@ -134,12 +150,12 @@ let witness (z: PSGZipper) (nodeId: NodeId) (lit: LiteralValue) : MLIROp list * 
         // Get pre-assigned SSAs for all 5 operations
         let (ptrSSA, lenSSA, undefSSA, withPtrSSA, fatPtrSSA) = getStringSSAs nodeId z
 
-        // 1. Register string and get hash for global reference
-        let _ = registerString s z  // Side effect: adds to z.State.Strings
-        let hash = uint32 (s.GetHashCode())  // Must match registerString's hash calculation
-        let byteLen = System.Text.Encoding.UTF8.GetByteCount(s)
+        // 1. Derive hash and byte length via pure functions (no side effects)
+        // StringTable coeffect already knows about this string from preprocessing
+        let hash = uint32 (s.GetHashCode())
+        let byteLen = deriveStringByteLength s
 
-        // 2. Get address of global string
+        // 2. Get address of global string (GString hash references the global)
         let addrOp = MLIROp.LLVMOp (AddressOf (ptrSSA, GString hash))
 
         // 3. Create length constant
@@ -156,3 +172,134 @@ let witness (z: PSGZipper) (nodeId: NodeId) (lit: LiteralValue) : MLIROp list * 
 
     | _ ->
         [], TRError $"Unsupported literal: {lit}"
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INTERPOLATED STRING WITNESSING
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Build a fat string from a string literal using pre-assigned SSAs
+/// Takes SSAs at given index offset, returns (ops, Val) and number of SSAs consumed
+let private buildStringPart (ssas: SSA list) (ssaOffset: int) (s: string) : MLIROp list * Val * int =
+    // Derive hash and byte length via pure functions
+    let hash = uint32 (s.GetHashCode())
+    let byteLen = deriveStringByteLength s
+
+    // Use 5 pre-assigned SSAs
+    let ptrSSA = ssas.[ssaOffset]
+    let lenSSA = ssas.[ssaOffset + 1]
+    let undefSSA = ssas.[ssaOffset + 2]
+    let withPtrSSA = ssas.[ssaOffset + 3]
+    let fatPtrSSA = ssas.[ssaOffset + 4]
+
+    // Build ops
+    let addrOp = MLIROp.LLVMOp (AddressOf (ptrSSA, GString hash))
+    let lenOp = MLIROp.ArithOp (ConstI (lenSSA, int64 byteLen, MLIRTypes.i64))
+    let undefOp = MLIROp.LLVMOp (Undef (undefSSA, fatStringType))
+    let insertPtrOp = MLIROp.LLVMOp (InsertValue (withPtrSSA, undefSSA, ptrSSA, [0], fatStringType))
+    let insertLenOp = MLIROp.LLVMOp (InsertValue (fatPtrSSA, withPtrSSA, lenSSA, [1], fatStringType))
+
+    let ops = [addrOp; lenOp; undefOp; insertPtrOp; insertLenOp]
+    ops, { SSA = fatPtrSSA; Type = fatStringType }, 5
+
+/// Concatenate two string Vals using pre-assigned SSAs
+/// Takes SSAs at given index offset, returns (ops, Val) and number of SSAs consumed
+let private concatStringsAt (ssas: SSA list) (ssaOffset: int) (str1: Val) (str2: Val) : MLIROp list * Val * int =
+    // Use 10 pre-assigned SSAs
+    let ptr1SSA = ssas.[ssaOffset]
+    let len1SSA = ssas.[ssaOffset + 1]
+    let ptr2SSA = ssas.[ssaOffset + 2]
+    let len2SSA = ssas.[ssaOffset + 3]
+    let totalLenSSA = ssas.[ssaOffset + 4]
+    let bufSSA = ssas.[ssaOffset + 5]
+    let offsetSSA = ssas.[ssaOffset + 6]
+    let undefSSA = ssas.[ssaOffset + 7]
+    let withPtrSSA = ssas.[ssaOffset + 8]
+    let resultSSA = ssas.[ssaOffset + 9]
+
+    let extractOps = [
+        MLIROp.LLVMOp (ExtractValue (ptr1SSA, str1.SSA, [0], MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (ExtractValue (len1SSA, str1.SSA, [1], MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (ExtractValue (ptr2SSA, str2.SSA, [0], MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (ExtractValue (len2SSA, str2.SSA, [1], MLIRTypes.nativeStr))
+    ]
+
+    // Total length
+    let addLenOp = MLIROp.ArithOp (ArithOp.AddI (totalLenSSA, len1SSA, len2SSA, MLIRTypes.i64))
+
+    // Allocate buffer
+    let allocOp = MLIROp.LLVMOp (Alloca (bufSSA, totalLenSSA, MLIRTypes.i8, None))
+
+    // Copy first string
+    let bufVal = { SSA = bufSSA; Type = MLIRTypes.ptr }
+    let ptr1Val = { SSA = ptr1SSA; Type = MLIRTypes.ptr }
+    let len1Val = { SSA = len1SSA; Type = MLIRTypes.i64 }
+    let memcpy1Op = intrMemcpy bufVal ptr1Val len1Val false
+
+    // GEP to offset for second string
+    let gepOp = MLIROp.LLVMOp (GEP (offsetSSA, bufSSA, [(len1SSA, MLIRTypes.i64)], MLIRTypes.i8))
+
+    // Copy second string
+    let offsetVal = { SSA = offsetSSA; Type = MLIRTypes.ptr }
+    let ptr2Val = { SSA = ptr2SSA; Type = MLIRTypes.ptr }
+    let len2Val = { SSA = len2SSA; Type = MLIRTypes.i64 }
+    let memcpy2Op = intrMemcpy offsetVal ptr2Val len2Val false
+
+    // Build result fat string
+    let buildStrOps = [
+        MLIROp.LLVMOp (Undef (undefSSA, MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (InsertValue (withPtrSSA, undefSSA, bufSSA, [0], MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (InsertValue (resultSSA, withPtrSSA, totalLenSSA, [1], MLIRTypes.nativeStr))
+    ]
+
+    let allOps = extractOps @ [addLenOp; allocOp; memcpy1Op; gepOp; memcpy2Op] @ buildStrOps
+    allOps, { SSA = resultSSA; Type = MLIRTypes.nativeStr }, 10
+
+/// Witness an interpolated string
+/// nodeId: The InterpolatedString node ID for SSA lookup
+/// parts: list of InterpolatedPart (StringPart or ExprPart)
+/// resolveExpr: function to resolve ExprPart NodeId to Val
+let witnessInterpolated
+    (nodeId: NodeId)
+    (z: PSGZipper)
+    (parts: InterpolatedPart list)
+    (resolveExpr: NodeId -> Val option)
+    : MLIROp list * TransferResult =
+
+    // Get all pre-assigned SSAs for this InterpolatedString node
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaOffset = 0
+
+    // Convert each part to (ops, Val)
+    // String parts consume SSAs, expr parts don't (already computed)
+    let partResults =
+        parts
+        |> List.choose (fun part ->
+            match part with
+            | InterpolatedPart.StringPart s ->
+                let ops, v, consumed = buildStringPart ssas ssaOffset s
+                ssaOffset <- ssaOffset + consumed
+                Some (ops, v)
+            | InterpolatedPart.ExprPart exprNodeId ->
+                match resolveExpr exprNodeId with
+                | Some v -> Some ([], v)  // No ops needed, expr already witnessed
+                | None -> None)
+
+    match partResults with
+    | [] ->
+        // Empty interpolated string - use pre-assigned SSAs
+        let ops, v, _ = buildStringPart ssas ssaOffset ""
+        ops, TRValue v
+    | [(ops, v)] ->
+        // Single part - just return it
+        ops, TRValue v
+    | (firstOps, firstVal) :: rest ->
+        // Multiple parts - fold with concatenation
+        let allOps, finalVal =
+            rest
+            |> List.fold (fun (accOps, accVal) (partOps, partVal) ->
+                let concatOps, resultVal, consumed = concatStringsAt ssas ssaOffset accVal partVal
+                ssaOffset <- ssaOffset + consumed
+                (accOps @ partOps @ concatOps, resultVal)
+            ) (firstOps, firstVal)
+
+        allOps, TRValue finalVal

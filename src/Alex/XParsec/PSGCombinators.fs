@@ -101,8 +101,8 @@ let pBinding : PSGParser<string * bool * bool * bool> =
             Matched (name, isMut, isRec, isEntry), state
         | _ -> NoMatch "Expected Binding", state
 
-/// Match a Lambda node (params are name*type pairs)
-let pLambda : PSGParser<(string * FSharp.Native.Compiler.Checking.Native.NativeTypes.NativeType) list * NodeId> =
+/// Match a Lambda node (params are name*type*nodeId tuples for SSA assignment)
+let pLambda : PSGParser<(string * FSharp.Native.Compiler.Checking.Native.NativeTypes.NativeType * NodeId) list * NodeId> =
     fun state ->
         match state.Current.Kind with
         | SemanticKind.Lambda (params', bodyId) -> Matched (params', bodyId), state
@@ -281,7 +281,8 @@ type EmissionCategory =
     | Comparison of mlirOp: string
     | MemoryOp of op: string
     | StringOp of op: string
-    | ConsoleOp of op: string
+    // NOTE: ConsoleOp removed - Console is NOT an intrinsic, it's Layer 3 user code
+    // in Fidelity.Platform that uses Sys.* intrinsics. See fsnative-spec/spec/platform-bindings.md
     | PlatformOp of op: string
     | OtherIntrinsic
 
@@ -304,9 +305,8 @@ let classifyIntrinsic (info: IntrinsicInfo) : EmissionCategory =
     | IntrinsicModule.NativePtr, op -> MemoryOp op
     // String
     | IntrinsicModule.String, op -> StringOp op
-    // Console
-    | IntrinsicModule.Console, op -> ConsoleOp op
-    // Platform
+    // NOTE: Console is NOT an intrinsic - see fsnative-spec/spec/platform-bindings.md
+    // Platform (Sys.* intrinsics)
     | IntrinsicModule.Sys, op -> PlatformOp op
     | _ -> OtherIntrinsic
 

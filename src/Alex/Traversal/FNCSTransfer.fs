@@ -23,6 +23,7 @@ open Alex.Preprocessing.PlatformConfig
 
 // Witness modules
 module LitWitness = Alex.Witnesses.LiteralWitness
+module PreprocessingSerializer = Alex.Preprocessing.PreprocessingSerializer
 module BindWitness = Alex.Witnesses.BindingWitness
 module AppWitness = Alex.Witnesses.Application.Witness
 module CFWitness = Alex.Witnesses.ControlFlowWitness
@@ -32,6 +33,7 @@ module LambdaWitness = Alex.Witnesses.LambdaWitness
 // Preprocessing modules (coeffects)
 module MutAnalysis = Alex.Preprocessing.MutabilityAnalysis
 module SSAAssign = Alex.Preprocessing.SSAAssignment
+module StringCollect = Alex.Preprocessing.StringCollection
 module PlatformResolution = Alex.Preprocessing.PlatformBindingResolution
 
 /// Map FNCS NativeType to MLIR type
@@ -46,6 +48,7 @@ let private regionKindToInt (kind: RegionKind) : int =
     | RegionKind.ElseRegion -> 3
     | RegionKind.StartExprRegion -> 4
     | RegionKind.EndExprRegion -> 5
+    | RegionKind.LambdaBodyRegion -> 6
     | RegionKind.MatchCaseRegion idx -> 100 + idx
 
 /// Core transfer implementation
@@ -53,29 +56,27 @@ let private transferGraphCore
     (graph: SemanticGraph)
     (isFreestanding: bool)
     (collectErrors: bool)
+    (intermediatesDir: string option)
     : string * string list =
-
-    // Register platform bindings
-    Alex.Bindings.Console.ConsoleBindings.registerBindings()
-    Alex.Bindings.Console.ConsoleBindings.registerConsoleIntrinsics()
-    Alex.Bindings.Process.ProcessBindings.registerBindings()
-    Alex.Bindings.Time.TimeBindings.registerBindings()
-    Alex.Bindings.WebView.WebViewBindings.registerBindings()
-    Alex.Bindings.DynamicLib.DynamicLibBindings.registerBindings()
-    Alex.Bindings.GTK.GTKBindings.registerBindings()
-    Alex.Bindings.WebKit.WebKitBindings.registerBindings()
 
     // ═══════════════════════════════════════════════════════════════════════
     // COEFFECTS (computed ONCE before transfer)
+    // All preprocessing passes run here - the zipper is PASSIVE (no mutation)
     // ═══════════════════════════════════════════════════════════════════════
     let entryPointLambdaIds = MutAnalysis.findEntryPointLambdaIds graph
     let analysisResult = MutAnalysis.analyze graph
     let ssaAssignment = SSAAssign.assignSSA graph
+    let stringTable = StringCollect.collect graph  // Pre-collect all strings
 
     // Platform resolution (nanopass)
     let hostPlatform = TargetPlatform.detectHost()
     let runtimeMode = if isFreestanding then Freestanding else Console
     let platformResolution = PlatformResolution.analyze graph runtimeMode hostPlatform.OS hostPlatform.Arch
+
+    // Serialize preprocessing results to intermediates (if path provided)
+    match intermediatesDir with
+    | Some dir -> PreprocessingSerializer.serialize dir ssaAssignment entryPointLambdaIds graph
+    | None -> ()
 
     // Create WitnessContext for binding witnesses
     let witnessCtx: BindWitness.WitnessContext = {
@@ -129,10 +130,10 @@ let private transferGraphCore
                 z, result
 
             // ─────────────────────────────────────────────────────────────────
-            // Variable references
+            // Variable references - dispatch to witness (handles addressed mutables)
             // ─────────────────────────────────────────────────────────────────
-            | SemanticKind.VarRef (name, defId) ->
-                let ops, result = BindWitness.witnessVarRef witnessCtx z name defId
+            | SemanticKind.VarRef (name, defIdOpt) ->
+                let ops, result = BindWitness.witnessVarRef witnessCtx z node.Id name defIdOpt
                 emitAll ops z
                 z, result
 
@@ -152,7 +153,7 @@ let private transferGraphCore
             // Function applications
             // ─────────────────────────────────────────────────────────────────
             | SemanticKind.Application (funcId, argIds) ->
-                let ops, result = AppWitness.witness funcId argIds node.Type z
+                let ops, result = AppWitness.witness node.Id funcId argIds node.Type z
                 emitAll ops z
                 z, result
 
@@ -202,7 +203,7 @@ let private transferGraphCore
                         | Some v -> Some (name, v)
                         | None -> None)
                 let recordType = mapType node.Type
-                let ops, result = MemWitness.witnessRecordExpr z fieldVals recordType
+                let ops, result = MemWitness.witnessRecordExpr node.Id z fieldVals recordType
                 emitAll ops z
                 z, result
 
@@ -210,43 +211,52 @@ let private transferGraphCore
             // Lambdas
             // ─────────────────────────────────────────────────────────────────
             | SemanticKind.Lambda (params', bodyId) ->
-                // Get accumulated body ops from children (already in CurrentOps)
-                // Note: getCurrentOps already reverses to correct order
-                let bodyOps = getCurrentOps z
-                
+                // Get accumulated body ops from regionOps (populated by scfHook)
+                let bodyKey = (nodeIdVal, regionKindToInt RegionKind.LambdaBodyRegion)
+                let bodyOps = regionOps.GetValueOrDefault(bodyKey, [])
+
                 // Witness returns: (funcDef option, localOps, result)
                 // Photographer Principle: witness RETURNS, we ACCUMULATE
                 let funcDefOpt, localOps, result = LambdaWitness.witness params' bodyId node bodyOps z
-                
+
                 // Add function definition to top-level (if present)
                 match funcDefOpt with
                 | Some funcDef -> emitTopLevel funcDef z
                 | None -> ()
-                
-                // Clear the body ops we just consumed
-                clearCurrentOps z
-                
+
                 // Emit local ops (addressof) to current scope
                 emitAll localOps z
-                z, result
+
+                // ARCHITECTURAL FIX: Exit function scope to restore parent's CurrentOps
+                let z' = exitFunction z
+                z', result
 
             // ─────────────────────────────────────────────────────────────────
-            // Type annotations (pass through)
+            // Type annotations (semantically transparent)
+            // TypeAnnotation's node.Type IS the annotated type - provided by FNCS
             // ─────────────────────────────────────────────────────────────────
             | SemanticKind.TypeAnnotation (exprId, _) ->
-                match SemanticGraph.tryGetNode exprId graph with
-                | Some innerNode ->
-                    let innerType = mapType innerNode.Type
-                    match innerType with
-                    | TUnit -> z, TRVoid
-                    | _ ->
-                        match recallNodeResult (NodeId.value exprId) z with
-                        | Some (ssa, ty) ->
-                            z, TRValue { SSA = ssa; Type = ty }
-                        | None ->
-                            z, TRError (sprintf "TypeAnnotation: inner expr %d not computed" (NodeId.value exprId))
-                | None ->
-                    z, TRError (sprintf "TypeAnnotation: inner expr %d not found" (NodeId.value exprId))
+                // Check if this TypeAnnotation is unit-typed using the node's own Type
+                // FNCS sets node.Type = annotatedType during construction
+                let isUnit =
+                    match node.Type with
+                    | NativeType.TApp(tc, []) ->
+                        match tc.NTUKind with
+                        | Some NTUKind.NTUunit -> true
+                        | _ -> false
+                    | _ -> false
+                if isUnit then
+                    // Unit-typed annotation - no value to pass through
+                    z, TRVoid
+                else
+                    // Non-unit annotation - pass through the inner expression's result
+                    // If inner is a marker (Intrinsic, PlatformBinding), it has no result - that's OK
+                    match recallNodeResult (NodeId.value exprId) z with
+                    | Some (ssa, ty) ->
+                        z, TRValue { SSA = ssa; Type = ty }
+                    | None ->
+                        // Inner is a marker - TypeAnnotation is also transparent
+                        z, TRVoid
 
             // ─────────────────────────────────────────────────────────────────
             // Mutable set
@@ -260,7 +270,8 @@ let private transferGraphCore
                         | Some (valueSSA, valueType) ->
                             match lookupModuleLevelMutable name z with
                             | Some (_, globalName) ->
-                                let addrSSA = freshSynthSSA z
+                                // Set node needs 1 SSA for addressof intermediate
+                                let addrSSA = requireNodeSSA node.Id z
                                 let addrOp = MLIROp.LLVMOp (LLVMOp.AddressOf (addrSSA, GlobalRef.GNamed globalName))
                                 let storeOp = MLIROp.LLVMOp (LLVMOp.Store (valueSSA, addrSSA, valueType, AtomicOrdering.NotAtomic))
                                 emit addrOp z
@@ -294,7 +305,7 @@ let private transferGraphCore
                 let condSSA =
                     match recallNodeResult (NodeId.value guardId) z with
                     | Some (ssa, _) -> ssa
-                    | None -> freshSynthSSA z  // Fallback
+                    | None -> failwithf "IfThenElse: guard node %d result not found" (NodeId.value guardId)
 
                 let thenOps = regionOps.GetValueOrDefault(thenKey, [])
                 let thenResultSSA =
@@ -316,7 +327,7 @@ let private transferGraphCore
                     let mlirType = mapType node.Type
                     if mlirType = TUnit then None else Some mlirType
 
-                let ops, result = CFWitness.witnessIfThenElse z condSSA thenOps thenResultSSA elseOps elseResultSSA resultType
+                let ops, result = CFWitness.witnessIfThenElse node.Id z condSSA thenOps thenResultSSA elseOps elseResultSSA resultType
                 emitAll ops z
                 z, result
 
@@ -330,12 +341,12 @@ let private transferGraphCore
                 let condResultSSA =
                     match recallNodeResult (NodeId.value guardId) z with
                     | Some (ssa, _) -> ssa
-                    | None -> freshSynthSSA z
+                    | None -> failwithf "WhileLoop: guard node %d result not found" (NodeId.value guardId)
 
                 // Get iter args from mutability analysis
                 let iterArgs: Val list = []  // TODO: from coeffects
 
-                let ops, result = CFWitness.witnessWhileLoop z condOps condResultSSA bodyOps iterArgs
+                let ops, result = CFWitness.witnessWhileLoop node.Id z condOps condResultSSA bodyOps iterArgs
                 emitAll ops z
                 z, result
 
@@ -343,34 +354,37 @@ let private transferGraphCore
                 let bodyKey = (nodeIdVal, regionKindToInt RegionKind.BodyRegion)
                 let bodyOps = regionOps.GetValueOrDefault(bodyKey, [])
 
-                let ivSSA = freshSynthSSA z
+                // Get pre-assigned SSAs for ForLoop: [ivSSA; stepSSA]
+                let ssas = requireNodeSSAs node.Id z
+                let ivSSA = ssas.[0]
+                let stepSSA = ssas.[1]
+
                 let startSSA =
                     match recallNodeResult (NodeId.value startId) z with
                     | Some (ssa, _) -> ssa
-                    | None -> freshSynthSSA z
+                    | None -> failwithf "ForLoop: start node %d result not found" (NodeId.value startId)
                 let stopSSA =
                     match recallNodeResult (NodeId.value finishId) z with
                     | Some (ssa, _) -> ssa
-                    | None -> freshSynthSSA z
+                    | None -> failwithf "ForLoop: finish node %d result not found" (NodeId.value finishId)
 
                 // Step is 1 or -1 depending on isUp
-                let stepSSA = freshSynthSSA z
                 let stepVal = if isUp then 1L else -1L
                 let stepOp = MLIROp.ArithOp (ArithOp.ConstI (stepSSA, stepVal, MLIRTypes.index))
                 emit stepOp z
 
                 let iterArgs: Val list = []  // TODO: from coeffects
 
-                let ops, result = CFWitness.witnessForLoop z ivSSA startSSA stopSSA stepSSA bodyOps iterArgs
+                let ops, result = CFWitness.witnessForLoop node.Id z ivSSA startSSA stopSSA stepSSA bodyOps iterArgs
                 emitAll ops z
                 z, result
 
             | SemanticKind.Match (scrutineeId, cases) ->
-                // Get scrutinee SSA
+                // Get scrutinee SSA - MUST exist, processed before this node
                 let scrutineeSSA, scrutineeType =
                     match recallNodeResult (NodeId.value scrutineeId) z with
                     | Some (ssa, ty) -> ssa, ty
-                    | None -> freshSynthSSA z, TPtr
+                    | None -> failwithf "Match: scrutinee node %d result not found" (NodeId.value scrutineeId)
 
                 // Build cases with collected region ops
                 // Use case index as tag (actual tag resolution would come from Pattern)
@@ -390,15 +404,22 @@ let private transferGraphCore
                     let mlirType = mapType node.Type
                     if mlirType = TUnit then None else Some mlirType
 
-                let ops, result = CFWitness.witnessMatch z scrutineeSSA scrutineeType caseOps resultType
+                let ops, result = CFWitness.witnessMatch node.Id z scrutineeSSA scrutineeType caseOps resultType
                 emitAll ops z
                 z, result
 
             // ─────────────────────────────────────────────────────────────────
             // Other node kinds
             // ─────────────────────────────────────────────────────────────────
-            | SemanticKind.InterpolatedString _ ->
-                z, TRError "InterpolatedString not yet implemented"
+            | SemanticKind.InterpolatedString parts ->
+                // Resolve ExprPart NodeIds to their already-witnessed Val results
+                let resolveExpr exprNodeId =
+                    recallNodeResult (NodeId.value exprNodeId) z
+                    |> Option.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
+
+                let ops, result = LitWitness.witnessInterpolated node.Id z parts resolveExpr
+                emitAll ops z
+                z, result
 
             | SemanticKind.IndexGet (collectionId, indexId) ->
                 match resolveNodeToVal collectionId z, resolveNodeToVal indexId z with
@@ -408,7 +429,7 @@ let private transferGraphCore
                         match collVal.Type with
                         | TStruct [TPtr; _] -> TPtr  // Fat pointer - element type unknown, assume ptr
                         | _ -> TPtr
-                    let ops, result = MemWitness.witnessIndexGet z collVal.SSA collVal.Type indexVal.SSA elemType
+                    let ops, result = MemWitness.witnessIndexGet node.Id z collVal.SSA collVal.Type indexVal.SSA elemType
                     emitAll ops z
                     z, result
                 | _ ->
@@ -417,7 +438,7 @@ let private transferGraphCore
             | SemanticKind.IndexSet (collectionId, indexId, valueId) ->
                 match resolveNodeToVal collectionId z, resolveNodeToVal indexId z, resolveNodeToVal valueId z with
                 | Some collVal, Some indexVal, Some valV ->
-                    let ops, result = MemWitness.witnessIndexSet z collVal.SSA indexVal.SSA valV.SSA valV.Type
+                    let ops, result = MemWitness.witnessIndexSet node.Id z collVal.SSA indexVal.SSA valV.SSA valV.Type
                     emitAll ops z
                     z, result
                 | _ ->
@@ -426,7 +447,7 @@ let private transferGraphCore
             | SemanticKind.AddressOf (exprId, isMutable) ->
                 match resolveNodeToVal exprId z with
                 | Some exprVal ->
-                    let ops, result = MemWitness.witnessAddressOf z exprVal.SSA exprVal.Type isMutable
+                    let ops, result = MemWitness.witnessAddressOf node.Id z exprVal.SSA exprVal.Type isMutable
                     emitAll ops z
                     z, result
                 | None ->
@@ -436,7 +457,7 @@ let private transferGraphCore
                 let elements =
                     elementIds
                     |> List.choose (fun id -> resolveNodeToVal id z)
-                let ops, result = MemWitness.witnessTupleExpr z elements
+                let ops, result = MemWitness.witnessTupleExpr node.Id z elements
                 emitAll ops z
                 z, result
 
@@ -444,7 +465,7 @@ let private transferGraphCore
                 match resolveNodeToVal argId z with
                 | Some receiverVal ->
                     let memberType = mapType node.Type
-                    let ops, result = MemWitness.witnessTraitCall z receiverVal.SSA receiverVal.Type memberName memberType
+                    let ops, result = MemWitness.witnessTraitCall node.Id z receiverVal.SSA receiverVal.Type memberName memberType
                     emitAll ops z
                     z, result
                 | None ->
@@ -458,7 +479,7 @@ let private transferGraphCore
                     match elements with
                     | first :: _ -> first.Type
                     | [] -> TPtr
-                let ops, result = MemWitness.witnessArrayExpr z elements elemType
+                let ops, result = MemWitness.witnessArrayExpr node.Id z elements elemType
                 emitAll ops z
                 z, result
 
@@ -470,17 +491,26 @@ let private transferGraphCore
                     match elements with
                     | first :: _ -> first.Type
                     | [] -> TPtr
-                let ops, result = MemWitness.witnessListExpr z elements elemType
+                let ops, result = MemWitness.witnessListExpr node.Id z elements elemType
                 emitAll ops z
                 z, result
 
             | SemanticKind.FieldGet (exprId, fieldName) ->
                 match resolveNodeToVal exprId z with
                 | Some exprVal ->
-                    // TODO: Resolve field index from type info
-                    let fieldIndex = 0  // Placeholder
-                    let fieldType = mapType node.Type
-                    let ops, result = MemWitness.witnessFieldGet z exprVal.SSA exprVal.Type fieldIndex fieldType
+                    // Resolve field index and type from field name
+                    // For strings (NativeStr = {ptr, i64}):
+                    //   Pointer → index 0, type ptr
+                    //   Length → index 1, type i64 (NOT F# int!)
+                    // For general records: lookup from type definition
+                    let fieldIndex, fieldType =
+                        match exprVal.Type, fieldName with
+                        | TStruct [TPtr; TInt I64], "Pointer" -> 0, MLIRTypes.ptr
+                        | TStruct [TPtr; TInt I64], "Length" -> 1, MLIRTypes.i64
+                        | _, "Pointer" -> 0, MLIRTypes.ptr
+                        | _, "Length" -> 1, mapType node.Type
+                        | _ -> 0, mapType node.Type
+                    let ops, result = MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type fieldIndex fieldType
                     emitAll ops z
                     z, result
                 | None ->
@@ -489,9 +519,13 @@ let private transferGraphCore
             | SemanticKind.FieldSet (exprId, fieldName, valueId) ->
                 match resolveNodeToVal exprId z, resolveNodeToVal valueId z with
                 | Some exprVal, Some valV ->
-                    // TODO: Resolve field index from type info
-                    let fieldIndex = 0  // Placeholder
-                    let ops, result = MemWitness.witnessFieldSet z exprVal.SSA exprVal.Type fieldIndex valV.SSA
+                    // Resolve field index from field name
+                    let fieldIndex =
+                        match fieldName with
+                        | "Pointer" -> 0
+                        | "Length" -> 1
+                        | _ -> 0  // TODO: Look up from type definition
+                    let ops, result = MemWitness.witnessFieldSet node.Id z exprVal.SSA exprVal.Type fieldIndex valV.SSA
                     emitAll ops z
                     z, result
                 | _ ->
@@ -510,7 +544,7 @@ let private transferGraphCore
                     | Some payloadId -> resolveNodeToVal payloadId z
                     | None -> None
                 let unionType = mapType node.Type
-                let ops, result = MemWitness.witnessUnionCase z caseIndex payload unionType
+                let ops, result = MemWitness.witnessUnionCase node.Id z caseIndex payload unionType
                 emitAll ops z
                 z, result
 
@@ -533,7 +567,7 @@ let private transferGraphCore
     // ═══════════════════════════════════════════════════════════════════════
     // CREATE ZIPPER AND RUN TRAVERSAL
     // ═══════════════════════════════════════════════════════════════════════
-    match fromEntryPoint graph ssaAssignment analysisResult platformResolution entryPointLambdaIds with
+    match fromEntryPoint graph ssaAssignment analysisResult stringTable platformResolution entryPointLambdaIds with
     | None ->
         "", ["No entry point found in graph"]
 
@@ -577,8 +611,8 @@ let private transferGraphCore
 
 /// Transfer a SemanticGraph to MLIR text
 let transferGraph (graph: SemanticGraph) (isFreestanding: bool) : string =
-    fst (transferGraphCore graph isFreestanding false)
+    fst (transferGraphCore graph isFreestanding false None)
 
 /// Transfer with diagnostics
-let transferGraphWithDiagnostics (graph: SemanticGraph) (isFreestanding: bool) : string * string list =
-    transferGraphCore graph isFreestanding true
+let transferGraphWithDiagnostics (graph: SemanticGraph) (isFreestanding: bool) (intermediatesDir: string option) : string * string list =
+    transferGraphCore graph isFreestanding true intermediatesDir

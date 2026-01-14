@@ -22,6 +22,33 @@ Use `mcp__serena__read_memory` to review relevant memories before proceeding.
 
 ---
 
+## CRITICAL: Context Window Reset Protocol
+
+> **At the START of every new context window (after compaction/reset), IMMEDIATELY perform an architectural review.**
+
+Before taking ANY action on code, you MUST:
+
+1. **Activate the Firefly project** via Serena: `mcp__serena-local__activate_project "Firefly"`
+2. **List available memories**: `mcp__serena-local__list_memories`
+3. **Read critical memories** - at minimum:
+   - `architecture_principles` - Core architectural constraints
+   - `negative_examples` - Real mistakes with explanations (ESSENTIAL)
+   - `fncs_functional_decomposition_principle` - Why intrinsics must decompose
+4. **Read task-relevant memories** based on the work at hand
+5. **Confirm the layered architecture** - where does this change belong?
+
+This is **NON-NEGOTIABLE**. The codebase contains patterns that LOOK reasonable but are architectural violations:
+- Semantic hollowing (type signatures with no functional structure)
+- Imperative MLIR construction in Alex (building structure that should come from PSG)
+- "Kick the can" intrinsics (expecting downstream to implement)
+- Central dispatch/routing mechanisms
+
+Without reviewing memories, you WILL repeat these mistakes. The patterns exist in the code because previous sessions made them before learning better.
+
+**The memories encode hard-won lessons. Read them BEFORE acting.**
+
+---
+
 ## CRITICAL: Deliberate, Didactic Approach Required
 
 > **SLOW DOWN. Be deliberate. Be didactic. Use agents prolifically to gather context before acting.**

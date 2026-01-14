@@ -3,10 +3,10 @@
 /// ARCHITECTURAL PRINCIPLE (January 2026):
 /// Witnesses OBSERVE and RETURN structured MLIROp lists.
 /// They do NOT emit strings. ZERO SPRINTF for MLIR generation.
+/// All SSAs come from pre-computed SSAAssignment coeffect.
 ///
 /// Uses:
-/// - freshSynthSSA for synthesized values (constants, temporaries)
-/// - lookupNodeSSA for PSG node SSAs (from coeffects)
+/// - requireNodeSSA/requireNodeSSAs for pre-assigned SSAs (from coeffects)
 /// - SCFTemplates for structured SCF operations
 /// - ArithTemplates for arithmetic operations
 /// - LLVMTemplates for LLVM operations
@@ -33,88 +33,6 @@ let private isUnitType (ty: NativeType) : bool =
     match ty with
     | NativeType.TApp(tycon, _) when tycon.Name = "unit" -> true
     | _ -> false
-
-// ═══════════════════════════════════════════════════════════════════════════
-// INLINE STRLEN (Entry Point Boundary Only)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Generate inline strlen using scf.while loop
-/// Used ONLY at entry point boundary to convert C strings to F# fat pointers
-/// Returns: (ops, lengthSSA)
-let inlineStrlen (z: PSGZipper) (ptrSSA: SSA) : MLIROp list * SSA =
-    // Constants
-    let zeroSSA = freshSynthSSA z
-    let oneSSA = freshSynthSSA z
-    let nullByteSSA = freshSynthSSA z
-
-    let constOps = [
-        MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, MLIRTypes.i64))
-        MLIROp.ArithOp (ArithOp.ConstI (oneSSA, 1L, MLIRTypes.i64))
-        MLIROp.ArithOp (ArithOp.ConstI (nullByteSSA, 0L, MLIRTypes.i8))
-    ]
-
-    // Loop iteration argument: current index
-    let iterArg: Val = { SSA = zeroSSA; Type = MLIRTypes.i64 }
-
-    // Condition region: load byte, compare to null
-    let gepSSA = freshSynthSSA z
-    let byteSSA = freshSynthSSA z
-    let condSSA = freshSynthSSA z
-
-    // Block argument for condition region (receives iter arg)
-    let condBlockArg = SCF.blockArg (V 0) MLIRTypes.i64  // %arg0 in condition block
-
-    let condOps = [
-        MLIROp.LLVMOp (LLVMOp.GEP (gepSSA, ptrSSA, [(condBlockArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
-        MLIROp.LLVMOp (LLVMOp.Load (byteSSA, gepSSA, MLIRTypes.i8, NotAtomic))
-        MLIROp.ArithOp (ArithOp.CmpI (condSSA, ICmpPred.Ne, byteSSA, nullByteSSA, MLIRTypes.i8))
-        MLIROp.SCFOp (SCFOp.Condition (condSSA, [condBlockArg.SSA]))
-    ]
-
-    // Body region: increment counter
-    let nextSSA = freshSynthSSA z
-    let bodyBlockArg = SCF.blockArg (V 0) MLIRTypes.i64  // %arg0 in body block
-
-    let bodyOps = [
-        MLIROp.ArithOp (ArithOp.AddI (nextSSA, bodyBlockArg.SSA, oneSSA, MLIRTypes.i64))
-        MLIROp.SCFOp (SCFOp.Yield [nextSSA])
-    ]
-
-    // Build regions
-    let condRegion = SCF.singleBlockRegion "before" [condBlockArg] condOps
-    let bodyRegion = SCF.singleBlockRegion "do" [bodyBlockArg] bodyOps
-
-    // Result SSA
-    let lenSSA = freshSynthSSA z
-
-    let whileOp = MLIROp.SCFOp (SCFOp.While ([lenSSA], condRegion, bodyRegion, [iterArg]))
-
-    (constOps @ [whileOp], lenSSA)
-
-// ═══════════════════════════════════════════════════════════════════════════
-// C STRING TO FAT POINTER CONVERSION
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Convert a C string (char*) to F# fat pointer {ptr, len}
-/// Used at entry point boundary for argv conversion
-let cStringToFatPointer (z: PSGZipper) (cStrPtr: SSA) : MLIROp list * Val =
-    // Get string length via inline strlen
-    let strlenOps, lenSSA = inlineStrlen z cStrPtr
-
-    // Build fat pointer struct {ptr, len}
-    let undefSSA = freshSynthSSA z
-    let withPtrSSA = freshSynthSSA z
-    let resultSSA = freshSynthSSA z
-
-    let fatStrType = MLIRTypes.nativeStr
-
-    let buildOps = [
-        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, fatStrType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, cStrPtr, [0], fatStrType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withPtrSSA, lenSSA, [1], fatStrType))
-    ]
-
-    (strlenOps @ buildOps, { SSA = resultSSA; Type = fatStrType })
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SEQUENTIAL EXPRESSION
@@ -145,7 +63,9 @@ let witnessSequential (z: PSGZipper) (nodeIds: NodeId list) : MLIROp list * Tran
 
 /// Witness an if-then-else expression using SCF dialect
 /// thenOps and elseOps are the pre-witnessed operations from the regions
+/// Uses pre-assigned SSAs: result[0], thenZero[1], elseZero[2]
 let witnessIfThenElse
+    (nodeId: NodeId)
     (z: PSGZipper)
     (condSSA: SSA)
     (thenOps: MLIROp list)
@@ -155,11 +75,19 @@ let witnessIfThenElse
     (resultType: MLIRType option)
     : MLIROp list * TransferResult =
 
+    // Get pre-assigned SSAs for IfThenElse: result[0], thenZero[1], elseZero[2]
+    let ssas = requireNodeSSAs nodeId z
+
     // Build then region with yield
     let thenYieldOps =
-        match thenResultSSA with
-        | Some ssa -> thenOps @ [MLIROp.SCFOp (SCFOp.Yield [ssa])]
-        | None -> thenOps @ [MLIROp.SCFOp (SCFOp.Yield [])]
+        match thenResultSSA, resultType with
+        | Some ssa, Some ty -> thenOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
+        | None, Some ty ->
+            // Body is void/unit but if-then-else expects result (e.g. i32 for unit)
+            let zeroSSA = ssas.[1]  // thenZero
+            let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
+            thenOps @ [zeroOp; MLIROp.SCFOp (SCF.scfYield [{ SSA = zeroSSA; Type = ty }])]
+        | _ -> thenOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
 
     let thenRegion = SCF.singleBlockRegion "then" [] thenYieldOps
 
@@ -168,16 +96,20 @@ let witnessIfThenElse
         match elseOps with
         | Some ops ->
             let elseYieldOps =
-                match elseResultSSA with
-                | Some ssa -> ops @ [MLIROp.SCFOp (SCFOp.Yield [ssa])]
-                | None -> ops @ [MLIROp.SCFOp (SCFOp.Yield [])]
+                match elseResultSSA, resultType with
+                | Some ssa, Some ty -> ops @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
+                | None, Some ty ->
+                    let zeroSSA = ssas.[2]  // elseZero
+                    let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
+                    ops @ [zeroOp; MLIROp.SCFOp (SCF.scfYield [{ SSA = zeroSSA; Type = ty }])]
+                | _ -> ops @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
             Some (SCF.singleBlockRegion "else" [] elseYieldOps)
         | None -> None
 
     // Build SCF if operation
     match resultType with
     | Some ty ->
-        let resultSSA = freshSynthSSA z
+        let resultSSA = ssas.[0]  // result
         let ifOp = SCFOp.If ([resultSSA], condSSA, thenRegion, elseRegionOpt, [ty])
         [MLIROp.SCFOp ifOp], TRValue { SSA = resultSSA; Type = ty }
     | None ->
@@ -192,7 +124,9 @@ let witnessIfThenElse
 /// condOps: operations for the guard condition (should produce a boolean)
 /// bodyOps: operations for the loop body
 /// iterArgs: iteration arguments (mutable variables carried through loop)
+/// Note: When iterArgs is implemented via coeffects, SSAs for result will be pre-assigned
 let witnessWhileLoop
+    (nodeId: NodeId)
     (z: PSGZipper)
     (condOps: MLIROp list)
     (condResultSSA: SSA)
@@ -202,16 +136,20 @@ let witnessWhileLoop
 
     // Build condition region with scf.condition terminator
     let condBlockArgs = iterArgs |> List.map (fun v -> SCF.blockArg v.SSA v.Type)
-    let condTerminator = MLIROp.SCFOp (SCFOp.Condition (condResultSSA, iterArgs |> List.map (fun v -> v.SSA)))
+    let condTerminator = MLIROp.SCFOp (SCF.scfCondition condResultSSA iterArgs)
     let condRegion = SCF.singleBlockRegion "before" condBlockArgs (condOps @ [condTerminator])
 
     // Build body region with scf.yield terminator
     let bodyBlockArgs = iterArgs |> List.map (fun v -> SCF.blockArg v.SSA v.Type)
-    let bodyTerminator = MLIROp.SCFOp (SCFOp.Yield (iterArgs |> List.map (fun v -> v.SSA)))
+    let bodyTerminator = MLIROp.SCFOp (SCF.scfYield iterArgs)
     let bodyRegion = SCF.singleBlockRegion "do" bodyBlockArgs (bodyOps @ [bodyTerminator])
 
-    // Result SSAs (one per iter arg)
-    let resultSSAs = iterArgs |> List.map (fun _ -> freshSynthSSA z)
+    // Result SSAs (one per iter arg) - use pre-assigned SSAs when iterArgs is non-empty
+    let resultSSAs =
+        if List.isEmpty iterArgs then []
+        else
+            let ssas = requireNodeSSAs nodeId z
+            iterArgs |> List.mapi (fun i _ -> ssas.[i])
 
     let whileOp = SCFOp.While (resultSSAs, condRegion, bodyRegion, iterArgs)
 
@@ -226,7 +164,9 @@ let witnessWhileLoop
 /// start, stop, step: loop bounds
 /// bodyOps: operations for the loop body
 /// iterArgs: additional iteration arguments beyond the induction variable
+/// Note: ivSSA and stepSSA come from ForLoop node's pre-assigned SSAs
 let witnessForLoop
+    (nodeId: NodeId)
     (z: PSGZipper)
     (ivSSA: SSA)
     (startSSA: SSA)
@@ -243,11 +183,16 @@ let witnessForLoop
     let allBlockArgs = ivArg :: iterBlockArgs
 
     // Body with yield
-    let bodyTerminator = MLIROp.SCFOp (SCFOp.Yield (iterArgs |> List.map (fun v -> v.SSA)))
+    let bodyTerminator = MLIROp.SCFOp (SCF.scfYield iterArgs)
     let bodyRegion = SCF.singleBlockRegion "body" allBlockArgs (bodyOps @ [bodyTerminator])
 
-    // Result SSAs
-    let resultSSAs = iterArgs |> List.map (fun _ -> freshSynthSSA z)
+    // Result SSAs - use pre-assigned SSAs when iterArgs is non-empty
+    // Note: indices 0,1 are used for ivSSA,stepSSA, so iterArgs start at index 2
+    let resultSSAs =
+        if List.isEmpty iterArgs then []
+        else
+            let ssas = requireNodeSSAs nodeId z
+            iterArgs |> List.mapi (fun i _ -> ssas.[2 + i])
 
     let forOp = SCFOp.For (resultSSAs, ivSSA, startSSA, stopSSA, stepSSA, bodyRegion, iterArgs)
 
@@ -260,7 +205,9 @@ let witnessForLoop
 /// Witness a pattern match expression
 /// Lowered to a chain of scf.if operations
 /// Each case becomes an if-then-else checking the discriminator
+/// Uses pre-assigned SSAs: discrim[0], then tag/cmp/zero/result for each case
 let witnessMatch
+    (nodeId: NodeId)
     (z: PSGZipper)
     (scrutineeSSA: SSA)
     (scrutineeType: MLIRType)
@@ -268,25 +215,39 @@ let witnessMatch
     (resultType: MLIRType option)
     : MLIROp list * TransferResult =
 
+    // Get pre-assigned SSAs for match
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
     // For DU matching, extract discriminator (first field of struct)
-    let discrimSSA = freshSynthSSA z
+    let discrimSSA = nextSSA ()
     let extractDiscrim = MLIROp.LLVMOp (LLVMOp.ExtractValue (discrimSSA, scrutineeSSA, [0], scrutineeType))
 
     // Build nested if-else chain
-    let rec buildIfChain (cases: (int * MLIROp list * SSA option) list) : MLIROp list =
+    let rec buildIfChain (cases: (int * MLIROp list * SSA option) list) : MLIROp list * SSA option =
         match cases with
         | [] ->
             // Should not happen - match should be exhaustive
-            []
+            [], None
         | [(_, caseOps, resultSSA)] ->
             // Last case - no condition check needed
-            match resultSSA with
-            | Some ssa -> caseOps @ [MLIROp.SCFOp (SCFOp.Yield [ssa])]
-            | None -> caseOps @ [MLIROp.SCFOp (SCFOp.Yield [])]
+            match resultSSA, resultType with
+            | Some ssa, Some ty -> 
+                caseOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])], Some ssa
+            | None, Some ty ->
+                let zeroSSA = nextSSA ()
+                let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
+                caseOps @ [zeroOp; MLIROp.SCFOp (SCF.scfYield [{ SSA = zeroSSA; Type = ty }])], Some zeroSSA
+            | _ -> 
+                caseOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)], None
         | (tag, caseOps, resultSSA) :: rest ->
             // Check if discriminator matches this tag
-            let tagSSA = freshSynthSSA z
-            let cmpSSA = freshSynthSSA z
+            let tagSSA = nextSSA ()
+            let cmpSSA = nextSSA ()
 
             let checkOps = [
                 MLIROp.ArithOp (ArithOp.ConstI (tagSSA, int64 tag, MLIRTypes.i32))
@@ -295,124 +256,33 @@ let witnessMatch
 
             // Then branch: this case
             let thenOps =
-                match resultSSA with
-                | Some ssa -> caseOps @ [MLIROp.SCFOp (SCFOp.Yield [ssa])]
-                | None -> caseOps @ [MLIROp.SCFOp (SCFOp.Yield [])]
+                match resultSSA, resultType with
+                | Some ssa, Some ty -> caseOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
+                | None, Some ty ->
+                    let zeroSSA = nextSSA ()
+                    let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
+                    caseOps @ [zeroOp; MLIROp.SCFOp (SCF.scfYield [{ SSA = zeroSSA; Type = ty }])]
+                | _ -> caseOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
             let thenRegion = SCF.singleBlockRegion "then" [] thenOps
 
             // Else branch: remaining cases
-            let elseOps = buildIfChain rest
+            let elseOps, _elseResultSSA = buildIfChain rest
             let elseRegion = SCF.singleBlockRegion "else" [] elseOps
 
-            let resultSSAs =
-                match resultType with
-                | Some _ -> [freshSynthSSA z]
-                | None -> []
-            let resultTypes =
-                match resultType with
-                | Some ty -> [ty]
-                | None -> []
+            let resultSSAOpt = resultType |> Option.map (fun _ -> nextSSA ())
+            let resultSSAs = resultSSAOpt |> Option.toList
+            let resultTypes = resultType |> Option.toList
 
             let ifOp = SCFOp.If (resultSSAs, cmpSSA, thenRegion, Some elseRegion, resultTypes)
 
-            checkOps @ [MLIROp.SCFOp ifOp]
+            (checkOps @ [MLIROp.SCFOp ifOp]), resultSSAOpt
 
-    let matchOps = [extractDiscrim] @ buildIfChain cases
+    let chainOps, finalResultSSA = buildIfChain cases
+    let matchOps = [extractDiscrim] @ chainOps
 
-    match resultType with
-    | Some ty ->
-        let resultSSA = freshSynthSSA z
-        matchOps, TRValue { SSA = resultSSA; Type = ty }
-    | None ->
+    match finalResultSSA, resultType with
+    | Some ssa, Some ty ->
+        matchOps, TRValue { SSA = ssa; Type = ty }
+    | _ ->
         matchOps, TRVoid
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PATTERN BINDING EXTRACTION
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Extract a value from a DU payload and bind it
-/// For single-field DUs, extracts field 1 (field 0 is discriminator)
-let extractDUPayload
-    (z: PSGZipper)
-    (duSSA: SSA)
-    (duType: MLIRType)
-    (payloadType: MLIRType)
-    : MLIROp list * Val =
-
-    // Extract payload from field index 1 (after discriminator at index 0)
-    let payloadSSA = freshSynthSSA z
-    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (payloadSSA, duSSA, [1], duType))
-
-    [extractOp], { SSA = payloadSSA; Type = payloadType }
-
-/// Extract a field from a tuple/struct
-let extractTupleField
-    (z: PSGZipper)
-    (tupleSSA: SSA)
-    (tupleType: MLIRType)
-    (fieldIndex: int)
-    (fieldType: MLIRType)
-    : MLIROp list * Val =
-
-    let fieldSSA = freshSynthSSA z
-    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (fieldSSA, tupleSSA, [fieldIndex], tupleType))
-
-    [extractOp], { SSA = fieldSSA; Type = fieldType }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// ARGV CONVERSION (Entry Point)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Convert C-style argv (char**) to F# string array
-/// argc: count including program name
-/// argv: pointer to null-terminated C strings
-/// Returns ops to build F# string[] (fat pointer array)
-let convertArgv
-    (z: PSGZipper)
-    (argcSSA: SSA)
-    (argvSSA: SSA)
-    : MLIROp list * Val =
-
-    // Compute actual arg count (argc - 1, skip program name)
-    let oneSSA = freshSynthSSA z
-    let countSSA = freshSynthSSA z
-
-    let countOps = [
-        MLIROp.ArithOp (ArithOp.ConstI (oneSSA, 1L, MLIRTypes.i32))
-        MLIROp.ArithOp (ArithOp.SubI (countSSA, argcSSA, oneSSA, MLIRTypes.i32))
-    ]
-
-    // For now, return a placeholder - full implementation would use scf.for
-    // to iterate over argv and convert each C string to fat pointer
-    // This is a simplified version that handles the common single-arg case
-
-    // Get pointer to argv[1] (first real argument)
-    let idxSSA = freshSynthSSA z
-    let gepSSA = freshSynthSSA z
-    let argPtrSSA = freshSynthSSA z
-
-    let getArgOps = [
-        MLIROp.ArithOp (ArithOp.ConstI (idxSSA, 1L, MLIRTypes.i64))
-        MLIROp.LLVMOp (LLVMOp.GEP (gepSSA, argvSSA, [(idxSSA, MLIRTypes.i64)], MLIRTypes.ptr))
-        MLIROp.LLVMOp (LLVMOp.Load (argPtrSSA, gepSSA, MLIRTypes.ptr, NotAtomic))
-    ]
-
-    // Convert to fat pointer
-    let convOps, fatStrVal = cStringToFatPointer z argPtrSSA
-
-    // Build array struct { ptr, count }
-    let undefSSA = freshSynthSSA z
-    let withPtrSSA = freshSynthSSA z
-    let resultSSA = freshSynthSSA z
-    let count64SSA = freshSynthSSA z
-
-    let arrayType = TStruct [MLIRTypes.ptr; MLIRTypes.i64]
-
-    let buildArrayOps = [
-        MLIROp.ArithOp (ArithOp.ExtSI (count64SSA, countSSA, MLIRTypes.i32, MLIRTypes.i64))
-        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, arrayType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, fatStrVal.SSA, [0], arrayType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withPtrSSA, count64SSA, [1], arrayType))
-    ]
-
-    (countOps @ getArgOps @ convOps @ buildArrayOps, { SSA = resultSSA; Type = arrayType })

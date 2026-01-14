@@ -165,15 +165,59 @@ type GlobalRef =
     | GNamed of name: string                // @customname
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ATTRIBUTE VALUES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Attribute values for MLIR operations
+/// Used in OpEnvelope for the universal operation representation
+type AttrValue =
+    | IntAttr of value: int64 * ty: MLIRType       // Integer with type (i32, i64, etc.)
+    | FloatAttr of value: float * ty: MLIRType     // Float with type (f32, f64)
+    | StringAttr of value: string                   // String attribute
+    | BoolAttr of value: bool                       // Boolean attribute
+    | TypeAttr of ty: MLIRType                      // Type attribute
+    | ArrayAttr of values: AttrValue list           // Array of attributes
+    | DictAttr of values: Map<string, AttrValue>   // Dictionary of attributes
+    | UnitAttr                                      // Flag attribute (no value)
+
+// ═══════════════════════════════════════════════════════════════════════════
 // REGIONS AND BLOCKS
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// A block argument is a typed SSA value
 type BlockArg = Val
 
-/// Forward declaration - actual operation types defined per-dialect
-/// This is the sum type that will hold all dialect operations
-type MLIROp =
+// ═══════════════════════════════════════════════════════════════════════════
+// OPENVELOPE - THE SUPER-STRUCTURE
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// OpEnvelope: The canonical super-structure for ANY MLIR operation.
+///
+/// This is NOT a "fallback" or "generic" form - it IS the fundamental
+/// representation that all MLIR operations embody. Dialect-specific types
+/// (ArithOp, LLVMOp, etc.) are type-safe construction helpers that produce
+/// operations fitting this universal envelope.
+///
+/// Serializes to MLIR generic assembly form:
+///   %r = "dialect.op"(%a, %b) <{attr = val}> ({ regions }) : (T1, T2) -> (R)
+///
+type OpEnvelope = {
+    Dialect: string                         // "llvm", "arith", "scf", "func"
+    Operation: string                       // "intr.memcpy", "addi", "if"
+    Operands: Val list                      // Typed input operands
+    Results: Val list                       // Typed results (empty for void)
+    Attributes: Map<string, AttrValue>      // Named attributes
+    Regions: Region list                    // Nested regions (for structured ops)
+}
+
+/// MLIROp: The operation type used throughout Alex.
+/// Includes both dialect-specific constructors AND the universal OpEnvelope.
+and MLIROp =
+    // === UNIVERSAL SUPER-STRUCTURE ===
+    | Envelope of OpEnvelope
+
+    // === DIALECT-SPECIFIC CONSTRUCTORS ===
+    // These provide type-safe, ergonomic construction for common operations
     | ArithOp of ArithOp
     | LLVMOp of LLVMOp
     | SCFOp of SCFOp
@@ -417,8 +461,8 @@ and SCFOp =
     | ExecuteRegion of results: SSA list * bodyRegion: Region * resultTypes: MLIRType list
 
     // === REGION TERMINATORS ===
-    | Yield of values: SSA list
-    | Condition of cond: SSA * args: SSA list
+    | Yield of values: Val list
+    | Condition of cond: SSA * args: Val list
     | Reduce of operands: Val list * reductionRegions: Region list
     | ReduceReturn of result: SSA
     | InParallel of bodyRegion: Region
@@ -574,6 +618,10 @@ and VectorOp =
 /// Get the result SSA(s) from an operation
 let opResults (op: MLIROp) : SSA list =
     match op with
+    // === UNIVERSAL SUPER-STRUCTURE ===
+    | Envelope env -> env.Results |> List.map (fun v -> v.SSA)
+
+    // === DIALECT-SPECIFIC ===
     | ArithOp a ->
         match a with
         | AddI (r,_,_,_) | SubI (r,_,_,_) | MulI (r,_,_,_)

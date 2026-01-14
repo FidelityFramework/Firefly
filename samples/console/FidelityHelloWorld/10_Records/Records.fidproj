@@ -1,0 +1,19 @@
+[package]
+name = "Records"
+version = "0.1.0"
+description = "Demonstrates record types, field access, and copy-update syntax"
+authors = ["SpeakEZ LLC"]
+license = "MIT"
+
+[compilation]
+memory_model = "stack_only"
+target = "native"
+
+[dependencies]
+# Types and operations are FNCS intrinsics - no external library needed
+platform = { path = "/home/hhh/repos/Fidelity.Platform/Linux_x86_64" }
+
+[build]
+sources = ["Records.fs"]
+output = "records"
+output_kind = "console"

@@ -90,7 +90,7 @@ let parsePlatform (triple: string) : TargetPlatform =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Generate MLIR from a project using FNCS ProjectChecker
-let generateMLIRFromFNCS (projectResult: ProjectCheckResult) (targetTriple: string) (isFreestanding: bool) : MLIRGenerationResult =
+let generateMLIRFromFNCS (projectResult: ProjectCheckResult) (targetTriple: string) (isFreestanding: bool) (intermediatesDir: string option) : MLIRGenerationResult =
     // Check for parse errors first
     if not (Map.isEmpty projectResult.ParseErrors) then
         let errors =
@@ -130,7 +130,7 @@ let generateMLIRFromFNCS (projectResult: ProjectCheckResult) (targetTriple: stri
             let entryCount = List.length graph.EntryPoints
 
             // Generate MLIR via witness-based transfer (codata architecture)
-            let mlirContent, transferErrors = transferGraphWithDiagnostics graph isFreestanding
+            let mlirContent, transferErrors = transferGraphWithDiagnostics graph isFreestanding intermediatesDir
 
             {
                 Content = mlirContent
@@ -140,9 +140,9 @@ let generateMLIRFromFNCS (projectResult: ProjectCheckResult) (targetTriple: stri
             }
 
 /// Generate MLIR from a project - fallback to placeholder if FNCS fails
-let generateMLIR (projectResult: ProjectCheckResult) (targetTriple: string) (isFreestanding: bool) : MLIRGenerationResult =
+let generateMLIR (projectResult: ProjectCheckResult) (targetTriple: string) (isFreestanding: bool) (intermediatesDir: string option) : MLIRGenerationResult =
     try
-        generateMLIRFromFNCS projectResult targetTriple isFreestanding
+        generateMLIRFromFNCS projectResult targetTriple isFreestanding intermediatesDir
     with ex ->
         let mainContent = """module {
   // Fallback - FNCS processing failed
@@ -235,7 +235,7 @@ let compileProject (options: CompilationOptions) : int =
         let isFreestanding = (outputKind = Core.Types.Dialects.OutputKind.Freestanding)
         let mlirResult =
             Core.Timing.timePhase "MLIR" "MLIR Generation" (fun () ->
-                generateMLIR result targetTriple isFreestanding)
+                generateMLIR result targetTriple isFreestanding intermediatesDir)
 
         if mlirResult.HasErrors then
             printfn ""

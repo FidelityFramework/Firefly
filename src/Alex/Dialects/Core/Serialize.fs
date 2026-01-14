@@ -227,6 +227,47 @@ let escapeString (s: string) (sb: StringBuilder) : unit =
         | c -> sb.Append(c) |> ignore
 
 // ═══════════════════════════════════════════════════════════════════════════
+// ATTRIBUTE VALUE SERIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Emit attribute value (for OpEnvelope)
+let rec attrValue (av: AttrValue) (sb: StringBuilder) : unit =
+    match av with
+    | IntAttr (v, ty) ->
+        sb.Append(v).Append(" : ") |> ignore
+        mlirType ty sb
+    | FloatAttr (v, ty) ->
+        if System.Double.IsNaN(v) then sb.Append("0x7FC00000") |> ignore
+        elif System.Double.IsPositiveInfinity(v) then sb.Append("0x7F800000") |> ignore
+        elif System.Double.IsNegativeInfinity(v) then sb.Append("0xFF800000") |> ignore
+        else sb.Append(v.ToString("G17")) |> ignore
+        sb.Append(" : ") |> ignore
+        mlirType ty sb
+    | StringAttr s ->
+        sb.Append("\"") |> ignore
+        escapeString s sb
+        sb.Append("\"") |> ignore
+    | BoolAttr b ->
+        sb.Append(if b then "true" else "false") |> ignore
+    | TypeAttr ty ->
+        mlirType ty sb
+    | ArrayAttr values ->
+        sb.Append("[") |> ignore
+        values |> List.iteri (fun i v ->
+            if i > 0 then sb.Append(", ") |> ignore
+            attrValue v sb)
+        sb.Append("]") |> ignore
+    | DictAttr dict ->
+        sb.Append("{") |> ignore
+        dict |> Map.toList |> List.iteri (fun i (k, v) ->
+            if i > 0 then sb.Append(", ") |> ignore
+            sb.Append(k).Append(" = ") |> ignore
+            attrValue v sb)
+        sb.Append("}") |> ignore
+    | UnitAttr ->
+        () // Unit attributes have no value representation
+
+// ═══════════════════════════════════════════════════════════════════════════
 // ARITH DIALECT SERIALIZATION
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -856,12 +897,15 @@ let private binaryIndex (opName: string) (r: SSA) (l: SSA) (rh: SSA) (sb: String
 /// Emit region
 /// For single-block regions with no block args, emit ops directly (MLIR doesn't need labels)
 /// For multi-block or blocks with args, emit full block structure
+/// Empty label (BlockRef "") means implicit entry block - no label emitted
 let rec region (r: Region) (indent: int) (sb: StringBuilder) : unit =
     sb.Append(" {") |> ignore
     for i, blk in r.Blocks |> List.indexed do
         sb.AppendLine() |> ignore
-        // Only emit block label if: multiple blocks, or block has args, or not first block
-        let needsLabel = List.length r.Blocks > 1 || not (List.isEmpty blk.Args)
+        // Check if this block has an explicit label (non-empty)
+        let hasExplicitLabel = match blk.Label with BlockRef s -> s <> ""
+        // Only emit block label if: has explicit label AND (multiple blocks, or block has args, or not first block)
+        let needsLabel = hasExplicitLabel && (List.length r.Blocks > 1 || not (List.isEmpty blk.Args))
         if needsLabel then
             for _ in 1..indent do sb.Append("  ") |> ignore
             blockRef blk.Label sb
@@ -893,18 +937,18 @@ and scfOp (op: SCFOp) (indent: int) (sb: StringBuilder) : unit =
             sb.Append(" = ") |> ignore
         sb.Append("scf.if ") |> ignore
         ssa cond sb
-        region thenR (indent + 1) sb
-        match elseR with
-        | Some er ->
-            sb.Append(" else") |> ignore
-            region er (indent + 1) sb
-        | None -> ()
         if not (List.isEmpty resultTypes) then
             sb.Append(" -> (") |> ignore
             resultTypes |> List.iteri (fun i t ->
                 if i > 0 then sb.Append(", ") |> ignore
                 mlirType t sb)
             sb.Append(")") |> ignore
+        region thenR (indent + 1) sb
+        match elseR with
+        | Some er ->
+            sb.Append(" else") |> ignore
+            region er (indent + 1) sb
+        | None -> ()
 
     // === LOOPS ===
     | While (results, condR, bodyR, iterArgs) ->
@@ -918,7 +962,9 @@ and scfOp (op: SCFOp) (indent: int) (sb: StringBuilder) : unit =
             sb.Append(" (") |> ignore
             iterArgs |> List.iteri (fun i arg ->
                 if i > 0 then sb.Append(", ") |> ignore
-                ssa arg.SSA sb; sb.Append(" = ...") |> ignore)
+                // %argN = %initial_value (initial value is in iterArgs.SSA)
+                sb.Append("%arg").Append(i.ToString()).Append(" = ") |> ignore
+                ssa arg.SSA sb)
             sb.Append(")") |> ignore
         sb.Append(" : (") |> ignore
         iterArgs |> List.iteri (fun i arg ->
@@ -1048,20 +1094,32 @@ and scfOp (op: SCFOp) (indent: int) (sb: StringBuilder) : unit =
     | Yield values ->
         sb.Append("scf.yield") |> ignore
         if not (List.isEmpty values) then
+            // SSA values
             sb.Append(" ") |> ignore
             values |> List.iteri (fun i v ->
                 if i > 0 then sb.Append(", ") |> ignore
-                ssa v sb)
+                ssa v.SSA sb)
+            // Type annotations
+            sb.Append(" : ") |> ignore
+            values |> List.iteri (fun i v ->
+                if i > 0 then sb.Append(", ") |> ignore
+                mlirType v.Type sb)
 
     | Condition (cond, args) ->
         sb.Append("scf.condition(") |> ignore
         ssa cond sb
         sb.Append(")") |> ignore
         if not (List.isEmpty args) then
+            // SSA values
             sb.Append(" ") |> ignore
             args |> List.iteri (fun i a ->
                 if i > 0 then sb.Append(", ") |> ignore
-                ssa a sb)
+                ssa a.SSA sb)
+            // Type annotations
+            sb.Append(" : ") |> ignore
+            args |> List.iteri (fun i a ->
+                if i > 0 then sb.Append(", ") |> ignore
+                mlirType a.Type sb)
 
     | Reduce (operands, reductionRegions) ->
         sb.Append("scf.reduce(") |> ignore
@@ -1087,8 +1145,10 @@ and scfOp (op: SCFOp) (indent: int) (sb: StringBuilder) : unit =
 and funcOp (op: FuncOp) (indent: int) (sb: StringBuilder) : unit =
     match op with
     | FuncDef (name, args, retTy, body, vis) ->
+        // MLIR syntax: func.func private @name(...) for private functions
+        sb.Append("func.func ") |> ignore
         funcVisibility vis sb
-        sb.Append("func.func @").Append(name).Append("(") |> ignore
+        sb.Append("@").Append(name).Append("(") |> ignore
         args |> List.iteri (fun i (a, t) ->
             if i > 0 then sb.Append(", ") |> ignore
             ssa a sb; sb.Append(": ") |> ignore
@@ -1098,9 +1158,9 @@ and funcOp (op: FuncOp) (indent: int) (sb: StringBuilder) : unit =
         region body (indent + 1) sb
 
     | FuncDecl (name, argTypes, retTy, vis) ->
-        funcVisibility vis sb
+        // MLIR syntax: func.func private @name(...) for private functions
         sb.Append("func.func ") |> ignore
-        if vis = Private then sb.Append("private ") |> ignore
+        funcVisibility vis sb
         sb.Append("@").Append(name).Append("(") |> ignore
         argTypes |> List.iteri (fun i t ->
             if i > 0 then sb.Append(", ") |> ignore
@@ -1460,6 +1520,9 @@ and vectorOp (op: VectorOp) (sb: StringBuilder) : unit =
 /// Emit any MLIR operation (dispatches to dialect-specific serializer)
 and mlirOp (op: MLIROp) (sb: StringBuilder) : unit =
     match op with
+    // === UNIVERSAL SUPER-STRUCTURE ===
+    | Envelope env -> opEnvelope env 1 sb
+    // === DIALECT-SPECIFIC ===
     | ArithOp a -> arithOp a sb
     | LLVMOp l -> llvmOp l sb
     | SCFOp s -> scfOp s 1 sb
@@ -1467,6 +1530,60 @@ and mlirOp (op: MLIROp) (sb: StringBuilder) : unit =
     | FuncOp f -> funcOp f 1 sb
     | IndexOp i -> indexOp i sb
     | VectorOp v -> vectorOp v sb
+
+/// Emit OpEnvelope - the universal MLIR operation representation
+/// Format: %r = "dialect.op"(%a, %b) <{attr = val}> ({ regions }) : (T1, T2) -> (R)
+and opEnvelope (env: OpEnvelope) (indent: int) (sb: StringBuilder) : unit =
+    // Results (if any)
+    if not (List.isEmpty env.Results) then
+        env.Results |> List.iteri (fun i r ->
+            if i > 0 then sb.Append(", ") |> ignore
+            ssa r.SSA sb)
+        sb.Append(" = ") |> ignore
+
+    // Operation name in quotes: "dialect.operation"
+    sb.Append("\"").Append(env.Dialect).Append(".").Append(env.Operation).Append("\"") |> ignore
+
+    // Operands: (%a, %b, ...)
+    sb.Append("(") |> ignore
+    env.Operands |> List.iteri (fun i op ->
+        if i > 0 then sb.Append(", ") |> ignore
+        ssa op.SSA sb)
+    sb.Append(")") |> ignore
+
+    // Attributes: <{name = value, ...}> (only if non-empty)
+    if not (Map.isEmpty env.Attributes) then
+        sb.Append(" <{") |> ignore
+        env.Attributes |> Map.toList |> List.iteri (fun i (k, v) ->
+            if i > 0 then sb.Append(", ") |> ignore
+            sb.Append(k).Append(" = ") |> ignore
+            attrValue v sb)
+        sb.Append("}>") |> ignore
+
+    // Regions: ({ ... }) (only if non-empty)
+    if not (List.isEmpty env.Regions) then
+        sb.Append(" (") |> ignore
+        env.Regions |> List.iteri (fun i r ->
+            if i > 0 then sb.Append(", ") |> ignore
+            region r (indent + 1) sb)
+        sb.Append(")") |> ignore
+
+    // Type signature: : (operand types) -> (result types)
+    sb.Append(" : (") |> ignore
+    env.Operands |> List.iteri (fun i op ->
+        if i > 0 then sb.Append(", ") |> ignore
+        mlirType op.Type sb)
+    sb.Append(") -> ") |> ignore
+    if List.isEmpty env.Results then
+        sb.Append("()") |> ignore
+    elif List.length env.Results = 1 then
+        mlirType (List.head env.Results).Type sb
+    else
+        sb.Append("(") |> ignore
+        env.Results |> List.iteri (fun i r ->
+            if i > 0 then sb.Append(", ") |> ignore
+            mlirType r.Type sb)
+        sb.Append(")") |> ignore
 
 /// Emit operation with indentation
 let mlirOpIndented (indent: int) (op: MLIROp) (sb: StringBuilder) : unit =

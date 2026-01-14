@@ -77,22 +77,24 @@ let witness
             [], TRError (sprintf "Module-level mutable '%s' not found in analysis" name)
 
     // Addressed mutable: needs alloca + store
+    // Requires 2 SSAs: oneConst + allocaResult
     elif isMutable && isAddressedMutable nodeIdVal ctx then
         match valueResult with
         | TRValue valueVal ->
-            // Look up the pre-assigned SSA for this binding's alloca
-            match lookupSSA node.Id ctx.SSA with
-            | Some allocaSSA ->
+            // Look up the pre-assigned SSAs for this binding
+            match lookupSSAs node.Id ctx.SSA with
+            | Some ssas when ssas.Length >= 2 ->
+                let oneSSA = ssas.[0]
+                let allocaSSA = ssas.[1]
                 let elemType = valueVal.Type
                 // 1. Alloca for the element type
-                let oneSSA = freshSynthSSA z
                 let oneOp = MLIROp.ArithOp (ArithOp.ConstI (oneSSA, 1L, MLIRTypes.i64))
                 let allocaOp = MLIROp.LLVMOp (Alloca (allocaSSA, oneSSA, elemType, None))
                 // 2. Store initial value
                 let storeOp = MLIROp.LLVMOp (Store (valueVal.SSA, allocaSSA, elemType, NotAtomic))
                 [oneOp; allocaOp; storeOp], TRValue { SSA = allocaSSA; Type = MLIRTypes.ptr }
-            | None ->
-                [], TRError (sprintf "No SSA assigned for mutable binding '%s'" name)
+            | _ ->
+                [], TRError (sprintf "No SSAs assigned for mutable binding '%s'" name)
         | TRVoid ->
             [], TRError (sprintf "Mutable binding '%s' has void value" name)
         | TRError msg ->
@@ -121,9 +123,11 @@ let witness
 
 /// Witness a variable reference (look up its SSA from coeffect)
 /// INVARIANT: PSG guarantees definitions are traversed before uses
+/// varRefNodeId: The NodeId of the VarRef node itself (for SSA lookup)
 let witnessVarRef
     (ctx: WitnessContext)
     (z: PSGZipper)
+    (varRefNodeId: NodeId)
     (name: string)
     (defId: NodeId option)
     : MLIROp list * TransferResult =
@@ -131,9 +135,12 @@ let witnessVarRef
     // Check if this references a module-level mutable
     match getModuleLevelMutable name ctx with
     | Some mlm ->
-        // Module-level mutable: emit addressof + load
+        // Module-level mutable: emit addressof + load (needs 2 SSAs)
+        let ssas = requireNodeSSAs varRefNodeId z
+        let ptrSSA = ssas.[0]
+        let loadSSA = ssas.[1]
+        
         let globalName = sprintf "g_%s" name
-        let ptrSSA = freshSynthSSA z
         let addrOp = MLIROp.LLVMOp (AddressOf (ptrSSA, GFunc globalName))
 
         // Get element type from definition node
@@ -145,7 +152,6 @@ let witnessVarRef
                 | None -> MLIRTypes.i32
             | None -> MLIRTypes.i32
 
-        let loadSSA = freshSynthSSA z
         let loadOp = MLIROp.LLVMOp (Load (loadSSA, ptrSSA, elemType, NotAtomic))
         [addrOp; loadOp], TRValue { SSA = loadSSA; Type = elemType }
 
@@ -157,31 +163,53 @@ let witnessVarRef
 
             // Check if it's an addressed mutable (need to load from alloca)
             if isAddressedMutable nodeIdVal ctx then
-                match lookupSSA nodeId ctx.SSA with
-                | Some allocaSSA ->
-                    // The SSA is the alloca pointer - need to load
+                match lookupSSAs nodeId ctx.SSA with
+                | Some ssas when ssas.Length >= 2 ->
+                    // The binding has: [oneConst, allocaPtr]
+                    // We need the allocaPtr (index 1) to load from
+                    let allocaSSA = ssas.[1]
+                    // The VarRef node gets its own load result SSA
+                    let loadSSA = requireNodeSSA varRefNodeId z
                     match SemanticGraph.tryGetNode nodeId ctx.Graph with
                     | Some defNode ->
                         let elemType = mapNativeType defNode.Type
-                        let loadSSA = freshSynthSSA z
                         let loadOp = MLIROp.LLVMOp (Load (loadSSA, allocaSSA, elemType, NotAtomic))
                         [loadOp], TRValue { SSA = loadSSA; Type = elemType }
                     | None ->
                         [], TRError (sprintf "Definition node %d not found" nodeIdVal)
-                | None ->
+                | _ ->
                     [], TRError (sprintf "No SSA for addressed mutable '%s'" name)
             else
-                // Regular variable: look up its SSA directly
-                match lookupSSA nodeId ctx.SSA with
-                | Some ssa ->
-                    // Get type from definition node
-                    match SemanticGraph.tryGetNode nodeId ctx.Graph with
-                    | Some defNode ->
-                        let mlirType = mapNativeType defNode.Type
-                        [], TRValue { SSA = ssa; Type = mlirType }
-                    | None ->
-                        [], TRError (sprintf "Definition node %d not found" nodeIdVal)
+                // Regular variable: look up runtime value from NodeBindings first
+                // This captures the actual value SSA set during traversal (e.g., from stackalloc result)
+                match recallNodeResult nodeIdVal z with
+                | Some (ssa, ty) ->
+                    [], TRValue { SSA = ssa; Type = ty }
                 | None ->
-                    [], TRError (sprintf "No SSA assigned for variable '%s'" name)
+                    // Fallback: try SSAAssignment for parameters and special cases
+                    match lookupSSA nodeId ctx.SSA with
+                    | Some ssa ->
+                        // Get type from definition node
+                        match SemanticGraph.tryGetNode nodeId ctx.Graph with
+                        | Some defNode ->
+                            let mlirType = mapNativeType defNode.Type
+                            [], TRValue { SSA = ssa; Type = mlirType }
+                        | None ->
+                            [], TRError (sprintf "Definition node %d not found" nodeIdVal)
+                    | None ->
+                        // Function references don't get SSAs - called by name via Application witness
+                        match SemanticGraph.tryGetNode nodeId ctx.Graph with
+                        | Some defNode ->
+                            match defNode.Kind with
+                            | SemanticKind.Lambda _ -> [], TRVoid
+                            | SemanticKind.Binding _ ->
+                                match defNode.Children with
+                                | [childId] ->
+                                    match SemanticGraph.tryGetNode childId ctx.Graph with
+                                    | Some cn when (match cn.Kind with SemanticKind.Lambda _ -> true | _ -> false) -> [], TRVoid
+                                    | _ -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
+                                | _ -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
+                            | _ -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
+                        | None -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
         | None ->
             [], TRError (sprintf "Variable '%s' has no definition" name)

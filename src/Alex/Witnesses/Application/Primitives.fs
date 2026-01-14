@@ -4,6 +4,7 @@
 /// Returns structured MLIROp, uses coeffects from WitnessContext.
 module Alex.Witnesses.Application.Primitives
 
+open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.Patterns.SemanticPatterns
@@ -34,15 +35,16 @@ let private getFloatBitWidth (ty: MLIRType) : FloatBitWidth option =
 
 /// Witness a binary arithmetic operation using structured MLIROp
 let witnessBinaryArith
+    (appNodeId: NodeId)
     (z: PSGZipper)
     (opName: string)
     (lhs: Val)
     (rhs: Val)
     : (MLIROp list * TransferResult) option =
-    
+
     if not (typesMatch lhs.Type rhs.Type) then None
     else
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA appNodeId z
         let ty = lhs.Type
         
         match getIntBitWidth ty, getFloatBitWidth ty with
@@ -79,15 +81,16 @@ let witnessBinaryArith
 
 /// Witness a comparison operation using structured MLIROp
 let witnessComparison
+    (appNodeId: NodeId)
     (z: PSGZipper)
     (opName: string)
     (lhs: Val)
     (rhs: Val)
     : (MLIROp list * TransferResult) option =
-    
+
     if not (typesMatch lhs.Type rhs.Type) then None
     else
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA appNodeId z
         let ty = lhs.Type
         let resultType = MLIRTypes.bool  // Comparisons always return i1
         
@@ -130,18 +133,19 @@ let witnessComparison
 
 /// Witness a bitwise binary operation using structured MLIROp
 let witnessBitwise
+    (appNodeId: NodeId)
     (z: PSGZipper)
     (opName: string)
     (lhs: Val)
     (rhs: Val)
     : (MLIROp list * TransferResult) option =
-    
+
     if not (typesMatch lhs.Type rhs.Type) then None
     else
         match getIntBitWidth lhs.Type with
         | None -> None
         | Some _ ->
-            let resultSSA = freshSynthSSA z
+            let resultSSA = requireNodeSSA appNodeId z
             let ty = lhs.Type
             
             let arithOp =
@@ -162,15 +166,16 @@ let witnessBitwise
 
 /// Witness a boolean binary operation (AND/OR on i1)
 let witnessBooleanBinary
+    (appNodeId: NodeId)
     (z: PSGZipper)
     (opName: string)
     (lhs: Val)
     (rhs: Val)
     : (MLIROp list * TransferResult) option =
-    
+
     match lhs.Type, rhs.Type with
     | TInt I1, TInt I1 ->
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA appNodeId z
         let ty = MLIRTypes.bool
         
         let arithOp =
@@ -189,27 +194,30 @@ let witnessBooleanBinary
 
 /// Witness a unary operation
 let witnessUnary
+    (appNodeId: NodeId)
     (z: PSGZipper)
     (opName: string)
     (arg: Val)
     : (MLIROp list * TransferResult) option =
-    
+
+    // Get pre-allocated SSAs - need 2 for most unary ops (const + result)
+    let ssas = requireNodeSSAs appNodeId z
+    let resultSSA = requireNodeSSA appNodeId z
+
     match opName with
     | "not" when arg.Type = MLIRTypes.bool ->
-        // Boolean NOT: XOR with true (1)
-        let trueSSA = freshSynthSSA z
-        let resultSSA = freshSynthSSA z
+        // Boolean NOT: XOR with true (1) - needs 2 SSAs
+        let trueSSA = ssas.[0]
         let ty = MLIRTypes.bool
         let trueOp = MLIROp.ArithOp (ArithOp.ConstI (trueSSA, 1L, ty))
         let xorOp = MLIROp.ArithOp (ArithOp.XOrI (resultSSA, arg.SSA, trueSSA, ty))
         Some ([trueOp; xorOp], TRValue { SSA = resultSSA; Type = ty })
-    
+
     | "op_UnaryNegation" ->
         match getIntBitWidth arg.Type with
         | Some _ ->
-            // Integer negation: 0 - x
-            let zeroSSA = freshSynthSSA z
-            let resultSSA = freshSynthSSA z
+            // Integer negation: 0 - x - needs 2 SSAs
+            let zeroSSA = ssas.[0]
             let ty = arg.Type
             let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
             let subOp = MLIROp.ArithOp (ArithOp.SubI (resultSSA, zeroSSA, arg.SSA, ty))
@@ -217,25 +225,23 @@ let witnessUnary
         | None ->
             match getFloatBitWidth arg.Type with
             | Some _ ->
-                // Float negation: negf
-                let resultSSA = freshSynthSSA z
+                // Float negation: negf - needs 1 SSA
                 let ty = arg.Type
                 let negOp = MLIROp.ArithOp (ArithOp.NegF (resultSSA, arg.SSA, ty))
                 Some ([negOp], TRValue { SSA = resultSSA; Type = ty })
             | None -> None
-    
+
     | "op_OnesComplement" ->
         match getIntBitWidth arg.Type with
         | Some _ ->
-            // Bitwise NOT: XOR with -1 (all ones)
-            let onesSSA = freshSynthSSA z
-            let resultSSA = freshSynthSSA z
+            // Bitwise NOT: XOR with -1 (all ones) - needs 2 SSAs
+            let onesSSA = ssas.[0]
             let ty = arg.Type
             let onesOp = MLIROp.ArithOp (ArithOp.ConstI (onesSSA, -1L, ty))
             let xorOp = MLIROp.ArithOp (ArithOp.XOrI (resultSSA, arg.SSA, onesSSA, ty))
             Some ([onesOp; xorOp], TRValue { SSA = resultSSA; Type = ty })
         | None -> None
-    
+
     | _ -> None
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -244,14 +250,15 @@ let witnessUnary
 
 /// Try to witness any binary primitive operation
 let tryWitnessBinaryOp
+    (appNodeId: NodeId)
     (z: PSGZipper)
     (opName: string)
     (lhs: Val)
     (rhs: Val)
     : (MLIROp list * TransferResult) option =
-    
+
     // Try each category in order
-    witnessBinaryArith z opName lhs rhs
-    |> Option.orElseWith (fun () -> witnessComparison z opName lhs rhs)
-    |> Option.orElseWith (fun () -> witnessBitwise z opName lhs rhs)
-    |> Option.orElseWith (fun () -> witnessBooleanBinary z opName lhs rhs)
+    witnessBinaryArith appNodeId z opName lhs rhs
+    |> Option.orElseWith (fun () -> witnessComparison appNodeId z opName lhs rhs)
+    |> Option.orElseWith (fun () -> witnessBitwise appNodeId z opName lhs rhs)
+    |> Option.orElseWith (fun () -> witnessBooleanBinary appNodeId z opName lhs rhs)

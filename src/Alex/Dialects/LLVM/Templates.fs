@@ -105,6 +105,10 @@ let insertValueAt (result: SSA) (aggregate: SSA) (value: SSA) (index: int) (aggr
 let undef (result: SSA) (ty: MLIRType) : LLVMOp =
     LLVMOp.Undef (result, ty)
 
+/// Create null pointer: llvm.mlir.null
+let nullPtr (result: SSA) : LLVMOp =
+    LLVMOp.NullPtr result
+
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE CONVERSIONS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -198,6 +202,44 @@ let syscall (result: SSA) (sysNum: int) (args: (SSA * MLIRType) list) : LLVMOp =
     // Create syscall number as constant first (handled by caller)
     // The args list should already have the syscall number prepended
     LLVMOp.InlineAsm (Some result, "syscall", constraints, args, Some MLIRTypes.i64, true, false)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// INTRINSICS VIA OPENVELOPE
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Memory copy intrinsic using OpEnvelope (generic assembly form required)
+/// "llvm.intr.memcpy"(%dst, %src, %len) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+let intrMemcpy (dst: Val) (src: Val) (len: Val) (isVolatile: bool) : MLIROp =
+    MLIROp.Envelope {
+        Dialect = "llvm"
+        Operation = "intr.memcpy"
+        Operands = [dst; src; len]
+        Results = []
+        Attributes = Map.ofList [("isVolatile", BoolAttr isVolatile)]
+        Regions = []
+    }
+
+/// Memory move intrinsic using OpEnvelope (generic assembly form required)
+let intrMemmove (dst: Val) (src: Val) (len: Val) (isVolatile: bool) : MLIROp =
+    MLIROp.Envelope {
+        Dialect = "llvm"
+        Operation = "intr.memmove"
+        Operands = [dst; src; len]
+        Results = []
+        Attributes = Map.ofList [("isVolatile", BoolAttr isVolatile)]
+        Regions = []
+    }
+
+/// Memory set intrinsic using OpEnvelope (generic assembly form required)
+let intrMemset (dst: Val) (value: Val) (len: Val) (isVolatile: bool) : MLIROp =
+    MLIROp.Envelope {
+        Dialect = "llvm"
+        Operation = "intr.memset"
+        Operands = [dst; value; len]
+        Results = []
+        Attributes = Map.ofList [("isVolatile", BoolAttr isVolatile)]
+        Regions = []
+    }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WRAP TO MLIROp

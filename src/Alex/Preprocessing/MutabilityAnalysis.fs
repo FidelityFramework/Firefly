@@ -70,6 +70,16 @@ let findAddressedMutableBindings (graph: SemanticGraph) : Set<int> =
                     | None -> ()
                 | _ -> ()
             | None -> ()
+        | SemanticKind.Set (targetId, _) ->
+            // Any variable that is mutated via Set must be stack-allocated (unless we do mem2reg/iter_args)
+            // So we treat it as an "addressed mutable"
+            match SemanticGraph.tryGetNode targetId graph with
+            | Some targetNode ->
+                match targetNode.Kind with
+                | SemanticKind.VarRef (_, Some defId) ->
+                    mutableBindingIds.Add(NodeId.value defId) |> ignore
+                | _ -> ()
+            | None -> ()
         | _ -> ()
     
     mutableBindingIds |> Set.ofSeq

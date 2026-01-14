@@ -157,6 +157,8 @@ type NativePtrOpKind =
     | PtrOfNativeInt    // nativeint -> ptr (inttoptr)
     | PtrToVoidPtr      // 'a nativeptr -> voidptr (no-op cast)
     | PtrOfVoidPtr      // voidptr -> 'a nativeptr (no-op cast)
+    | PtrRead           // direct load: *ptr
+    | PtrWrite          // direct store: *ptr <- value
     | PtrGet            // indexed load: ptr[idx]
     | PtrSet            // indexed store: ptr[idx] <- value
     | PtrStackAlloc     // stack allocation
@@ -173,6 +175,8 @@ let (|NativePtrOp|_|) (info: IntrinsicInfo) =
         | "ofNativeInt" -> Some PtrOfNativeInt
         | "toVoidPtr" -> Some PtrToVoidPtr
         | "ofVoidPtr" -> Some PtrOfVoidPtr
+        | "read" -> Some PtrRead
+        | "write" -> Some PtrWrite
         | "get" -> Some PtrGet
         | "set" -> Some PtrSet
         | "stackalloc" -> Some PtrStackAlloc
@@ -193,11 +197,10 @@ let (|PrimitiveOp|_|) (name: string) =
 let (|SysOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.Sys then Some info.Operation else None
 
-/// Check if intrinsic is a Console operation (using IntrinsicInfo)
-let (|ConsoleOp|_|) (info: IntrinsicInfo) =
-    if info.Module = IntrinsicModule.Console then Some info.Operation else None
+// NOTE: ConsoleOp removed - Console is NOT an intrinsic, it's Layer 3 user code
+// in Fidelity.Platform that uses Sys.* intrinsics. See fsnative-spec/spec/platform-bindings.md
 
-/// Platform intrinsic - unified pattern for Sys, Console, and other platform operations
+/// Platform intrinsic - unified pattern for Sys and other platform operations
 /// Returns (module, operation) tuple for dispatch to platform bindings
 let (|PlatformIntrinsic|_|) (info: IntrinsicInfo) =
     match info.Category with
@@ -254,7 +257,8 @@ let (|BitsOp|_|) (info: IntrinsicInfo) =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Check if intrinsic is a FnPtr operation (using IntrinsicInfo)
-/// FnPtr intrinsics: ofFunction, invoke, isNull, null
+/// FnPtr intrinsics: fromSymbol, invoke, ofFunction
+/// See fsnative-spec/spec/ffi-boundary.md for semantics
 let (|FnPtrOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.FnPtr then Some info.Operation else None
 

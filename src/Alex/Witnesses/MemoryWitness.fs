@@ -3,6 +3,7 @@
 /// ARCHITECTURAL PRINCIPLE (January 2026):
 /// Witnesses OBSERVE and RETURN structured MLIROp lists.
 /// They do NOT emit strings. ZERO SPRINTF for MLIR generation.
+/// All SSAs come from pre-computed SSAAssignment coeffect.
 ///
 /// Handles:
 /// - Array/collection indexing (IndexGet, IndexSet)
@@ -35,7 +36,9 @@ let private isNativeStrType (ty: MLIRType) : bool =
 
 /// Witness array/collection index get
 /// Generates GEP + Load sequence
+/// Uses 2 pre-assigned SSAs: gep[0], load[1]
 let witnessIndexGet
+    (nodeId: NodeId)
     (z: PSGZipper)
     (collSSA: SSA)
     (collType: MLIRType)
@@ -43,19 +46,23 @@ let witnessIndexGet
     (elemType: MLIRType)
     : MLIROp list * TransferResult =
 
+    let ssas = requireNodeSSAs nodeId z
+
     // GEP to compute element address
-    let ptrSSA = freshSynthSSA z
+    let ptrSSA = ssas.[0]
     let gepOp = MLIROp.LLVMOp (LLVMOp.GEP (ptrSSA, collSSA, [(indexSSA, MLIRTypes.i64)], elemType))
 
     // Load the element
-    let loadSSA = freshSynthSSA z
+    let loadSSA = ssas.[1]
     let loadOp = MLIROp.LLVMOp (LLVMOp.Load (loadSSA, ptrSSA, elemType, NotAtomic))
 
     [gepOp; loadOp], TRValue { SSA = loadSSA; Type = elemType }
 
 /// Witness array/collection index set
 /// Generates GEP + Store sequence
+/// Uses 1 pre-assigned SSA: gep[0]
 let witnessIndexSet
+    (nodeId: NodeId)
     (z: PSGZipper)
     (collSSA: SSA)
     (indexSSA: SSA)
@@ -63,8 +70,10 @@ let witnessIndexSet
     (elemType: MLIRType)
     : MLIROp list * TransferResult =
 
+    let ssas = requireNodeSSAs nodeId z
+
     // GEP to compute element address
-    let ptrSSA = freshSynthSSA z
+    let ptrSSA = ssas.[0]
     let gepOp = MLIROp.LLVMOp (LLVMOp.GEP (ptrSSA, collSSA, [(indexSSA, MLIRTypes.i64)], elemType))
 
     // Store the value
@@ -79,7 +88,9 @@ let witnessIndexSet
 /// Witness address-of operator (&expr)
 /// For mutable bindings, the SSA already represents the alloca address
 /// For immutable values, we need to allocate and store
+/// Uses up to 2 pre-assigned SSAs: const[0], alloca[1]
 let witnessAddressOf
+    (nodeId: NodeId)
     (z: PSGZipper)
     (exprSSA: SSA)
     (exprType: MLIRType)
@@ -91,9 +102,10 @@ let witnessAddressOf
         // The SSA is the pointer to the mutable slot
         [], TRValue { SSA = exprSSA; Type = TPtr }
     else
+        let ssas = requireNodeSSAs nodeId z
         // Need to allocate stack space and store the value
-        let oneSSA = freshSynthSSA z
-        let allocaSSA = freshSynthSSA z
+        let oneSSA = ssas.[0]
+        let allocaSSA = ssas.[1]
 
         let ops = [
             MLIROp.ArithOp (ArithOp.ConstI (oneSSA, 1L, MLIRTypes.i64))
@@ -109,7 +121,9 @@ let witnessAddressOf
 
 /// Witness field get (struct.field or record.field)
 /// Uses extractvalue for value types
+/// Uses 1 pre-assigned SSA: extract[0]
 let witnessFieldGet
+    (nodeId: NodeId)
     (z: PSGZipper)
     (structSSA: SSA)
     (structType: MLIRType)
@@ -117,14 +131,16 @@ let witnessFieldGet
     (fieldType: MLIRType)
     : MLIROp list * TransferResult =
 
-    let fieldSSA = freshSynthSSA z
+    let fieldSSA = requireNodeSSA nodeId z
     let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (fieldSSA, structSSA, [fieldIndex], structType))
 
     [extractOp], TRValue { SSA = fieldSSA; Type = fieldType }
 
 /// Witness field set (struct.field <- value)
 /// Uses insertvalue for value types (returns new struct)
+/// Uses 1 pre-assigned SSA: insert[0]
 let witnessFieldSet
+    (nodeId: NodeId)
     (z: PSGZipper)
     (structSSA: SSA)
     (structType: MLIRType)
@@ -132,7 +148,7 @@ let witnessFieldSet
     (valueSSA: SSA)
     : MLIROp list * TransferResult =
 
-    let newStructSSA = freshSynthSSA z
+    let newStructSSA = requireNodeSSA nodeId z
     let insertOp = MLIROp.LLVMOp (LLVMOp.InsertValue (newStructSSA, structSSA, valueSSA, [fieldIndex], structType))
 
     [insertOp], TRValue { SSA = newStructSSA; Type = structType }
@@ -143,16 +159,19 @@ let witnessFieldSet
 
 /// Witness tuple construction
 /// Builds a struct by inserting each element
+/// Uses N+1 pre-assigned SSAs: undef[0], insert[1..N]
 let witnessTupleExpr
+    (nodeId: NodeId)
     (z: PSGZipper)
     (elements: Val list)
     : MLIROp list * TransferResult =
 
+    let ssas = requireNodeSSAs nodeId z
     let elemTypes = elements |> List.map (fun v -> v.Type)
     let tupleType = TStruct elemTypes
 
     // Start with undef
-    let undefSSA = freshSynthSSA z
+    let undefSSA = ssas.[0]
     let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, tupleType))
 
     // Insert each element
@@ -160,7 +179,7 @@ let witnessTupleExpr
         elements
         |> List.indexed
         |> List.fold (fun (ops, prevSSA) (idx, elem) ->
-            let newSSA = freshSynthSSA z
+            let newSSA = ssas.[idx + 1]  // SSAs 1..N are for inserts
             let insertOp = MLIROp.LLVMOp (LLVMOp.InsertValue (newSSA, prevSSA, elem.SSA, [idx], tupleType))
             (ops @ [insertOp], newSSA)
         ) ([], undefSSA)
@@ -173,14 +192,18 @@ let witnessTupleExpr
 
 /// Witness record construction
 /// Records are represented as structs with fields in declaration order
+/// Uses N+1 pre-assigned SSAs: undef[0], insert[1..N]
 let witnessRecordExpr
+    (nodeId: NodeId)
     (z: PSGZipper)
     (fields: (string * Val) list)
     (recordType: MLIRType)
     : MLIROp list * TransferResult =
 
+    let ssas = requireNodeSSAs nodeId z
+
     // Start with undef
-    let undefSSA = freshSynthSSA z
+    let undefSSA = ssas.[0]
     let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, recordType))
 
     // Insert each field
@@ -188,7 +211,7 @@ let witnessRecordExpr
         fields
         |> List.indexed
         |> List.fold (fun (ops, prevSSA) (idx, (_, fieldVal)) ->
-            let newSSA = freshSynthSSA z
+            let newSSA = ssas.[idx + 1]  // SSAs 1..N are for inserts
             let insertOp = MLIROp.LLVMOp (LLVMOp.InsertValue (newSSA, prevSSA, fieldVal.SSA, [idx], recordType))
             (ops @ [insertOp], newSSA)
         ) ([], undefSSA)
@@ -201,15 +224,24 @@ let witnessRecordExpr
 
 /// Witness array expression [| e1; e2; ... |]
 /// Allocates array and stores each element
+/// Uses 5 + 2*N pre-assigned SSAs: count[0], alloca[1], (idx,gep)*N, undef, withPtr, result
 let witnessArrayExpr
+    (nodeId: NodeId)
     (z: PSGZipper)
     (elements: Val list)
     (elemType: MLIRType)
     : MLIROp list * TransferResult =
 
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
     let count = List.length elements
-    let countSSA = freshSynthSSA z
-    let allocaSSA = freshSynthSSA z
+    let countSSA = nextSSA ()
+    let allocaSSA = nextSSA ()
 
     // Allocate array on stack
     let allocOps = [
@@ -222,8 +254,8 @@ let witnessArrayExpr
         elements
         |> List.indexed
         |> List.collect (fun (idx, elem) ->
-            let idxSSA = freshSynthSSA z
-            let ptrSSA = freshSynthSSA z
+            let idxSSA = nextSSA ()
+            let ptrSSA = nextSSA ()
             [
                 MLIROp.ArithOp (ArithOp.ConstI (idxSSA, int64 idx, MLIRTypes.i64))
                 MLIROp.LLVMOp (LLVMOp.GEP (ptrSSA, allocaSSA, [(idxSSA, MLIRTypes.i64)], elemType))
@@ -232,9 +264,9 @@ let witnessArrayExpr
         )
 
     // Build fat array struct { ptr, count }
-    let undefSSA = freshSynthSSA z
-    let withPtrSSA = freshSynthSSA z
-    let resultSSA = freshSynthSSA z
+    let undefSSA = nextSSA ()
+    let withPtrSSA = nextSSA ()
+    let resultSSA = nextSSA ()
 
     let arrayType = TStruct [TPtr; MLIRTypes.i64]
 
@@ -253,14 +285,16 @@ let witnessArrayExpr
 /// Witness list expression [e1; e2; ...]
 /// Lists are represented as linked cons cells or array-backed
 /// For now, using array representation for simplicity
+/// Uses same SSAs as witnessArrayExpr (delegates)
 let witnessListExpr
+    (nodeId: NodeId)
     (z: PSGZipper)
     (elements: Val list)
     (elemType: MLIRType)
     : MLIROp list * TransferResult =
 
     // Use same representation as arrays for now
-    witnessArrayExpr z elements elemType
+    witnessArrayExpr nodeId z elements elemType
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UNION CASE CONSTRUCTION
@@ -268,29 +302,38 @@ let witnessListExpr
 
 /// Witness discriminated union case construction
 /// DU layout: { i32 discriminator, payload }
+/// Uses 3-4 pre-assigned SSAs: tag[0], undef[1], withTag[2], result[3] (if payload)
 let witnessUnionCase
+    (nodeId: NodeId)
     (z: PSGZipper)
     (tag: int)
     (payload: Val option)
     (unionType: MLIRType)
     : MLIROp list * TransferResult =
 
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
     // Create discriminator constant
-    let tagSSA = freshSynthSSA z
+    let tagSSA = nextSSA ()
     let tagOp = MLIROp.ArithOp (ArithOp.ConstI (tagSSA, int64 tag, MLIRTypes.i32))
 
     // Start with undef
-    let undefSSA = freshSynthSSA z
+    let undefSSA = nextSSA ()
     let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, unionType))
 
     // Insert tag at field 0
-    let withTagSSA = freshSynthSSA z
+    let withTagSSA = nextSSA ()
     let insertTagOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withTagSSA, undefSSA, tagSSA, [0], unionType))
 
     match payload with
     | Some payloadVal ->
         // Insert payload at field 1
-        let resultSSA = freshSynthSSA z
+        let resultSSA = nextSSA ()
         let insertPayloadOp = MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withTagSSA, payloadVal.SSA, [1], unionType))
         [tagOp; undefOp; insertTagOp; insertPayloadOp], TRValue { SSA = resultSSA; Type = unionType }
     | None ->
@@ -304,7 +347,9 @@ let witnessUnionCase
 /// Witness SRTP trait call
 /// The trait has been resolved by FNCS to a specific member
 /// We generate the appropriate member access/call
+/// Uses 1 pre-assigned SSA: result[0]
 let witnessTraitCall
+    (nodeId: NodeId)
     (z: PSGZipper)
     (receiverSSA: SSA)
     (receiverType: MLIRType)
@@ -316,107 +361,27 @@ let witnessTraitCall
     // For method-like traits, this would need to generate a call
     // The specific implementation depends on the resolved member
 
+    let resultSSA = requireNodeSSA nodeId z
+
     match memberName with
     | "Length" when isNativeStrType receiverType ->
         // String.Length - extract length field (index 1) from fat pointer
-        let lenSSA = freshSynthSSA z
-        let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (lenSSA, receiverSSA, [1], receiverType))
-        [extractOp], TRValue { SSA = lenSSA; Type = MLIRTypes.i64 }
+        let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [1], receiverType))
+        [extractOp], TRValue { SSA = resultSSA; Type = MLIRTypes.i64 }
 
     | "Length" ->
         // Array/collection Length - extract count field (index 1) from fat pointer
-        let lenSSA = freshSynthSSA z
-        let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (lenSSA, receiverSSA, [1], receiverType))
-        [extractOp], TRValue { SSA = lenSSA; Type = MLIRTypes.i64 }
+        let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [1], receiverType))
+        [extractOp], TRValue { SSA = resultSSA; Type = MLIRTypes.i64 }
 
     | "Pointer" when isNativeStrType receiverType ->
         // String.Pointer - extract pointer field (index 0) from fat pointer
-        let ptrSSA = freshSynthSSA z
-        let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (ptrSSA, receiverSSA, [0], receiverType))
-        [extractOp], TRValue { SSA = ptrSSA; Type = TPtr }
+        let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [0], receiverType))
+        [extractOp], TRValue { SSA = resultSSA; Type = TPtr }
 
     | _ ->
         // Generic field access - assume field index 0 for unknown traits
         // This is a fallback and should be refined based on type information
-        let resultSSA = freshSynthSSA z
         let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [0], receiverType))
         [extractOp], TRValue { SSA = resultSSA; Type = memberType }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// POINTER OPERATIONS
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Witness NativePtr.read (pointer dereference)
-let witnessNativePtrRead
-    (z: PSGZipper)
-    (ptrSSA: SSA)
-    (elemType: MLIRType)
-    : MLIROp list * TransferResult =
-
-    let loadSSA = freshSynthSSA z
-    let loadOp = MLIROp.LLVMOp (LLVMOp.Load (loadSSA, ptrSSA, elemType, NotAtomic))
-
-    [loadOp], TRValue { SSA = loadSSA; Type = elemType }
-
-/// Witness NativePtr.write (pointer assignment)
-let witnessNativePtrWrite
-    (z: PSGZipper)
-    (ptrSSA: SSA)
-    (valueSSA: SSA)
-    (elemType: MLIRType)
-    : MLIROp list * TransferResult =
-
-    let storeOp = MLIROp.LLVMOp (LLVMOp.Store (valueSSA, ptrSSA, elemType, NotAtomic))
-
-    [storeOp], TRVoid
-
-/// Witness NativePtr.add (pointer arithmetic)
-let witnessNativePtrAdd
-    (z: PSGZipper)
-    (ptrSSA: SSA)
-    (offsetSSA: SSA)
-    (elemType: MLIRType)
-    : MLIROp list * TransferResult =
-
-    let newPtrSSA = freshSynthSSA z
-    let gepOp = MLIROp.LLVMOp (LLVMOp.GEP (newPtrSSA, ptrSSA, [(offsetSSA, MLIRTypes.i64)], elemType))
-
-    [gepOp], TRValue { SSA = newPtrSSA; Type = TPtr }
-
-/// Witness NativePtr.toNativeInt (pointer to integer)
-let witnessNativePtrToInt
-    (z: PSGZipper)
-    (ptrSSA: SSA)
-    : MLIROp list * TransferResult =
-
-    let intSSA = freshSynthSSA z
-    let castOp = MLIROp.LLVMOp (LLVMOp.PtrToInt (intSSA, ptrSSA, MLIRTypes.i64))
-
-    [castOp], TRValue { SSA = intSSA; Type = MLIRTypes.i64 }
-
-/// Witness NativePtr.ofNativeInt (integer to pointer)
-let witnessNativePtrOfInt
-    (z: PSGZipper)
-    (intSSA: SSA)
-    : MLIROp list * TransferResult =
-
-    let ptrSSA = freshSynthSSA z
-    let castOp = MLIROp.LLVMOp (LLVMOp.IntToPtr (ptrSSA, intSSA, TPtr))
-
-    [castOp], TRValue { SSA = ptrSSA; Type = TPtr }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// STACK ALLOCATION
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Witness NativePtr.stackalloc<'T> n
-let witnessStackAlloc
-    (z: PSGZipper)
-    (countSSA: SSA)
-    (elemType: MLIRType)
-    : MLIROp list * TransferResult =
-
-    let ptrSSA = freshSynthSSA z
-    let allocaOp = MLIROp.LLVMOp (LLVMOp.Alloca (ptrSSA, countSSA, elemType, None))
-
-    [allocaOp], TRValue { SSA = ptrSSA; Type = TPtr }

@@ -43,8 +43,11 @@ let private bindArgvParameters (paramName: string) (z: PSGZipper) : PSGZipper =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Create a default return value when body doesn't produce one
-let private createDefaultReturn (z: PSGZipper) (declaredRetType: MLIRType) : MLIROp list * SSA =
-    let resultSSA = freshSynthSSA z
+/// NOTE: This should rarely happen - well-formed functions produce results
+/// For unit functions, body produces i32 0. For divergent functions, use unreachable.
+let private createDefaultReturn (nodeId: NodeId) (z: PSGZipper) (declaredRetType: MLIRType) : MLIROp list * SSA =
+    // Use Lambda node's pre-assigned SSA for return value synthesis
+    let resultSSA = requireNodeSSA nodeId z
     match declaredRetType with
     | TPtr ->
         // Null pointer for pointer returns
@@ -64,7 +67,9 @@ let private createUnreachable () : MLIROp =
     MLIROp.LLVMOp LLVMOp.Unreachable
 
 /// Handle return type mismatch between declared and computed types
+/// Uses Lambda node's pre-assigned SSAs for type reconciliation ops
 let private reconcileReturnType
+    (nodeId: NodeId)
     (z: PSGZipper)
     (bodySSA: SSA)
     (bodyType: MLIRType)
@@ -73,12 +78,13 @@ let private reconcileReturnType
     match declaredRetType, bodyType with
     | TInt I32, TPtr ->
         // Unit function with pointer body - return 0
-        let resultSSA = freshSynthSSA z
+        // Use Lambda node's SSA for the synthesized constant
+        let resultSSA = requireNodeSSA nodeId z
         let op = MLIROp.ArithOp (ArithOp.ConstI (resultSSA, 0L, TInt I32))
         [op], resultSSA
     | TPtr, TInt _ ->
         // Pointer return but integer body - return null
-        let resultSSA = freshSynthSSA z
+        let resultSSA = requireNodeSSA nodeId z
         let op = MLIROp.LLVMOp (LLVMOp.NullPtr resultSSA)
         [op], resultSSA
     | _, _ ->
@@ -116,7 +122,7 @@ let private witnessInFunctionScope
     // Determine declared return type
     let paramCount =
         match node.Kind with
-        | SemanticKind.Lambda (params', _) -> List.length params'
+        | SemanticKind.Lambda (params', _bodyId) -> List.length params'
         | _ -> 0
     let finalRetType = extractFinalReturnType node.Type paramCount
     let declaredRetType = mapType finalRetType
@@ -131,11 +137,11 @@ let private witnessInFunctionScope
         match bodyResult with
         | Some (ssa, bodyType) ->
             // Normal return - may need type reconciliation
-            let reconcileOps, finalSSA = reconcileReturnType z ssa bodyType declaredRetType
+            let reconcileOps, finalSSA = reconcileReturnType node.Id z ssa bodyType declaredRetType
             reconcileOps, createReturnOp (Some finalSSA) (Some declaredRetType)
         | None ->
-            // No body result - create default
-            let defaultOps, defaultSSA = createDefaultReturn z declaredRetType
+            // No body result - create default (uses Lambda node's pre-assigned SSA)
+            let defaultOps, defaultSSA = createDefaultReturn node.Id z declaredRetType
             defaultOps, createReturnOp (Some defaultSSA) (Some declaredRetType)
 
     // Build complete body ops: accumulated + return + terminator
@@ -157,61 +163,14 @@ let private witnessInFunctionScope
     // Create function definition
     let funcDef = FuncOp.FuncDef (lambdaName, funcParams, declaredRetType, bodyRegion, visibility)
 
-    // Generate addressof to get function pointer value
-    // This is needed if the Lambda is used as a first-class function
-    let addrSSA = freshSynthSSA z
-    let addrOp = MLIROp.LLVMOp (LLVMOp.AddressOf (addrSSA, GlobalRef.GFunc lambdaName))
+    // ARCHITECTURAL NOTE: For bound lambdas (let name = lambda...),
+    // the call site uses `func.call @name` directly - no addressof needed.
+    // First-class function values would need `func.constant` (not llvm.mlir.addressof).
+    // For now, return just the function definition with no local ops.
 
-    // Return: (funcDef for TopLevel, localOps for CurrentOps, result)
+    // Return: (funcDef for TopLevel, no localOps, void result)
     // Photographer Principle: OBSERVE and RETURN, do not EMIT
-    Some (MLIROp.FuncOp funcDef), [addrOp], TRValue { SSA = addrSSA; Type = TPtr }
-
-/// Witness a Lambda node when NOT in function scope (fallback)
-/// Creates minimal function directly
-let private witnessFallback
-    (params': (string * NativeType) list)
-    (bodyId: NodeId)
-    (node: SemanticNode)
-    (z: PSGZipper)
-    : MLIROp option * MLIROp list * TransferResult =
-
-    let lambdaName = yieldLambdaName z
-
-    // Map parameters using structured SSA (Arg i)
-    let mlirParams = params' |> List.mapi (fun i (_name, nativeTy) ->
-        (Arg i, mapType nativeTy))
-
-    // Determine return type
-    let returnType =
-        match node.Type with
-        | NativeType.TFun (_, retTy) -> mapType retTy
-        | _ -> mapType node.Type
-
-    // Look up body SSA using structured API
-    let bodySSA =
-        match recallNodeResult (NodeId.value bodyId) z with
-        | Some (ssa, _) -> ssa
-        | None -> freshSynthSSA z
-
-    // Create return instruction
-    let retOp = createReturnOp (Some bodySSA) (Some returnType)
-
-    // Build function
-    let entryBlock: Block = {
-        Label = BlockRef "entry"
-        Args = []
-        Ops = [retOp]
-    }
-    let bodyRegion: Region = { Blocks = [entryBlock] }
-    let funcDef = FuncOp.FuncDef (lambdaName, mlirParams, returnType, bodyRegion, FuncVisibility.Private)
-
-    // Generate addressof for function pointer
-    let addrSSA = freshSynthSSA z
-    let addrOp = MLIROp.LLVMOp (LLVMOp.AddressOf (addrSSA, GlobalRef.GFunc lambdaName))
-
-    // Return: (funcDef for TopLevel, localOps for CurrentOps, result)
-    // Photographer Principle: OBSERVE and RETURN, do not EMIT
-    Some (MLIROp.FuncOp funcDef), [addrOp], TRValue { SSA = addrSSA; Type = TPtr }
+    Some (MLIROp.FuncOp funcDef), [], TRVoid
 
 /// Witness a Lambda node - main entry point
 /// Returns: (funcDef option * localOps * TransferResult)
@@ -222,7 +181,7 @@ let private witnessFallback
 /// PHOTOGRAPHER PRINCIPLE: This witness OBSERVES and RETURNS.
 /// It does NOT emit directly. The caller (FNCSTransfer) handles accumulation.
 let witness
-    (params': (string * NativeType) list)
+    (params': (string * NativeType * NodeId) list)
     (bodyId: NodeId)
     (node: SemanticNode)
     (bodyOps: MLIROp list)
@@ -235,12 +194,23 @@ let witness
         | Some ps -> ps
         | None -> []
 
-    // Check if we're in function scope - use State.Focus, not z.Focus
-    match z.State.Focus with
-    | InFunction lambdaName ->
-        witnessInFunctionScope lambdaName node bodyId bodyOps funcParams z
-    | AtNode ->
-        witnessFallback params' bodyId node z
+    // Get lambda name directly from SSAAssignment coeffects (NOT from mutable Focus state)
+    // Focus can be corrupted by nested lambda processing; coeffects are immutable truth
+    let lambdaName =
+        match Alex.Preprocessing.SSAAssignment.lookupLambdaName node.Id z.State.SSAAssignment with
+        | Some name -> name
+        | None -> sprintf "lambda_%d" (NodeId.value node.Id)
+    
+    witnessInFunctionScope lambdaName node bodyId bodyOps funcParams z
+
+/// Check if a type is unit
+let private isUnitType (ty: NativeType) : bool =
+    match ty with
+    | NativeType.TApp(tc, _) ->
+        match tc.NTUKind with
+        | Some NTUKind.NTUunit -> true
+        | _ -> tc.Name = "unit"
+    | _ -> false
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Pre-order Lambda Parameter Binding
@@ -253,19 +223,24 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
     match node.Kind with
     | SemanticKind.Lambda (params', _bodyId) ->
         let nodeIdVal = NodeId.value node.Id
-        let lambdaName = yieldLambdaNameForNode nodeIdVal z
+        // ARCHITECTURAL FIX: Use SSAAssignment coeffect for lambda names
+        // This respects binding names when Lambda is bound via `let name = ...`
+        let lambdaName =
+            match Alex.Preprocessing.SSAAssignment.lookupLambdaName node.Id z.State.SSAAssignment with
+            | Some name -> name
+            | None -> yieldLambdaNameForNode nodeIdVal z  // fallback for anonymous
 
         // For main, use C-style signature
         let isMain = (lambdaName = "main")
 
-        let mlirParams, paramBindings, needsArgvConversion =
+        let mlirParams, paramBindings, needsArgvConversion, isUnitParam =
             if isMain then
                 // C-style main: (int argc, char** argv) -> int
                 // Parameters use structured SSA: Arg 0, Arg 1
                 let cParams = [(Arg 0, TInt I32); (Arg 1, TPtr)]
                 let bindings, needsConv =
                     match params' with
-                    | [(paramName, paramType)] when paramName <> "_" ->
+                    | [(paramName, paramType, _nodeId)] when paramName <> "_" ->
                         match paramType with
                         | NativeType.TApp({ Name = "array" }, [NativeType.TApp({ Name = "string" }, [])]) ->
                             // string[] parameter - needs argv conversion
@@ -273,14 +248,14 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                         | _ ->
                             // Other parameter type - bind to argv pointer
                             [(paramName, Some (Arg 1, TPtr))], false
-                    | [(_, _)] -> [], false  // Discarded parameter
+                    | [(_, _, _)] -> [], false  // Discarded parameter
                     | [] -> [], false  // Unit parameter
                     | _ ->
                         // Multiple parameters - bind each to sequential args
-                        params' |> List.mapi (fun i (name, _ty) ->
+                        params' |> List.mapi (fun i (name, _ty, _nodeId) ->
                             if name = "_" then (name, None)
                             else (name, Some (Arg (i + 1), TPtr))), false
-                cParams, bindings, needsConv
+                cParams, bindings, needsConv, false
             else
                 // Regular lambda - use node.Type for parameter types
                 let rec extractParamTypes ty count =
@@ -291,29 +266,47 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                             paramTy :: extractParamTypes resultTy (count - 1)
                         | _ -> []
 
-                let nodeParamTypes = extractParamTypes node.Type (List.length params')
+                // Check for unit parameter case: params is empty but type implies one argument
+                // FNCS represents unit-taking lambda as empty params list, but type is Unit -> T
+                let isUnitParam = 
+                    List.isEmpty params' && 
+                    (match node.Type with 
+                     | NativeType.TFun(NativeType.TApp(tc, _), _) -> tc.Name = "unit" 
+                     | _ -> false)
 
-                // Build structured params: (Arg i, MLIRType)
-                let mlirPs = params' |> List.mapi (fun i (_name, nativeTy) ->
-                    let actualType =
-                        if i < List.length nodeParamTypes then nodeParamTypes.[i]
-                        else nativeTy
-                    (Arg i, mapType actualType))
+                let mlirPs, bindings =
+                    if isUnitParam then
+                        // Synthesize a dummy unit parameter (Arg 0: i32)
+                        // This ensures MLIR signature matches (i32) -> ...
+                        let unitType = NativeType.TApp({ Name = "unit"; Module = []; ParamKinds = []; Layout = TypeLayout.Inline(0, 1); NTUKind = Some NTUKind.NTUunit; FieldCount = 0 }, [])
+                        [(Arg 0, mapType unitType)], []
+                    else
+                        let nodeParamTypes = extractParamTypes node.Type (List.length params')
 
-                // Build bindings: (paramName, Some (Arg i, MLIRType))
-                let bindings = params' |> List.mapi (fun i (paramName, paramType) ->
-                    let actualType =
-                        if i < List.length nodeParamTypes then nodeParamTypes.[i]
-                        else paramType
-                    (paramName, Some (Arg i, mapType actualType)))
+                        // Build structured params: (Arg i, MLIRType)
+                        let ps = params' |> List.mapi (fun i (_name, nativeTy, _nodeId) ->
+                            let actualType =
+                                if i < List.length nodeParamTypes then nodeParamTypes.[i]
+                                else nativeTy
+                            (Arg i, mapType actualType))
 
-                mlirPs, bindings, false
+                        // Build bindings: (paramName, Some (Arg i, MLIRType))
+                        let bs = params' |> List.mapi (fun i (paramName, paramType, _nodeId) ->
+                            let actualType =
+                                if i < List.length nodeParamTypes then nodeParamTypes.[i]
+                                else paramType
+                            (paramName, Some (Arg i, mapType actualType)))
+                        ps, bs
+
+                mlirPs, bindings, false, isUnitParam
 
         // Return type
         let returnType =
             if isMain then TInt I32
             else
-                let finalRetTy = extractFinalReturnType node.Type (List.length params')
+                // If unit param, count is 1 (the unit arg) for return type peeling
+                let paramCount = if List.isEmpty params' && (match node.Type with NativeType.TFun(d, _) -> isUnitType d | _ -> false) then 1 else List.length params'
+                let finalRetTy = extractFinalReturnType node.Type paramCount
                 mapType finalRetTy
 
         // Determine visibility

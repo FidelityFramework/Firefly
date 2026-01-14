@@ -60,27 +60,17 @@
       <!-- Alex Preprocessing - coeffects before PSGZipper -->
       <Compile Include="Alex/Preprocessing/SSAAssignment.fs" />
       <Compile Include="Alex/Preprocessing/MutabilityAnalysis.fs" />
+      <Compile Include="Alex/Preprocessing/StringCollection.fs" />
       <!-- Platform Config (depends on PlatformTypes) -->
       <Compile Include="Alex/Preprocessing/PlatformConfig.fs" />
       <Compile Include="Alex/Preprocessing/PlatformBindingResolution.fs" />
+      <Compile Include="Alex/Preprocessing/PreprocessingSerializer.fs" />
 
-      <!-- Alex Traversal - New architecture: Coeffects + Zipper + Fold -->
-      <Compile Include="Alex/Traversal/Coeffects.fs" />
-      <Compile Include="Alex/Traversal/Zipper.fs" />
-      <Compile Include="Alex/Traversal/WitnessFold.fs" />
-
-      <!-- Alex Traversal - PSGZipper (legacy, being replaced) -->
+      <!-- Alex Traversal - PSGZipper: Huet zipper with emission state -->
       <Compile Include="Alex/Traversal/PSGZipper.fs" />
 
       <!-- Alex Bindings - Base types (need PSGZipper for Binding type) -->
       <Compile Include="Alex/Bindings/BindingTypes.fs" />
-      <Compile Include="Alex/Bindings/Console/ConsoleBindings.fs" />
-      <Compile Include="Alex/Bindings/Time/TimeBindings.fs" />
-      <Compile Include="Alex/Bindings/Process/ProcessBindings.fs" />
-      <Compile Include="Alex/Bindings/WebView/WebViewBindings.fs" />
-      <Compile Include="Alex/Bindings/DynamicLib/DynamicLibBindings.fs" />
-      <Compile Include="Alex/Bindings/GTK/GTKBindings.fs" />
-      <Compile Include="Alex/Bindings/WebKit/WebKitBindings.fs" />
       <Compile Include="Alex/Bindings/PlatformHelpers.fs" />
 
       <!-- Alex CodeGeneration - TypeMapping uses FNCS types -->
@@ -95,8 +85,6 @@
       <!-- Alex Patterns - Active patterns for semantic classification -->
       <Compile Include="Alex/Patterns/SemanticPatterns.fs" />
 
-      <!-- Alex Traversal - Main witness (uses SemanticPatterns as lens) -->
-      <Compile Include="Alex/Traversal/Witness.fs" />
 
       <!-- Alex XParsec - Composable PSG pattern matchers -->
       <Compile Include="Alex/XParsec/PSGCombinators.fs" />

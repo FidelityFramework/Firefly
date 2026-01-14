@@ -4,7 +4,6 @@
 /// When Firefly becomes self-hosted, this is the ONLY module that needs replacement.
 ///
 /// Current implementation: shells out to mlir-opt, mlir-translate, llc, clang
-/// Future implementation: native MLIR/LLVM bindings via Alloy
 module Core.Toolchain
 
 open System

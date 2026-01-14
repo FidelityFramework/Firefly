@@ -22,6 +22,7 @@ open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Preprocessing.SSAAssignment
 open Alex.Preprocessing.MutabilityAnalysis
+open Alex.Preprocessing.StringCollection
 open Alex.Preprocessing.PlatformConfig
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -71,13 +72,6 @@ type EmissionState = {
     Platform: PlatformResolutionResult
 
     // ─────────────────────────────────────────────────────────────────────────
-    // SYNTHESIZED SSA ALLOCATOR
-    // For constants, temporaries, and other values not tied to PSG nodes
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Counter for synthesized SSA values (starts after max PSG SSA)
-    mutable NextSynthSSA: int
-
     /// Counter for lambda names
     mutable NextLambdaId: int
 
@@ -91,8 +85,9 @@ type EmissionState = {
     /// Top-level operations (function definitions, globals)
     mutable TopLevel: MLIROp list
 
-    /// Global string constants (hash -> content, length)
-    mutable Strings: Map<uint32, string * int>
+    /// Pre-collected string constants (coeffect from preprocessing)
+    /// IMMUTABLE - strings are collected ONCE before zipper traversal
+    Strings: StringTable
 
     /// Function visibility (name -> isInternal)
     mutable FuncVisibility: Map<string, bool>
@@ -112,6 +107,9 @@ type EmissionState = {
 
     /// Current focus mode
     mutable Focus: ZipperFocus
+
+    /// Stack of saved CurrentOps for nested function scopes
+    mutable OpsStack: (MLIROp list) list
 
     // ─────────────────────────────────────────────────────────────────────────
     // VARIABLE BINDINGS (structured types, not strings)
@@ -152,37 +150,42 @@ type PSGZipper = {
 
 module EmissionState =
     /// Create emission state from preprocessing results
+    /// ARCHITECTURAL PRINCIPLE: All coeffects (SSA, mutability, strings, platform)
+    /// are computed in preprocessing passes and passed here as immutable data.
     let create
         (ssaAssign: SSAAssignment)
         (mutInfo: MutabilityAnalysisResult)
+        (stringTable: StringTable)
         (platform: PlatformResolutionResult)
         (entryPointLambdaIds: Set<int>)
         : EmissionState =
-        // Start synthesized SSA counter after the highest pre-assigned SSA
-        let maxPreassigned =
-            ssaAssign.NodeSSA
+        // Start lambda ID counter after the highest lambda_N used in SSAAssignment
+        // This prevents collision when fallback naming is used during traversal
+        let maxLambdaId =
+            ssaAssign.LambdaNames
             |> Map.toSeq
-            |> Seq.collect (fun (_, alloc) ->
-                alloc.SSAs |> List.map (fun ssa ->
-                    match ssa with
-                    | V n -> n
-                    | Arg n -> n))
-            |> Seq.fold max 0
+            |> Seq.choose (fun (_, name) ->
+                if name.StartsWith("lambda_") then
+                    match System.Int32.TryParse(name.Substring(7)) with
+                    | true, n -> Some n
+                    | false, _ -> None
+                else None)
+            |> Seq.fold max -1  // Start from -1 so first lambda will be 0 if none exist
 
         {
             SSAAssignment = ssaAssign
             MutabilityInfo = mutInfo
             Platform = platform
-            NextSynthSSA = maxPreassigned + 1
-            NextLambdaId = 0
+            NextLambdaId = maxLambdaId + 1
             CurrentOps = []
             TopLevel = []
-            Strings = Map.empty
+            Strings = stringTable  // Pre-collected, immutable coeffect
             FuncVisibility = Map.empty
             RegionStack = []
             CurrentFuncParams = None
             CurrentFuncRetType = None
             Focus = AtNode
+            OpsStack = []
             VarBindings = Map.empty
             NodeBindings = Map.empty
             EntryPointLambdaIds = entryPointLambdaIds
@@ -197,16 +200,6 @@ module EmissionState =
         match lookupNodeSSA nodeId state with
         | Some ssa -> ssa
         | None -> failwithf "No SSA assignment for node %A" nodeId
-
-    /// Allocate a fresh SSA for a synthesized value (constant, temporary)
-    let freshSynthSSA (state: EmissionState) : SSA =
-        let n = state.NextSynthSSA
-        state.NextSynthSSA <- n + 1
-        V n
-
-    /// Allocate multiple fresh SSAs
-    let freshSynthSSAs (count: int) (state: EmissionState) : SSA list =
-        List.init count (fun _ -> freshSynthSSA state)
 
     /// Check if a binding needs alloca by NodeId
     /// (AddressedMutableBindings contains NodeId values)
@@ -259,16 +252,18 @@ let create
     | None -> None
 
 /// Create a zipper at the first entry point
+/// All coeffects (SSA, mutability, strings, platform) are pre-computed and passed in.
 let fromEntryPoint
     (graph: SemanticGraph)
     (ssaAssign: SSAAssignment)
     (mutInfo: MutabilityAnalysisResult)
+    (stringTable: StringTable)
     (platform: PlatformResolutionResult)
     (entryPointLambdaIds: Set<int>)
     : PSGZipper option =
     match graph.EntryPoints with
     | entryId :: _ ->
-        let state = EmissionState.create ssaAssign mutInfo platform entryPointLambdaIds
+        let state = EmissionState.create ssaAssign mutInfo stringTable platform entryPointLambdaIds
         create graph entryId state
     | [] -> None
 
@@ -459,23 +454,24 @@ let buildRegion (builder: unit -> unit) (z: PSGZipper) : Region =
     { Blocks = [{ Label = BlockRef "entry"; Args = []; Ops = ops }] }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// STRING LITERALS
+// STRING LITERALS (Pure Derivation + Coeffect Access)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Register a string literal, returns its global name
-let registerString (content: string) (z: PSGZipper) : string =
-    let hash = uint32 (content.GetHashCode())
-    if not (Map.containsKey hash z.State.Strings) then
-        // Store UTF-8 byte length for MLIR array sizing
-        let byteLen = System.Text.Encoding.UTF8.GetByteCount(content)
-        z.State.Strings <- Map.add hash (content, byteLen) z.State.Strings
-    sprintf "@str_%u" hash  // Decimal format to match GString serialization
+/// Derive the global reference for a string literal
+/// PURE FUNCTION: content → @str_<hash>
+/// No lookup - the mapping is deterministic
+let deriveStringGlobalRef (content: string) : string =
+    deriveGlobalRef content
 
-/// Get all registered string literals
+/// Derive the byte length for a string literal
+/// PURE FUNCTION: content → UTF-8 byte count
+let deriveStringByteLength (content: string) : int =
+    deriveByteLength content
+
+/// Access the StringTable coeffect - returns all strings for global emission
+/// The coeffect answers: "what strings exist in this program?"
 let getStrings (z: PSGZipper) : (uint32 * string * int) list =
-    z.State.Strings
-    |> Map.toList
-    |> List.map (fun (hash, (content, len)) -> (hash, content, len))
+    toList z.State.Strings
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FUNCTION VISIBILITY
@@ -514,11 +510,6 @@ let requireNodeSSAs (nodeId: NodeId) (z: PSGZipper) : SSA list =
     match lookupNodeSSAs nodeId z with
     | Some ssas -> ssas
     | None -> failwithf "No SSA allocation for node %A" nodeId
-
-/// Allocate a fresh SSA for a synthesized value
-/// NOTE: This should only be used for values NOT tied to PSG nodes
-let freshSynthSSA (z: PSGZipper) : SSA =
-    EmissionState.freshSynthSSA z.State
 
 /// Check if a binding needs alloca (by NodeId value and variable name)
 let needsAlloca (nodeIdValue: int) (varName: string) (z: PSGZipper) : bool =
@@ -600,6 +591,9 @@ let enterFunction
     (visibility: FuncVisibility)
     (z: PSGZipper)
     : PSGZipper =
+    // Save current ops to stack before entering new function scope
+    z.State.OpsStack <- z.State.CurrentOps :: z.State.OpsStack
+    z.State.CurrentOps <- []  // Fresh ops for this function
     z.State.Focus <- InFunction name
     z.State.CurrentFuncParams <- Some params'
     z.State.CurrentFuncRetType <- Some retType
@@ -612,6 +606,13 @@ let clearCurrentOps (z: PSGZipper) : unit =
 
 /// Exit function scope
 let exitFunction (z: PSGZipper) : PSGZipper =
+    // Restore saved ops from stack when exiting function scope
+    match z.State.OpsStack with
+    | saved :: rest ->
+        z.State.CurrentOps <- saved
+        z.State.OpsStack <- rest
+    | [] ->
+        z.State.CurrentOps <- []
     z.State.Focus <- AtNode
     z.State.CurrentFuncParams <- None
     z.State.CurrentFuncRetType <- None

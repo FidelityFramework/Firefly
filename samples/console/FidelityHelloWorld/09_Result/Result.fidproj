@@ -1,0 +1,19 @@
+[package]
+name = "Result"
+version = "0.1.0"
+description = "Demonstrates Result type and error handling patterns"
+authors = ["SpeakEZ LLC"]
+license = "MIT"
+
+[compilation]
+memory_model = "stack_only"
+target = "native"
+
+[dependencies]
+# Types and operations are FNCS intrinsics - no external library needed
+platform = { path = "/home/hhh/repos/Fidelity.Platform/Linux_x86_64" }
+
+[build]
+sources = ["Result.fs"]
+output = "result"
+output_kind = "console"

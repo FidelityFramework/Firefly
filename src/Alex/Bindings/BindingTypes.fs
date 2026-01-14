@@ -51,8 +51,9 @@ type ExternalDeclaration = {
 // Binding Signature - RETURNS ops, does not emit
 // ===================================================================
 
-/// A binding takes zipper (for freshSynthSSA) and primitive, RETURNS ops
-type Binding = PSGZipper -> PlatformPrimitive -> BindingResult
+/// A binding takes nodeId (for pre-assigned SSAs), zipper, and primitive, RETURNS ops
+/// SSAs are pre-allocated during SSAAssignment pass (coeffects pattern)
+type Binding = FSharp.Native.Compiler.Checking.Native.SemanticGraph.NodeId -> PSGZipper -> PlatformPrimitive -> BindingResult
 
 // ===================================================================
 // Platform Dispatch Registry
@@ -77,15 +78,16 @@ module PlatformDispatch =
         currentPlatform |> Option.defaultValue (TargetPlatform.detectHost())
 
     /// Dispatch: Returns BindingResult (ops + result or NotSupported)
-    let dispatch (zipper: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+    /// nodeId is used to get pre-assigned SSAs from coeffects
+    let dispatch (nodeId: FSharp.Native.Compiler.Checking.Native.SemanticGraph.NodeId) (zipper: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
         let platform = getTargetPlatform()
         let key = (platform.OS, platform.Arch, prim.EntryPoint)
         match Map.tryFind key bindings with
-        | Some binding -> binding zipper prim
+        | Some binding -> binding nodeId zipper prim
         | None ->
             let fallbackKey = (platform.OS, X86_64, prim.EntryPoint)
             match Map.tryFind fallbackKey bindings with
-            | Some binding -> binding zipper prim
+            | Some binding -> binding nodeId zipper prim
             | None -> NotSupported $"No binding for {prim.EntryPoint} on {platform.OS}/{platform.Arch}"
 
     let hasBinding (entryPoint: string) : bool =

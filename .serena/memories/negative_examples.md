@@ -800,6 +800,111 @@ let addI = <@ fun p -> sprintf "%s = arith.addi ..." @>  // Quotation wrapping s
 **The Confusion**:
 Someone thought "quotations are cool, let's use them everywhere." But quotations are for **defining semantics at the source level**, not for **generating MLIR at the target level**. Using quotations to wrap sprintf is cargo-culting without understanding.
 
+## Mistake 20: Imperative MLIR Construction for FNCS Intrinsics - "Kick the Can Down the Road" (January 2026)
+
+This is a CRITICAL architectural violation discovered during sample 04 (HelloWorldFullCurried) failure.
+
+**The Symptom**:
+```
+error: %arg0 is already in use
+```
+Sample 04 fails because the while loop iteration variable (`Arg 0`) collides with the function's first parameter (also `%arg0`).
+
+**The Location**: `/home/hhh/repos/Firefly/src/Alex/Bindings/Console/ConsoleBindings.fs` (lines 312-429)
+
+```fsharp
+// WRONG - 488 lines of IMPERATIVE MLIR CONSTRUCTION
+let generateReadLine (zipper: MLIRZipper) (targetType: MLIRType) =
+    // ... manual buffer allocation ...
+    // ... manual while loop construction ...
+    let posArg = { SSA = Arg 0; Type = MLIRTypes.i64 }  // THE BUG: hardcodes Arg 0
+    // ... manual syscall invocation ...
+    // ... imperative op list building ...
+```
+
+**What FNCS Provides** (in `CheckExpressions.fs`):
+```fsharp
+| "readln" ->
+    // unit -> string
+    // Reads a line from stdin (fd 0)
+    NativeType.TFun(env.Globals.UnitType, env.Globals.StringType)  // Just a TYPE SIGNATURE!
+```
+
+**WHY THIS IS FUNDAMENTALLY WRONG**:
+
+1. **FNCS punts implementation to Alex**: FNCS provides only a type signature (`unit -> string`), expecting Alex to "figure out" how to implement readline. This is architectural negligence.
+
+2. **Alex does IMPERATIVE construction**: ConsoleBindings.fs builds MLIR imperatively - allocating buffers, constructing while loops manually, hardcoding SSA names. This violates the Photographer Principle (witnesses OBSERVE, don't BUILD).
+
+3. **Hardcoded SSA names cause collision**: Line 348 uses `Arg 0` for the while loop iteration variable. When the function ALSO has parameters, `%arg0` is already in use. MLIR verification fails.
+
+4. **Layer violation**: Alex shouldn't know "how readline works." Alex witnesses PSG structure and generates MLIR from what it observes. Alex cannot INVENT structure that isn't in the PSG.
+
+**THE ROOT CAUSE**: Previous Claude session "aped" platform binding patterns without understanding the functional principles. It saw syscall patterns in Bindings and thought "readln needs a while loop, I'll build one here." This is WRONG.
+
+**THE CORRECT ARCHITECTURE**:
+
+FNCS intrinsics must be expressed as FUNCTIONAL CONSTRUCTS, not type signatures:
+
+```fsharp
+// CORRECT - In FNCS (not Alex!), Console.readln should decompose to:
+let readln () =
+    let rec readLoop acc =
+        let byte = Sys.readByte 0  // stdin, single byte read (FNCS intrinsic)
+        if byte = '\n'B then
+            String.ofBytes (List.rev acc)  // Convert accumulated bytes to string
+        else
+            readLoop (byte :: acc)  // Accumulate and continue
+    readLoop []
+
+// Or using unfold (codata pattern):
+let readln () =
+    Seq.unfold (fun () ->
+        let b = Sys.readByte 0
+        if b = '\n'B then None
+        else Some(b, ())
+    ) ()
+    |> String.ofSeq
+```
+
+**WHY FUNCTIONAL DECOMPOSITION WORKS**:
+
+1. **PSG carries structure**: When FNCS provides a recursive definition, the PSG contains the full semantic structure.
+
+2. **Alex witnesses, not builds**: Alex observes the recursive structure in PSG and generates corresponding MLIR. No imperative construction.
+
+3. **SSA flows naturally**: The functional structure maps to SSA. Each recursive call becomes a proper scf.while with SSA values that don't collide with function parameters.
+
+4. **Layer separation preserved**: FNCS defines WHAT readln means (semantics). Alex observes HOW to generate MLIR for that structure.
+
+**THE FIX PATH**:
+
+1. **In FNCS** (`CheckExpressions.fs`): Define Console.readln with REAL functional semantics, not just a type signature
+
+2. **In Alex** (`ConsoleBindings.fs`): DELETE the imperative while-loop construction. Alex should witness the PSG structure that FNCS creates.
+
+3. **Add FNCS primitive**: `Sys.readByte : int -> byte` (read single byte from fd) - This IS appropriate for Alex to witness as a syscall binding.
+
+**THE PRINCIPLE**: 
+
+> **FNCS intrinsics must decompose to functional constructs. Alex witnesses structure; Alex does not construct structure.**
+
+The "kick the can down the road" pattern - where FNCS provides only type signatures and expects downstream to "figure it out" - is an architectural FAILURE. It causes:
+- Layer violations (Alex building structure)
+- SSA conflicts (hardcoded names)
+- Untestable code paths (can't validate FNCS semantics)
+- Coupling (Alex knows "how readline works")
+
+**WHEN YOU SEE THIS PATTERN**:
+- Imperative MLIR construction in Alex
+- Hardcoded `Arg N` or manual SSA allocation
+- While loops built in Bindings
+- FNCS intrinsics with only type signatures
+
+STOP. The fix is UPSTREAM in FNCS, not downstream patching in Alex.
+
+---
+
 # The Acid Test
 
 Before committing any change, ask:

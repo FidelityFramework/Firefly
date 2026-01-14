@@ -1,0 +1,5 @@
+INFO  2026-01-13 09:15:16,249 [MainThread] serena.cli:start_mcp_server:229 - Initializing Serena MCP server
+INFO  2026-01-13 09:15:16,249 [MainThread] serena.cli:start_mcp_server:230 - Storing logs in /home/hhh/.serena/logs/2026-01-13/mcp_20260113-091516.txt
+INFO  2026-01-13 09:15:16,249 [MainThread] serena.cli:start_mcp_server:237 - Auto-detected project root: /home/hhh/repos/Firefly
+INFO  2026-01-13 09:15:16,250 [MainThread] serena.config.serena_config:from_config_file:486 - Loading Serena configuration from /home/hhh/.serena/serena_config.yml
+INFO  2026-01-13 09:15:16,283 [MainThread] serena.agent:__init__:195 - Changing the root logger level to 40

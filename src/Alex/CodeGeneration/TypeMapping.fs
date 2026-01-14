@@ -7,6 +7,7 @@
 module Alex.CodeGeneration.TypeMapping
 
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.Checking.Native.UnionFind
 open Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -100,10 +101,11 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
         TStruct (elements |> List.map mapNativeType)
 
     | NativeType.TVar tvar ->
-        match tvar.Parent with
-        | TypeParamState.Bound boundTy -> mapNativeType boundTy
-        | TypeParamState.Unbound ->
-            failwithf "Unbound type variable '%s' - type inference incomplete" tvar.Name
+        // Use Union-Find to resolve type variable chains
+        match find tvar with
+        | (_, Some boundTy) -> mapNativeType boundTy
+        | (root, None) ->
+            failwithf "Unbound type variable '%s' - type inference incomplete" root.Name
 
     | NativeType.TByref _ -> TPtr
     | NativeType.TNativePtr _ -> TPtr
@@ -136,6 +138,16 @@ let nativeTypeToMLIR (ty: NativeType) : string =
 /// Map a type constructor application to MLIR string
 let mapTypeApp (conRef: TypeConRef) (args: NativeType list) : string =
     nativeTypeToMLIR (NativeType.TApp(conRef, args))
+
+/// Extract element type from a pointer type (nativeptr<T> → T)
+/// Returns the MLIR type of the element, or None if not a pointer type
+let extractPtrElementType (ty: NativeType) : MLIRType option =
+    match ty with
+    | NativeType.TApp(tycon, [elemTy]) when tycon.Name = "nativeptr" || tycon.Name = "Ptr" ->
+        Some (mapNativeType elemTy)
+    | NativeType.TNativePtr elemTy ->
+        Some (mapNativeType elemTy)
+    | _ -> None
 
 /// Extract return type from a function type as string
 let getReturnType (ty: NativeType) : string =
