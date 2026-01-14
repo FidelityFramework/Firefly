@@ -116,37 +116,94 @@ let private transferGraphCore
                 // COEFFECT LOOKUP: Get scrutinee SSA (already in NodeBindings from prior traversal)
                 match recallNodeResult (NodeId.value scrutineeId) z with
                 | Some (scrutineeSSA, scrutineeType) ->
-                    // PHOTOGRAPHER PRINCIPLE: Iterate over PatternBinding NodeIds directly
-                    // Each PatternBinding node has its SSA pre-assigned by SSAAssignment nanopass
+                    // PHOTOGRAPHER PRINCIPLE: Walk pattern structure to find each binding's extraction path
+                    // For tuple patterns: need to extract tuple element FIRST, then DU payload
                     let mutable z' = z
 
-                    for pbNodeId in case.PatternBindings do
-                        // COEFFECT LOOKUP: Get PatternBinding node and its pre-assigned SSA
-                        match SemanticGraph.tryGetNode pbNodeId graph with
-                        | Some pbNode ->
-                            match pbNode.Kind with
-                            | SemanticKind.PatternBinding name ->
-                                // COEFFECT LOOKUP: SSAs were assigned in preprocessing
-                                // Type is in pbNode.Type (following ML convention)
-                                match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
-                                | Some ssas when not (List.isEmpty ssas) ->
-                                    let patternType = mapType pbNode.Type
+                    // Collect extraction info: (pbNodeId, tupleIndex option, duSSA, duType)
+                    // For simple DU patterns: tupleIndex = None, use scrutinee directly
+                    // For tuple patterns: tupleIndex = Some i, extract tuple[i] first
+                    let rec collectBindingsWithPath (pattern: Pattern) (tupleIdx: int option) : (NodeId * int option) list =
+                        match pattern with
+                        | Pattern.Tuple elements ->
+                            // Tuple pattern: each element has a tuple index
+                            elements
+                            |> List.mapi (fun i elem -> collectBindingsWithPath elem (Some i))
+                            |> List.concat
+                        | Pattern.Union (_, _, Some (Pattern.Tuple [Pattern.Var _]), _) ->
+                            // DU with single payload - find corresponding PatternBinding
+                            case.PatternBindings
+                            |> List.tryItem (match tupleIdx with Some i -> i | None -> 0)
+                            |> Option.map (fun pbId -> [(pbId, tupleIdx)])
+                            |> Option.defaultValue []
+                        | Pattern.Union (_, _, Some (Pattern.Tuple payloads), _) ->
+                            // DU with multiple payloads - currently just take first var
+                            payloads
+                            |> List.tryPick (function Pattern.Var _ -> Some tupleIdx | _ -> None)
+                            |> Option.map (fun ti ->
+                                case.PatternBindings
+                                |> List.tryItem (match ti with Some i -> i | None -> 0)
+                                |> Option.map (fun pbId -> [(pbId, ti)])
+                                |> Option.defaultValue [])
+                            |> Option.defaultValue []
+                        | Pattern.Union (_, _, Some payload, _) ->
+                            collectBindingsWithPath payload tupleIdx
+                        | Pattern.Union (_, _, None, _) -> []
+                        | Pattern.Var _ -> []
+                        | Pattern.Wildcard -> []
+                        | _ -> []
 
-                                    // WITNESS: Call witnessPayloadExtract to get ops
-                                    // This follows Four Pillars - witness handles MLIR emission
-                                    let ops, resultVal = MemWitness.witnessPayloadExtract ssas scrutineeSSA scrutineeType patternType
+                    // For simple patterns, just iterate pattern bindings with no tuple index
+                    let isTuplePattern = match case.Pattern with Pattern.Tuple _ -> true | _ -> false
 
-                                    // Emit all ops from witness
-                                    for op in ops do
-                                        emit op z'
-
-                                    // ZIPPER: Bind pattern variable name to result from witness
-                                    z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
-                                | _ ->
-                                    // No SSA assigned - shouldn't happen if preprocessing is correct
-                                    ()
-                            | _ -> ()
-                        | None -> ()
+                    if isTuplePattern then
+                        // Tuple pattern: extract each element, then extract payload
+                        match case.Pattern with
+                        | Pattern.Tuple elements ->
+                            for i, elem in List.indexed elements do
+                                // For each tuple element, find bindings and extract
+                                let rec processElement (pattern: Pattern) (elemIdx: int) =
+                                    match pattern with
+                                    | Pattern.Union (_, _, Some (Pattern.Tuple [Pattern.Var (name, _)]), _) ->
+                                        // Find the PatternBinding node for this name
+                                        case.PatternBindings
+                                        |> List.tryFind (fun pbId ->
+                                            match SemanticGraph.tryGetNode pbId graph with
+                                            | Some n -> match n.Kind with SemanticKind.PatternBinding n' -> n' = name | _ -> false
+                                            | None -> false)
+                                        |> Option.iter (fun pbNodeId ->
+                                            match SemanticGraph.tryGetNode pbNodeId graph with
+                                            | Some pbNode ->
+                                                match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
+                                                | Some ssas when not (List.isEmpty ssas) ->
+                                                    let patternType = mapType pbNode.Type
+                                                    // WITNESS: Extract tuple element, then DU payload
+                                                    let ops, resultVal = MemWitness.witnessTuplePatternExtract ssas scrutineeSSA scrutineeType elemIdx patternType
+                                                    for op in ops do emit op z'
+                                                    z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
+                                                | _ -> ()
+                                            | None -> ())
+                                    | Pattern.Union (_, _, Some payload, _) ->
+                                        processElement payload elemIdx
+                                    | _ -> ()
+                                processElement elem i
+                        | _ -> ()
+                    else
+                        // Simple DU pattern: extract payload directly
+                        for pbNodeId in case.PatternBindings do
+                            match SemanticGraph.tryGetNode pbNodeId graph with
+                            | Some pbNode ->
+                                match pbNode.Kind with
+                                | SemanticKind.PatternBinding name ->
+                                    match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
+                                    | Some ssas when not (List.isEmpty ssas) ->
+                                        let patternType = mapType pbNode.Type
+                                        let ops, resultVal = MemWitness.witnessPayloadExtract ssas scrutineeSSA scrutineeType patternType
+                                        for op in ops do emit op z'
+                                        z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
+                                    | _ -> ()
+                                | _ -> ()
+                            | None -> ()
                     z'
                 | None ->
                     // Scrutinee not yet in NodeBindings - shouldn't happen in correct traversal
@@ -448,19 +505,32 @@ let private transferGraphCore
                     | Some (ssa, ty) -> ssa, ty
                     | None -> failwithf "Match: scrutinee node %d result not found" (NodeId.value scrutineeId)
 
+                // Extract tag values from Pattern - returns list of tags for tuple patterns
+                // Tags are pre-resolved in FNCS (Pattern.Union carries tagIndex from UnionCaseInfo)
+                let rec extractTagsFromPattern (pattern: Pattern) : int list =
+                    match pattern with
+                    | Pattern.Union (_caseName, tagIndex, _payload, _unionType) ->
+                        // Tag is pre-resolved from UnionCaseInfo.CaseIndex in FNCS
+                        [tagIndex]
+                    | Pattern.Tuple elements ->
+                        // For tuple patterns, extract tags from each element
+                        elements |> List.collect extractTagsFromPattern
+                    | Pattern.Var _ | Pattern.Wildcard -> []
+                    | _ -> []
+
                 // Build cases with collected region ops
-                // Use case index as tag (actual tag resolution would come from Pattern)
                 let caseOps =
                     cases
                     |> List.mapi (fun idx case ->
                         let caseKey = (nodeIdVal, regionKindToInt (RegionKind.MatchCaseRegion idx))
                         let ops = regionOps.GetValueOrDefault(caseKey, [])
-                        // case.Body is NodeId (not option)
                         let resultSSA =
                             match recallNodeResult (NodeId.value case.Body) z with
                             | Some (ssa, _) -> Some ssa
                             | None -> None
-                        (idx, ops, resultSSA))
+                        // Extract actual tag values from Pattern
+                        let tags = extractTagsFromPattern case.Pattern
+                        (tags, ops, resultSSA))
 
                 let resultType =
                     let mlirType = mapType node.Type

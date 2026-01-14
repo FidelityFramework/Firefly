@@ -21,6 +21,7 @@ module Primitives = Alex.Witnesses.Application.Primitives
 module Format = Alex.Witnesses.Application.Format
 module Platform = Alex.Witnesses.Application.Platform
 module ArenaTemplates = Alex.Dialects.LLVM.Templates
+module SCF = Alex.Dialects.SCF.Templates
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UNIT TYPE DETECTION
@@ -165,6 +166,81 @@ let private witnessStringConcat (appNodeId: NodeId) (z: PSGZipper) (str1: Val) (
     let allOps = extractOps @ [addLenOp; allocOp; memcpy1Op; gepOp; memcpy2Op] @ buildStrOps
     Some (allOps, TRValue { SSA = resultSSA; Type = MLIRTypes.nativeStr })
 
+/// Witness String.contains - scan string for character
+/// String.contains: string -> char -> bool
+/// Generates a while loop that scans through the string
+let private witnessStringContains
+    (appNodeId: NodeId)
+    (z: PSGZipper)
+    (str: Val)
+    (charVal: Val)
+    : (MLIROp list * TransferResult) option =
+
+    let ssas = requireNodeSSAs appNodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () = let s = ssas.[ssaIdx] in ssaIdx <- ssaIdx + 1; s
+
+    // Extract ptr and len from string struct
+    let ptrSSA = nextSSA ()
+    let lenSSA = nextSSA ()
+    let extractPtrOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (ptrSSA, str.SSA, [0], str.Type))
+    let extractLenOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (lenSSA, str.SSA, [1], str.Type))
+
+    // Trunc char from i32 to i8 for byte comparison
+    let charByteSSA = nextSSA ()
+    let truncOp = MLIROp.ArithOp (ArithOp.TruncI (charByteSSA, charVal.SSA, charVal.Type, MLIRTypes.i8))
+
+    // Constants
+    let zeroSSA = nextSSA ()
+    let falseSSA = nextSSA ()
+    let oneSSA = nextSSA ()
+    let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, MLIRTypes.i64))
+    let falseOp = MLIROp.ArithOp (ArithOp.ConstI (falseSSA, 0L, MLIRTypes.i1))
+    let oneOp = MLIROp.ArithOp (ArithOp.ConstI (oneSSA, 1L, MLIRTypes.i64))
+
+    // Block args for while loop: (found: i1, idx: i64)
+    let foundArgSSA = nextSSA ()
+    let idxArgSSA = nextSSA ()
+    let foundArg = { SSA = foundArgSSA; Type = MLIRTypes.i1 }
+    let idxArg = { SSA = idxArgSSA; Type = MLIRTypes.i64 }
+
+    // Condition region: continue while not found AND idx < len
+    let notFoundSSA = nextSSA ()
+    let inBoundsSSA = nextSSA ()
+    let continueSSA = nextSSA ()
+    let trueSSA = nextSSA ()
+    let condOps = [
+        MLIROp.ArithOp (ArithOp.ConstI (trueSSA, 1L, MLIRTypes.i1))
+        MLIROp.ArithOp (ArithOp.XOrI (notFoundSSA, foundArgSSA, trueSSA, MLIRTypes.i1))
+        MLIROp.ArithOp (ArithOp.CmpI (inBoundsSSA, ICmpPred.Slt, idxArgSSA, lenSSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.AndI (continueSSA, notFoundSSA, inBoundsSSA, MLIRTypes.i1))
+        MLIROp.SCFOp (SCFOp.Condition (continueSSA, [foundArg; idxArg]))
+    ]
+    let condRegion = SCF.singleBlockRegion "" [foundArg; idxArg] condOps
+
+    // Body region: load byte, compare, yield (match, idx+1)
+    let bytePtrSSA = nextSSA ()
+    let byteSSA = nextSSA ()
+    let matchSSA = nextSSA ()
+    let nextIdxSSA = nextSSA ()
+    let bodyOps = [
+        MLIROp.LLVMOp (LLVMOp.GEP (bytePtrSSA, ptrSSA, [(idxArgSSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Load (byteSSA, bytePtrSSA, MLIRTypes.i8, NotAtomic))
+        MLIROp.ArithOp (ArithOp.CmpI (matchSSA, ICmpPred.Eq, byteSSA, charByteSSA, MLIRTypes.i8))
+        MLIROp.ArithOp (ArithOp.AddI (nextIdxSSA, idxArgSSA, oneSSA, MLIRTypes.i64))
+        MLIROp.SCFOp (SCFOp.Yield [{ SSA = matchSSA; Type = MLIRTypes.i1 }; { SSA = nextIdxSSA; Type = MLIRTypes.i64 }])
+    ]
+    let bodyRegion = SCF.singleBlockRegion "bb0" [foundArg; idxArg] bodyOps
+
+    // While loop: returns (found, idx) starting at (false, 0)
+    let resultFoundSSA = nextSSA ()
+    let resultIdxSSA = nextSSA ()
+    let iterArgs = [{ SSA = falseSSA; Type = MLIRTypes.i1 }; { SSA = zeroSSA; Type = MLIRTypes.i64 }]
+    let whileOp = MLIROp.SCFOp (SCFOp.While ([resultFoundSSA; resultIdxSSA], condRegion, bodyRegion, iterArgs))
+
+    let allOps = [extractPtrOp; extractLenOp; truncOp; zeroOp; falseOp; oneOp; whileOp]
+    Some (allOps, TRValue { SSA = resultFoundSSA; Type = MLIRTypes.i1 })
+
 /// Witness string operations
 let private witnessStringOp
     (appNodeId: NodeId)
@@ -177,6 +253,9 @@ let private witnessStringOp
     match opName, args with
     | "concat2", [str1; str2] ->
         witnessStringConcat appNodeId z str1 str2
+
+    | "contains", [str; charVal] ->
+        witnessStringContains appNodeId z str charVal
 
     | _ -> None
 
@@ -388,6 +467,13 @@ let private witnessIntrinsic
         match args with
         | [strVal] ->
             let ops, resultVal = Format.stringToInt appNodeId z strVal
+            Some (ops, TRValue resultVal)
+        | _ -> None
+
+    | ParseOp "float" ->
+        match args with
+        | [strVal] ->
+            let ops, resultVal = Format.stringToFloat appNodeId z strVal
             Some (ops, TRValue resultVal)
         | _ -> None
 

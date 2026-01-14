@@ -429,6 +429,52 @@ let witnessPayloadExtract
                 MLIROp.ArithOp (ArithOp.TruncI (convertSSA, extractSSA, slotType, patternType))
         [extractOp; convOp], { SSA = convertSSA; Type = patternType }
 
+/// Extract pattern binding from a TUPLE scrutinee
+/// For `match a, b with | IntVal x, IntVal y -> ...`
+/// Scrutinee is tuple of DUs: { DU1, DU2 }
+/// Need to: 1) Extract tuple element at tupleIdx, 2) Extract DU payload, 3) Convert
+/// Uses 2-3 pre-assigned SSAs: elemExtract[0], payloadExtract[1], convert[2] (if needed)
+let witnessTuplePatternExtract
+    (ssas: SSA list)  // Pre-assigned SSAs
+    (scrutineeSSA: SSA)
+    (scrutineeType: MLIRType)  // The tuple type: struct<(DU1, DU2)>
+    (tupleIdx: int)
+    (patternType: MLIRType)  // The final pattern binding type (e.g., i32)
+    : MLIROp list * Val =
+
+    // Step 1: Extract tuple element (the DU) at tupleIdx
+    let elemExtractSSA = ssas.[0]
+    let duType =
+        match scrutineeType with
+        | TStruct fields when tupleIdx < List.length fields -> fields.[tupleIdx]
+        | _ -> patternType  // Fallback
+    let elemExtractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (elemExtractSSA, scrutineeSSA, [tupleIdx], scrutineeType))
+
+    // Step 2: Extract payload from the DU (field 1)
+    let payloadExtractSSA = ssas.[1]
+    let payloadType =
+        match duType with
+        | TStruct [_; p] -> p  // DU layout: { tag, payload }
+        | _ -> patternType  // Fallback
+    let payloadExtractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (payloadExtractSSA, elemExtractSSA, [1], duType))
+
+    // Step 3: Convert if needed
+    if payloadType = patternType then
+        [elemExtractOp; payloadExtractOp], { SSA = payloadExtractSSA; Type = patternType }
+    else
+        let convertSSA = ssas.[2]
+        let convOp =
+            match payloadType, patternType with
+            | TInt I64, TInt I32 ->
+                MLIROp.ArithOp (ArithOp.TruncI (convertSSA, payloadExtractSSA, payloadType, patternType))
+            | TInt I64, TFloat F64 ->
+                MLIROp.LLVMOp (LLVMOp.Bitcast (convertSSA, payloadExtractSSA, payloadType, patternType))
+            | TInt _, TInt _ ->
+                MLIROp.ArithOp (ArithOp.TruncI (convertSSA, payloadExtractSSA, payloadType, patternType))
+            | _ ->
+                MLIROp.ArithOp (ArithOp.TruncI (convertSSA, payloadExtractSSA, payloadType, patternType))
+        [elemExtractOp; payloadExtractOp; convOp], { SSA = convertSSA; Type = patternType }
+
 // ═══════════════════════════════════════════════════════════════════════════
 // SRTP TRAIT CALLS
 // ═══════════════════════════════════════════════════════════════════════════

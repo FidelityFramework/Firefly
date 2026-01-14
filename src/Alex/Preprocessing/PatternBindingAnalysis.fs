@@ -58,10 +58,10 @@ let rec extractPatternBindings (pattern: Pattern) : PatternBinding list =
         // The outer 'as' binding is handled separately by FNCS
         extractPatternBindings inner
     
-    | Pattern.Union (_, Some payload, _) ->
+    | Pattern.Union (_, _tagIndex, Some payload, _) ->
         extractPatternBindings payload
-    
-    | Pattern.Union (_, None, _) -> 
+
+    | Pattern.Union (_, _tagIndex, None, _) ->
         []
     
     | Pattern.Record (fields, _) ->

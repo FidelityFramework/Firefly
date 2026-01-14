@@ -157,7 +157,7 @@ let generateMLIR (projectResult: ProjectCheckResult) (targetTriple: string) (isF
         {
             Content = mainContent
             HasErrors = true
-            Errors = [sprintf "FNCS exception: %s" ex.Message]
+            Errors = [sprintf "FNCS exception: %s\nStack trace:\n%s" ex.Message ex.StackTrace]
             CollectedFunctions = ["main"]
         }
 

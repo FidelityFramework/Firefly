@@ -631,3 +631,220 @@ let stringToInt (nodeId: NodeId) (z: PSGZipper) (strVal: Val) : MLIROp list * Va
         signOps
 
     (allOps, { SSA = resultSSA; Type = MLIRTypes.i64 })
+
+/// Convert string to f64: Parse.float
+/// Algorithm: Two-pass parsing (integer part, then fractional part)
+/// Handles: [sign] digits [. digits]
+let stringToFloat (nodeId: NodeId) (z: PSGZipper) (strVal: Val) : MLIROp list * Val =
+    let ssas = requireNodeSSAs nodeId z
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
+    // Constants
+    let zeroI64SSA = nextSSA ()
+    let oneI64SSA = nextSSA ()
+    let tenI64SSA = nextSSA ()
+    let dotCharSSA = nextSSA ()
+    let minusCharSSA = nextSSA ()
+    let zeroF64SSA = nextSSA ()
+    let tenF64SSA = nextSSA ()
+
+    let constOps = [
+        MLIROp.ArithOp (ArithOp.ConstI (zeroI64SSA, 0L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (oneI64SSA, 1L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (tenI64SSA, 10L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (dotCharSSA, 46L, MLIRTypes.i8))  // '.'
+        MLIROp.ArithOp (ArithOp.ConstI (minusCharSSA, 45L, MLIRTypes.i8))  // '-'
+        MLIROp.ArithOp (ArithOp.ConstF (zeroF64SSA, 0.0, MLIRTypes.f64))
+        MLIROp.ArithOp (ArithOp.ConstF (tenF64SSA, 10.0, MLIRTypes.f64))
+    ]
+
+    // Extract pointer and length from fat string
+    let ptrSSA = nextSSA ()
+    let lenSSA = nextSSA ()
+    let extractOps = [
+        MLIROp.LLVMOp (LLVMOp.ExtractValue (ptrSSA, strVal.SSA, [0], strVal.Type))
+        MLIROp.LLVMOp (LLVMOp.ExtractValue (lenSSA, strVal.SSA, [1], strVal.Type))
+    ]
+
+    // Check first character for minus sign
+    let firstCharSSA = nextSSA ()
+    let isNegSSA = nextSSA ()
+    let signCheckOps = [
+        MLIROp.LLVMOp (LLVMOp.Load (firstCharSSA, ptrSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+        MLIROp.ArithOp (ArithOp.CmpI (isNegSSA, ICmpPred.Eq, firstCharSSA, minusCharSSA, MLIRTypes.i8))
+    ]
+
+    // Starting index: 1 if negative, 0 otherwise
+    let startIdxSSA = nextSSA ()
+    let idxOps = [
+        MLIROp.ArithOp (ArithOp.Select (startIdxSSA, isNegSSA, oneI64SSA, zeroI64SSA, MLIRTypes.i64))
+    ]
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PASS 1: Parse integer part (until '.' or end)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // While loop state: (acc: i64, idx: i64)
+    let intAccArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let intIdxArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+
+    // Condition: idx < len AND char != '.'
+    let intCondGepSSA = nextSSA ()
+    let intCondCharSSA = nextSSA ()
+    let intInBoundsSSA = nextSSA ()
+    let intNotDotSSA = nextSSA ()
+    let intContinueSSA = nextSSA ()
+
+    let intCondOps = [
+        MLIROp.ArithOp (ArithOp.CmpI (intInBoundsSSA, ICmpPred.Slt, intIdxArg.SSA, lenSSA, MLIRTypes.i64))
+        MLIROp.LLVMOp (LLVMOp.GEP (intCondGepSSA, ptrSSA, [(intIdxArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Load (intCondCharSSA, intCondGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+        MLIROp.ArithOp (ArithOp.CmpI (intNotDotSSA, ICmpPred.Ne, intCondCharSSA, dotCharSSA, MLIRTypes.i8))
+        MLIROp.ArithOp (ArithOp.AndI (intContinueSSA, intInBoundsSSA, intNotDotSSA, MLIRTypes.i1))
+        MLIROp.SCFOp (scfCondition intContinueSSA [intAccArg; intIdxArg])
+    ]
+    let intCondRegion = singleBlockRegion "" [intAccArg; intIdxArg] intCondOps
+
+    // Body: acc = acc * 10 + digit, idx++
+    let intBodyGepSSA = nextSSA ()
+    let intBodyCharSSA = nextSSA ()
+    let intBodyChar64SSA = nextSSA ()
+    let intBodyDigitSSA = nextSSA ()
+    let intBodyAcc10SSA = nextSSA ()
+    let intBodyNewAccSSA = nextSSA ()
+    let intBodyNewIdxSSA = nextSSA ()
+    let asciiZero64SSA = nextSSA ()
+
+    let intBodyOps = [
+        MLIROp.LLVMOp (LLVMOp.GEP (intBodyGepSSA, ptrSSA, [(intIdxArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Load (intBodyCharSSA, intBodyGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+        MLIROp.ArithOp (ArithOp.ExtUI (intBodyChar64SSA, intBodyCharSSA, MLIRTypes.i8, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (asciiZero64SSA, 48L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.SubI (intBodyDigitSSA, intBodyChar64SSA, asciiZero64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.MulI (intBodyAcc10SSA, intAccArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.AddI (intBodyNewAccSSA, intBodyAcc10SSA, intBodyDigitSSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.AddI (intBodyNewIdxSSA, intIdxArg.SSA, oneI64SSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [{ SSA = intBodyNewAccSSA; Type = MLIRTypes.i64 }; { SSA = intBodyNewIdxSSA; Type = MLIRTypes.i64 }])
+    ]
+    let intBodyRegion = singleBlockRegion "bb0" [intAccArg; intIdxArg] intBodyOps
+
+    let intLoopResultSSA = nextSSA ()
+    let intLoopIdxSSA = nextSSA ()
+    let intWhileOp = MLIROp.SCFOp (SCFOp.While (
+        [intLoopResultSSA; intLoopIdxSSA],
+        intCondRegion,
+        intBodyRegion,
+        [{ SSA = zeroI64SSA; Type = MLIRTypes.i64 }; { SSA = startIdxSSA; Type = MLIRTypes.i64 }]
+    ))
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PASS 2: Parse fractional part (after '.')
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    // Skip the '.' - fracStartIdx = intLoopIdx + 1
+    let fracStartIdxSSA = nextSSA ()
+    let skipDotOp = MLIROp.ArithOp (ArithOp.AddI (fracStartIdxSSA, intLoopIdxSSA, oneI64SSA, MLIRTypes.i64))
+
+    // While loop state: (frac: i64, divisor: i64, idx: i64)
+    let fracAccArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let fracDivArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+    let fracIdxArg = { SSA = nextSSA (); Type = MLIRTypes.i64 }
+
+    // Condition: idx < len
+    let fracInBoundsSSA = nextSSA ()
+    let fracCondOps = [
+        MLIROp.ArithOp (ArithOp.CmpI (fracInBoundsSSA, ICmpPred.Slt, fracIdxArg.SSA, lenSSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfCondition fracInBoundsSSA [fracAccArg; fracDivArg; fracIdxArg])
+    ]
+    let fracCondRegion = singleBlockRegion "" [fracAccArg; fracDivArg; fracIdxArg] fracCondOps
+
+    // Body: frac = frac * 10 + digit, divisor *= 10, idx++
+    let fracBodyGepSSA = nextSSA ()
+    let fracBodyCharSSA = nextSSA ()
+    let fracBodyChar64SSA = nextSSA ()
+    let fracBodyAsciiZeroSSA = nextSSA ()
+    let fracBodyDigitSSA = nextSSA ()
+    let fracBodyAcc10SSA = nextSSA ()
+    let fracBodyNewAccSSA = nextSSA ()
+    let fracBodyNewDivSSA = nextSSA ()
+    let fracBodyNewIdxSSA = nextSSA ()
+
+    let fracBodyOps = [
+        MLIROp.LLVMOp (LLVMOp.GEP (fracBodyGepSSA, ptrSSA, [(fracIdxArg.SSA, MLIRTypes.i64)], MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.Load (fracBodyCharSSA, fracBodyGepSSA, MLIRTypes.i8, AtomicOrdering.NotAtomic))
+        MLIROp.ArithOp (ArithOp.ExtUI (fracBodyChar64SSA, fracBodyCharSSA, MLIRTypes.i8, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.ConstI (fracBodyAsciiZeroSSA, 48L, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.SubI (fracBodyDigitSSA, fracBodyChar64SSA, fracBodyAsciiZeroSSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.MulI (fracBodyAcc10SSA, fracAccArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.AddI (fracBodyNewAccSSA, fracBodyAcc10SSA, fracBodyDigitSSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.MulI (fracBodyNewDivSSA, fracDivArg.SSA, tenI64SSA, MLIRTypes.i64))
+        MLIROp.ArithOp (ArithOp.AddI (fracBodyNewIdxSSA, fracIdxArg.SSA, oneI64SSA, MLIRTypes.i64))
+        MLIROp.SCFOp (scfYield [
+            { SSA = fracBodyNewAccSSA; Type = MLIRTypes.i64 }
+            { SSA = fracBodyNewDivSSA; Type = MLIRTypes.i64 }
+            { SSA = fracBodyNewIdxSSA; Type = MLIRTypes.i64 }
+        ])
+    ]
+    let fracBodyRegion = singleBlockRegion "bb0" [fracAccArg; fracDivArg; fracIdxArg] fracBodyOps
+
+    let fracLoopResultSSA = nextSSA ()
+    let fracLoopDivSSA = nextSSA ()
+    let fracLoopIdxSSA = nextSSA ()
+    let fracWhileOp = MLIROp.SCFOp (SCFOp.While (
+        [fracLoopResultSSA; fracLoopDivSSA; fracLoopIdxSSA],
+        fracCondRegion,
+        fracBodyRegion,
+        [
+            { SSA = zeroI64SSA; Type = MLIRTypes.i64 }     // frac starts at 0
+            { SSA = oneI64SSA; Type = MLIRTypes.i64 }      // divisor starts at 1
+            { SSA = fracStartIdxSSA; Type = MLIRTypes.i64 }  // idx starts after '.'
+        ]
+    ))
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // COMBINE: result = intPart + fracPart / divisor
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let intPartF64SSA = nextSSA ()
+    let fracPartF64SSA = nextSSA ()
+    let divF64SSA = nextSSA ()
+    let fracValueSSA = nextSSA ()
+    let combinedSSA = nextSSA ()
+
+    let combineOps = [
+        // Convert integer part to f64
+        MLIROp.ArithOp (ArithOp.SIToFP (intPartF64SSA, intLoopResultSSA, MLIRTypes.i64, MLIRTypes.f64))
+        // Convert fractional accumulator to f64
+        MLIROp.ArithOp (ArithOp.SIToFP (fracPartF64SSA, fracLoopResultSSA, MLIRTypes.i64, MLIRTypes.f64))
+        // Convert divisor to f64
+        MLIROp.ArithOp (ArithOp.SIToFP (divF64SSA, fracLoopDivSSA, MLIRTypes.i64, MLIRTypes.f64))
+        // fracValue = fracPart / divisor
+        MLIROp.ArithOp (ArithOp.DivF (fracValueSSA, fracPartF64SSA, divF64SSA, MLIRTypes.f64))
+        // combined = intPart + fracValue
+        MLIROp.ArithOp (ArithOp.AddF (combinedSSA, intPartF64SSA, fracValueSSA, MLIRTypes.f64))
+    ]
+
+    // Apply sign: result = select(isNeg, -combined, combined)
+    let negatedSSA = nextSSA ()
+    let resultSSA = nextSSA ()
+    let signOps = [
+        MLIROp.ArithOp (ArithOp.NegF (negatedSSA, combinedSSA, MLIRTypes.f64))
+        MLIROp.ArithOp (ArithOp.Select (resultSSA, isNegSSA, negatedSSA, combinedSSA, MLIRTypes.f64))
+    ]
+
+    let allOps =
+        constOps @
+        extractOps @
+        signCheckOps @
+        idxOps @
+        [intWhileOp] @
+        [skipDotOp] @
+        [fracWhileOp] @
+        combineOps @
+        signOps
+
+    (allOps, { SSA = resultSSA; Type = MLIRTypes.f64 })

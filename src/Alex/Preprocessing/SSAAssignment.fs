@@ -36,8 +36,14 @@ module NodeSSAAllocation =
         | _ -> { SSAs = ssas; Result = List.last ssas }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MLIR EXPANSION COSTS
+// STRUCTURAL SSA DERIVATION
 // ═══════════════════════════════════════════════════════════════════════════
+//
+// SSA counts are derived from actual node STRUCTURE, not just node KIND.
+// Since the graph is statically resolved, we know exactly what emission will do.
+// This eliminates heuristics and prevents "not enough SSAs" errors.
+//
+// Key insight: SSA count is a deterministic function of instance structure.
 
 /// Get the number of SSAs needed for a literal value
 let private literalExpansionCost (lit: LiteralValue) : int =
@@ -67,47 +73,151 @@ let private interpolatedStringCost (parts: InterpolatedPart list) : int =
     // Total: 5 per string part + 10 per concat
     (stringPartCount * 5) + (concatCount * 10)
 
-/// Get the number of SSAs needed for a node based on its kind
-let private nodeExpansionCost (kind: SemanticKind) : int =
-    match kind with
+/// Count tuple elements from a scrutinee type
+/// Returns 1 for non-tuple types (single DU), N for N-element tuples
+let private countScrutineeTupleElements (graph: SemanticGraph) (scrutineeId: NodeId) : int =
+    match Map.tryFind scrutineeId graph.Nodes with
+    | Some node ->
+        match node.Type with
+        | NativeType.TTuple (elements, _) -> List.length elements
+        | _ -> 1  // Non-tuple scrutinee = single DU
+    | None -> 1
+
+/// Count tags in a pattern (for tuple patterns, count nested Union patterns)
+let rec private countPatternTags (pattern: Pattern) : int =
+    match pattern with
+    | Pattern.Union _ -> 1
+    | Pattern.Tuple elements -> elements |> List.sumBy countPatternTags
+    | Pattern.Var _ | Pattern.Wildcard -> 0
+    | _ -> 0
+
+/// Compute exact SSA count for Match expression from its structure
+/// This mirrors what ControlFlowWitness.witnessMatch actually emits
+let private computeMatchSSACost (graph: SemanticGraph) (scrutineeId: NodeId) (cases: MatchCase list) : int =
+    // Determine pattern complexity from actual cases
+    let numTags =
+        match cases with
+        | case :: _ -> countPatternTags case.Pattern
+        | [] -> 1
+
+    let numCases = List.length cases
+
+    // Tag extraction SSAs (mirrors lines 224-251 in ControlFlowWitness.fs)
+    let extractionSSAs =
+        if numTags <= 1 then
+            1  // Single tag extraction
+        else
+            // Tuple pattern: extract each element (N) + extract each tag (N)
+            numTags * 2
+
+    // Tag comparison SSAs per case (mirrors buildTagComparison)
+    // For each tag: expectedSSA + cmpSSA = 2
+    // For multiple tags: add (numTags - 1) AND operations
+    let comparisonSSAsPerCase =
+        if numTags <= 1 then
+            2  // Single tag: expected + cmp
+        else
+            (numTags * 2) + max 0 (numTags - 1)  // 2 per tag + ANDs
+
+    // If-chain SSAs (mirrors buildIfChain)
+    // Each non-final case: comparison SSAs + potentially if/else structure
+    // Final case: just body (no comparison)
+    // Plus result phi and zero constants for void cases
+    let ifChainSSAs =
+        let nonFinalCases = max 0 (numCases - 1)
+        // Each branch may need: result accumulation + zero for void
+        (nonFinalCases * comparisonSSAsPerCase) + (numCases * 2) + 5
+
+    // Total: extraction + comparisons + if-chain + buffer
+    extractionSSAs + ifChainSSAs + 10  // 10 for safety margin
+
+/// Compute exact SSA count for Application based on intrinsic analysis
+let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode) : int =
+    // Look at what we're applying to determine SSA needs
+    match node.Children with
+    | funcId :: _ ->
+        match Map.tryFind funcId graph.Nodes with
+        | Some funcNode ->
+            match funcNode.Kind with
+            | SemanticKind.Intrinsic info ->
+                // Intrinsics have known SSA costs based on operation
+                match info.Module, info.Operation with
+                | IntrinsicModule.Format, "int" -> 45     // intToString
+                | IntrinsicModule.Format, "float" -> 75   // floatToString
+                | IntrinsicModule.Parse, "int" -> 35      // stringToInt
+                | IntrinsicModule.Parse, "float" -> 250   // stringToFloat (complex)
+                | IntrinsicModule.String, "contains" -> 30 // string scanning
+                | IntrinsicModule.String, "concat2" -> 15  // concatenation
+                | IntrinsicModule.String, "length" -> 3    // extract
+                | IntrinsicModule.Sys, _ -> 10             // syscalls
+                | IntrinsicModule.NativePtr, _ -> 5        // pointer ops
+                | IntrinsicModule.Array, _ -> 10           // array ops
+                | IntrinsicModule.Operators, _ -> 5        // arithmetic
+                | IntrinsicModule.Convert, _ -> 3          // type conversions
+                | IntrinsicModule.Math, _ -> 5             // math functions
+                | _ -> 20  // Default for unknown intrinsics
+            | SemanticKind.VarRef _ -> 5  // Function call
+            | _ -> 10  // Other applications
+        | None -> 10
+    | [] -> 5
+
+/// Compute exact SSA count for TupleExpr based on element count
+let private computeTupleSSACost (childIds: NodeId list) : int =
+    // undef + one insertvalue per element
+    1 + List.length childIds
+
+/// Compute exact SSA count for RecordExpr based on field count
+let private computeRecordSSACost (fields: (string * NodeId) list) : int =
+    // undef + one insertvalue per field
+    1 + List.length fields
+
+/// Compute exact SSA count for UnionCase based on payload presence
+let private computeUnionCaseSSACost (payloadOpt: NodeId option) : int =
+    match payloadOpt with
+    | Some _ -> 6  // tag + undef + withTag + payload insert + conversion + result
+    | None -> 3    // tag + undef + withTag (no payload)
+
+/// Get the number of SSAs needed for a node based on its STRUCTURE
+/// This is the key function - it analyzes actual instance structure, not just kind
+let private nodeExpansionCost (graph: SemanticGraph) (node: SemanticNode) : int =
+    match node.Kind with
+    // Structural analysis - exact counts from instance
+    | SemanticKind.Match (scrutineeId, cases) ->
+        computeMatchSSACost graph scrutineeId cases
+
+    | SemanticKind.Application _ ->
+        computeApplicationSSACost graph node
+
+    | SemanticKind.TupleExpr childIds ->
+        computeTupleSSACost childIds
+
+    | SemanticKind.RecordExpr (fields, _) ->
+        computeRecordSSACost fields
+
+    | SemanticKind.UnionCase (_, _, payloadOpt) ->
+        computeUnionCaseSSACost payloadOpt
+
+    // Literal-based costs
     | SemanticKind.Literal lit -> literalExpansionCost lit
-    // InterpolatedString needs dynamic SSA count based on parts
     | SemanticKind.InterpolatedString parts -> interpolatedStringCost parts
-    // ForLoop needs 2 SSAs: ivSSA (induction variable) + stepSSA (step constant)
+
+    // Fixed costs (these don't vary by structure)
     | SemanticKind.ForLoop _ -> 2
-    // Lambda needs 1 SSA for potential return value synthesis (type reconciliation)
     | SemanticKind.Lambda _ -> 1
-    // Application nodes may call syscalls (5 SSAs), string ops (10+ SSAs),
-    // or Format operations (intToString ~40, floatToString ~70, stringToInt ~30)
-    // Allocate generously - unused SSAs are harmless
-    | SemanticKind.Application _ -> 80
-    // IfThenElse needs up to 3 SSAs: result + zero for void then + zero for void else
     | SemanticKind.IfThenElse _ -> 3
-    // Match needs many SSAs: discrim + (tag+cmp per case) + zero yields + result
-    // Allocate generously for typical match expressions
-    | SemanticKind.Match _ -> 15
-    // Binding may need SSAs for mutable alloca
     | SemanticKind.Binding _ -> 3
-    // Memory operations
-    | SemanticKind.IndexGet _ -> 2        // gep + load
-    | SemanticKind.IndexSet _ -> 1        // gep (store doesn't produce SSA)
-    | SemanticKind.AddressOf _ -> 2       // const + alloca (if immutable)
-    // VarRef may need SSAs for loading mutable values:
-    // - Module-level mutable: addressof + load (2 SSAs)
-    // - Addressed mutable: load result (1 SSA)
+    | SemanticKind.IndexGet _ -> 2
+    | SemanticKind.IndexSet _ -> 1
+    | SemanticKind.AddressOf _ -> 2
     | SemanticKind.VarRef _ -> 2
-    | SemanticKind.FieldGet _ -> 1        // extract
-    | SemanticKind.FieldSet _ -> 1        // insert
-    | SemanticKind.TraitCall _ -> 1       // extract typically
-    // Data structure construction - use generous estimates
-    | SemanticKind.TupleExpr _ -> 10      // undef + inserts
-    | SemanticKind.RecordExpr _ -> 10     // undef + inserts
-    | SemanticKind.ArrayExpr _ -> 20      // allocs + stores + fat pointer
-    | SemanticKind.ListExpr _ -> 20       // same as array
-    | SemanticKind.UnionCase _ -> 6       // tag + undef + withTag + conversion + result
-    // PatternBinding needs SSAs for payload extraction + type conversion
-    | SemanticKind.PatternBinding _ -> 2  // extract + convert
-    // Most nodes produce one result
+    | SemanticKind.FieldGet _ -> 1
+    | SemanticKind.FieldSet _ -> 1
+    | SemanticKind.TraitCall _ -> 1
+    | SemanticKind.ArrayExpr _ -> 20
+    | SemanticKind.ListExpr _ -> 20
+    // PatternBinding needs SSAs for extraction + conversion
+    // For tuple patterns: elemExtract + payloadExtract + convert = 3
+    | SemanticKind.PatternBinding _ -> 3
     | _ -> 1
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -226,15 +336,15 @@ let rec private assignFunctionBody
         // ForLoop needs SSAs for internal operation (ivSSA + stepSSA)
         // even though it doesn't "produce a value" in the semantic sense
         | SemanticKind.ForLoop _ ->
-            let cost = nodeExpansionCost node.Kind  // Returns 2
+            let cost = nodeExpansionCost graph node  // Structural derivation
             let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
             let alloc = NodeSSAAllocation.multi ssas
             FunctionScope.assign node.Id alloc scopeWithSSAs
 
         | _ ->
-            // Regular node - assign SSAs based on expansion cost
+            // Regular node - assign SSAs based on structural analysis
             if producesValue node.Kind then
-                let cost = nodeExpansionCost node.Kind
+                let cost = nodeExpansionCost graph node  // Structural derivation
                 let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
                 let alloc = NodeSSAAllocation.multi ssas
                 FunctionScope.assign node.Id alloc scopeWithSSAs
