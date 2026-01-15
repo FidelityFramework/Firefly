@@ -573,16 +573,22 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
     | ExtractValue (r, agg, indices, aggTy) ->
         ssa r sb; sb.Append(" = llvm.extractvalue ") |> ignore
         ssa agg sb
-        for idx in indices do
-            sb.Append("[").Append(idx).Append("]") |> ignore
+        sb.Append("[") |> ignore
+        indices |> List.iteri (fun i idx ->
+            if i > 0 then sb.Append(", ") |> ignore
+            sb.Append(idx) |> ignore)
+        sb.Append("]") |> ignore
         sb.Append(" : ") |> ignore
         llvmType aggTy sb
     | InsertValue (r, agg, v, indices, aggTy) ->
         ssa r sb; sb.Append(" = llvm.insertvalue ") |> ignore
         ssa v sb; sb.Append(", ") |> ignore
         ssa agg sb
-        for idx in indices do
-            sb.Append("[").Append(idx).Append("]") |> ignore
+        sb.Append("[") |> ignore
+        indices |> List.iteri (fun i idx ->
+            if i > 0 then sb.Append(", ") |> ignore
+            sb.Append(idx) |> ignore)
+        sb.Append("]") |> ignore
         sb.Append(" : ") |> ignore
         llvmType aggTy sb
     | Undef (r, ty) ->

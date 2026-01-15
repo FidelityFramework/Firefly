@@ -119,13 +119,13 @@ let private witnessInFunctionScope
     (z: PSGZipper)
     : MLIROp option * MLIROp list * TransferResult =
 
-    // Determine declared return type
+    // Determine declared return type (use graph-aware mapping for record types)
     let paramCount =
         match node.Kind with
         | SemanticKind.Lambda (params', _bodyId) -> List.length params'
         | _ -> 0
     let finalRetType = extractFinalReturnType node.Type paramCount
-    let declaredRetType = mapType finalRetType
+    let declaredRetType = mapNativeTypeWithGraph z.Graph finalRetType
 
     // Look up body's SSA result (already processed in post-order)
     // Using structured recallNodeResult which returns (SSA * MLIRType) option
@@ -289,22 +289,28 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                     else
                         let nodeParamTypes = extractParamTypes node.Type (List.length params')
 
+                        // Use graph-aware type mapping for record types
+                        let mapTypeWithGraph = mapNativeTypeWithGraph z.Graph
+
                         // Build structured params: (Arg i, MLIRType)
                         let ps = params' |> List.mapi (fun i (_name, nativeTy, _nodeId) ->
                             let actualType =
                                 if i < List.length nodeParamTypes then nodeParamTypes.[i]
                                 else nativeTy
-                            (Arg i, mapType actualType))
+                            (Arg i, mapTypeWithGraph actualType))
 
                         // Build bindings: (paramName, Some (Arg i, MLIRType))
                         let bs = params' |> List.mapi (fun i (paramName, paramType, _nodeId) ->
                             let actualType =
                                 if i < List.length nodeParamTypes then nodeParamTypes.[i]
                                 else paramType
-                            (paramName, Some (Arg i, mapType actualType)))
+                            (paramName, Some (Arg i, mapTypeWithGraph actualType)))
                         ps, bs
 
                 mlirPs, bindings, false, isUnitParam
+
+        // Use graph-aware type mapping for return type (may be record type)
+        let mapTypeWithGraph = mapNativeTypeWithGraph z.Graph
 
         // Return type
         let returnType =
@@ -313,7 +319,7 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                 // If unit param, count is 1 (the unit arg) for return type peeling
                 let paramCount = if List.isEmpty params' && (match node.Type with NativeType.TFun(d, _) -> isUnitType d | _ -> false) then 1 else List.length params'
                 let finalRetTy = extractFinalReturnType node.Type paramCount
-                mapType finalRetTy
+                mapTypeWithGraph finalRetTy
 
         // Determine visibility
         let visibility = if isMain then FuncVisibility.Public else FuncVisibility.Private

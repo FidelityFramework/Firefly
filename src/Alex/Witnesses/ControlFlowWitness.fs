@@ -196,16 +196,48 @@ let witnessForLoop
 // PATTERN MATCH
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Extract tag values from Pattern (for DU patterns)
+/// Returns empty list for non-DU patterns (Record, Wildcard, etc.)
+let private extractTagsFromPattern (pattern: Pattern) : int list =
+    let rec extract p =
+        match p with
+        | Pattern.Union (_caseName, tagIndex, _payload, _unionType) ->
+            [tagIndex]
+        | Pattern.Tuple elements ->
+            elements |> List.collect extract
+        | Pattern.Var _ | Pattern.Wildcard | Pattern.Record _ -> []
+        | Pattern.Or (p1, _) -> extract p1  // Both branches have same structure
+        | Pattern.And (p1, p2) -> extract p1 @ extract p2
+        | Pattern.As (inner, _) -> extract inner
+        | _ -> []
+    extract pattern
+
+/// Check if pattern requires tag-based comparison (DU patterns)
+/// vs guard-only matching (Record, Wildcard patterns)
+let private requiresTagComparison (pattern: Pattern) : bool =
+    let rec check p =
+        match p with
+        | Pattern.Union _ -> true
+        | Pattern.Tuple elements -> elements |> List.exists check
+        | Pattern.Or (p1, p2) -> check p1 || check p2
+        | Pattern.And (p1, p2) -> check p1 || check p2
+        | Pattern.As (inner, _) -> check inner
+        | Pattern.Record _ | Pattern.Wildcard | Pattern.Var _ -> false
+        | _ -> false
+    check pattern
+
 /// Witness a pattern match expression
-/// Generically handles single DU and tuple patterns by extracting tags from scrutinee
-/// and comparing against expected tag values from each case's Pattern
+/// Derives match strategy from Pattern type (Four Pillars: Pattern IS the classification)
+/// - DU patterns: tag extraction and comparison
+/// - Record/Wildcard patterns: guards only (pattern always matches structurally)
+/// - Guards (when clauses): evaluated and combined with pattern match
 /// Uses pre-assigned SSAs for all intermediates
 let witnessMatch
     (nodeId: NodeId)
     (z: PSGZipper)
     (scrutineeSSA: SSA)
     (scrutineeType: MLIRType)
-    (cases: (int list * MLIROp list * SSA option) list)  // (tags, ops, resultSSA)
+    (cases: (Pattern * SSA option * MLIROp list * SSA option) list)  // (pattern, guardSSA, ops, resultSSA)
     (resultType: MLIRType option)
     : MLIROp list * TransferResult =
 
@@ -217,134 +249,215 @@ let witnessMatch
         ssaIdx <- ssaIdx + 1
         ssa
 
-    // Determine number of tags to check based on first case's pattern
-    let numTags = match cases with | (tags, _, _) :: _ -> List.length tags | [] -> 1
+    // Determine if we need tag-based comparison based on patterns
+    let needsTagComparison = cases |> List.exists (fun (p, _, _, _) -> requiresTagComparison p)
 
-    // Extract tags from scrutinee - handles both single DU and tuple of DUs
+    // Extract tags from scrutinee (only if needed for DU patterns)
     let extractOps, extractedTags =
-        if numTags <= 1 then
-            // Single DU pattern - extract tag from field 0
-            let tagType = match scrutineeType with | TStruct (t::_) -> t | _ -> TInt I8
-            let tagSSA = nextSSA ()
-            let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, scrutineeSSA, [0], scrutineeType))
-            [extractOp], [(tagSSA, tagType)]
+        if not needsTagComparison then
+            // Record/Wildcard patterns - no tag extraction needed
+            [], []
         else
-            // Tuple pattern - extract each element then its tag
-            match scrutineeType with
-            | TStruct fields ->
-                let mutable ops = []
-                let mutable tags = []
-                for i, fieldType in List.indexed fields do
-                    // Extract tuple element
-                    let elemSSA = nextSSA ()
-                    ops <- ops @ [MLIROp.LLVMOp (LLVMOp.ExtractValue (elemSSA, scrutineeSSA, [i], scrutineeType))]
-                    // Extract tag from DU element
-                    let tagType = match fieldType with | TStruct (t::_) -> t | _ -> TInt I8
-                    let tagSSA = nextSSA ()
-                    ops <- ops @ [MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, elemSSA, [0], fieldType))]
-                    tags <- tags @ [(tagSSA, tagType)]
-                ops, tags
-            | _ ->
-                // Fallback - single tag
-                let tagSSA = nextSSA ()
-                [MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, scrutineeSSA, [0], scrutineeType))],
-                [(tagSSA, TInt I8)]
+            // DU patterns - extract tags based on pattern structure
+            let numTags =
+                cases
+                |> List.tryPick (fun (p, _, _, _) ->
+                    let tags = extractTagsFromPattern p
+                    if List.isEmpty tags then None else Some (List.length tags))
+                |> Option.defaultValue 1
 
-    // Generate comparison ops for a list of (expected tag, extracted SSA, type) triples
-    // Returns the ops and the final combined condition SSA
+            if numTags <= 1 then
+                // Single DU pattern - extract tag from field 0
+                let tagType = match scrutineeType with | TStruct (t::_) -> t | _ -> TInt I8
+                let tagSSA = nextSSA ()
+                let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, scrutineeSSA, [0], scrutineeType))
+                [extractOp], [(tagSSA, tagType)]
+            else
+                // Tuple pattern - extract each element then its tag
+                match scrutineeType with
+                | TStruct fields ->
+                    let mutable ops = []
+                    let mutable tags = []
+                    for i, fieldType in List.indexed fields do
+                        let elemSSA = nextSSA ()
+                        ops <- ops @ [MLIROp.LLVMOp (LLVMOp.ExtractValue (elemSSA, scrutineeSSA, [i], scrutineeType))]
+                        let tagType = match fieldType with | TStruct (t::_) -> t | _ -> TInt I8
+                        let tagSSA = nextSSA ()
+                        ops <- ops @ [MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, elemSSA, [0], fieldType))]
+                        tags <- tags @ [(tagSSA, tagType)]
+                    ops, tags
+                | _ ->
+                    let tagSSA = nextSSA ()
+                    [MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, scrutineeSSA, [0], scrutineeType))],
+                    [(tagSSA, TInt I8)]
+
+    // Generate comparison ops for DU tag matching
     let buildTagComparison (expectedTags: int list) : MLIROp list * SSA =
-        match List.zip expectedTags extractedTags with
-        | [] ->
-            // No tags - always true
+        if List.isEmpty expectedTags || List.isEmpty extractedTags then
+            // No tags - always true (record/wildcard pattern)
             let trueSSA = nextSSA ()
             [MLIROp.ArithOp (ArithOp.ConstI (trueSSA, 1L, TInt I1))], trueSSA
-        | [(expected, (actualSSA, tagType))] ->
-            // Single tag - simple comparison
-            let expectedSSA = nextSSA ()
-            let cmpSSA = nextSSA ()
-            let ops = [
-                MLIROp.ArithOp (ArithOp.ConstI (expectedSSA, int64 expected, tagType))
-                MLIROp.ArithOp (ArithOp.CmpI (cmpSSA, ICmpPred.Eq, actualSSA, expectedSSA, tagType))
-            ]
-            ops, cmpSSA
-        | pairs ->
-            // Multiple tags - compare each and AND together
-            let mutable ops = []
-            let mutable cmpSSAs = []
-            for (expected, (actualSSA, tagType)) in pairs do
+        else
+            match List.zip expectedTags extractedTags with
+            | [(expected, (actualSSA, tagType))] ->
                 let expectedSSA = nextSSA ()
                 let cmpSSA = nextSSA ()
-                ops <- ops @ [
+                let ops = [
                     MLIROp.ArithOp (ArithOp.ConstI (expectedSSA, int64 expected, tagType))
                     MLIROp.ArithOp (ArithOp.CmpI (cmpSSA, ICmpPred.Eq, actualSSA, expectedSSA, tagType))
                 ]
-                cmpSSAs <- cmpSSAs @ [cmpSSA]
-            // AND all comparisons together
-            let rec andChain (ssas: SSA list) : MLIROp list * SSA =
-                match ssas with
-                | [] -> [], nextSSA ()  // Shouldn't happen
-                | [single] -> [], single
-                | first :: second :: rest ->
-                    let andSSA = nextSSA ()
-                    let andOp = MLIROp.ArithOp (ArithOp.AndI (andSSA, first, second, TInt I1))
-                    let restOps, finalSSA = andChain (andSSA :: rest)
-                    [andOp] @ restOps, finalSSA
-            let andOps, finalSSA = andChain cmpSSAs
-            ops @ andOps, finalSSA
+                ops, cmpSSA
+            | pairs ->
+                let mutable ops = []
+                let mutable cmpSSAs = []
+                for (expected, (actualSSA, tagType)) in pairs do
+                    let expectedSSA = nextSSA ()
+                    let cmpSSA = nextSSA ()
+                    ops <- ops @ [
+                        MLIROp.ArithOp (ArithOp.ConstI (expectedSSA, int64 expected, tagType))
+                        MLIROp.ArithOp (ArithOp.CmpI (cmpSSA, ICmpPred.Eq, actualSSA, expectedSSA, tagType))
+                    ]
+                    cmpSSAs <- cmpSSAs @ [cmpSSA]
+                let rec andChain (ssas: SSA list) : MLIROp list * SSA =
+                    match ssas with
+                    | [] -> [], nextSSA ()
+                    | [single] -> [], single
+                    | first :: second :: rest ->
+                        let andSSA = nextSSA ()
+                        let andOp = MLIROp.ArithOp (ArithOp.AndI (andSSA, first, second, TInt I1))
+                        let restOps, finalSSA = andChain (andSSA :: rest)
+                        [andOp] @ restOps, finalSSA
+                let andOps, finalSSA = andChain cmpSSAs
+                ops @ andOps, finalSSA
 
-    // Build nested if-else chain
-    // Returns (ops, resultSSA) - the ops do NOT include a final yield; caller adds that
-    let rec buildIfChain (cases: (int list * MLIROp list * SSA option) list) : MLIROp list * SSA option =
+    // Helper: Find the index of the op that defines a given SSA
+    // Returns the index (0-based) of the op that produces this SSA as its result
+    let findDefiningOpIndex (ops: MLIROp list) (ssa: SSA) : int option =
+        ops |> List.tryFindIndex (fun op ->
+            match op with
+            | MLIROp.ArithOp (ArithOp.CmpI (r, _, _, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.ConstI (r, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.AndI (r, _, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.OrI (r, _, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.XOrI (r, _, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.AddI (r, _, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.SubI (r, _, _, _)) -> r = ssa
+            | MLIROp.ArithOp (ArithOp.MulI (r, _, _, _)) -> r = ssa
+            | MLIROp.LLVMOp (LLVMOp.ExtractValue (r, _, _, _)) -> r = ssa
+            | MLIROp.LLVMOp (LLVMOp.InsertValue (r, _, _, _, _)) -> r = ssa
+            | _ -> false)
+
+    // Helper: Split ops into guardOps (ops needed to compute guard) and bodyOps (the rest)
+    // guardOps are emitted BEFORE the if, bodyOps go INSIDE the then block
+    let splitOpsAtGuard (ops: MLIROp list) (guardSSA: SSA option) : MLIROp list * MLIROp list =
+        match guardSSA with
+        | None -> [], ops  // No guard - all ops are body ops
+        | Some gSSA ->
+            match findDefiningOpIndex ops gSSA with
+            | Some idx ->
+                // Split: ops[0..idx] are guard ops, ops[idx+1..] are body ops
+                let guardOps = ops |> List.take (idx + 1)
+                let bodyOps = ops |> List.skip (idx + 1)
+                guardOps, bodyOps
+            | None ->
+                // Guard SSA not found in ops - assume it was computed elsewhere
+                [], ops
+
+    // Build nested if-else chain (or direct execution for record/wildcard patterns)
+    // Now handles guards (when clauses) for record patterns
+    let rec buildIfChain (cases: (Pattern * SSA option * MLIROp list * SSA option) list) : MLIROp list * SSA option =
         match cases with
         | [] ->
-            // Should not happen - match should be exhaustive
             [], None
-        | [(_, caseOps, resultSSA)] ->
-            // Last case - no condition check, just return case ops
-            // Caller will add the yield
+        | [(_, guardSSA, caseOps, resultSSA)] ->
+            // Last case - unconditional execution (wildcard/fallthrough)
+            // Even last case might have guard ops that need to be emitted
+            let guardOps, bodyOps = splitOpsAtGuard caseOps guardSSA
             match resultSSA, resultType with
             | Some ssa, _ ->
-                caseOps, Some ssa
+                guardOps @ bodyOps, Some ssa
             | None, Some ty ->
-                // Need to create a zero constant for void case
                 let zeroSSA = nextSSA ()
                 let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
-                caseOps @ [zeroOp], Some zeroSSA
+                guardOps @ bodyOps @ [zeroOp], Some zeroSSA
             | None, None ->
-                caseOps, None
-        | (tags, caseOps, resultSSA) :: rest ->
-            // Build comparison for ALL tags in the pattern
-            let checkOps, cmpSSA = buildTagComparison tags
+                guardOps @ bodyOps, None
+        | (pattern, guardSSA, caseOps, resultSSA) :: rest ->
+            // For record/wildcard patterns without guards, this case always matches
+            // For DU patterns, compare tags
+            // For patterns WITH guards, must check the guard
+            let tags = extractTagsFromPattern pattern
+            let hasTagCheck = not (List.isEmpty tags) || requiresTagComparison pattern
+            let hasGuard = guardSSA.IsSome
 
-            // Then branch: this case - add yield at end
-            let thenOps =
+            // Split caseOps: guard ops go BEFORE the if, body ops go INSIDE the then
+            let guardOps, bodyOps = splitOpsAtGuard caseOps guardSSA
+
+            // Compute the condition:
+            // - No tag, no guard: unconditional (take this case)
+            // - Tag only: tag comparison
+            // - Guard only: guard value
+            // - Both: tag AND guard
+            let isUnconditional = not hasTagCheck && not hasGuard
+
+            if isUnconditional then
+                // Record/Wildcard without guard: pattern always matches, take this case directly
                 match resultSSA, resultType with
-                | Some ssa, Some ty -> caseOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
+                | Some ssa, _ -> caseOps, Some ssa
                 | None, Some ty ->
                     let zeroSSA = nextSSA ()
                     let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
-                    caseOps @ [zeroOp; MLIROp.SCFOp (SCF.scfYield [{ SSA = zeroSSA; Type = ty }])]
-                | _ -> caseOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
-            let thenRegion = SCF.singleBlockRegion "then" [] thenOps
+                    caseOps @ [zeroOp], Some zeroSSA
+                | None, None -> caseOps, None
+            else
+                // Conditional case: compute the combined condition
+                // guardOps are emitted BEFORE the if (outside)
+                let checkOps, cmpSSA =
+                    match hasTagCheck, guardSSA with
+                    | false, Some gSSA ->
+                        // Guard only (record pattern with when clause)
+                        // guardOps already includes the ops that compute gSSA
+                        guardOps, gSSA
+                    | true, None ->
+                        // Tag only (DU pattern without when clause)
+                        buildTagComparison tags
+                    | true, Some gSSA ->
+                        // Both tag and guard: AND them together
+                        let tagOps, tagSSA = buildTagComparison tags
+                        let andSSA = nextSSA ()
+                        let andOp = MLIROp.ArithOp (ArithOp.AndI (andSSA, tagSSA, gSSA, TInt I1))
+                        guardOps @ tagOps @ [andOp], andSSA
+                    | false, None ->
+                        // Should not happen (handled by isUnconditional)
+                        let trueSSA = nextSSA ()
+                        [MLIROp.ArithOp (ArithOp.ConstI (trueSSA, 1L, TInt I1))], trueSSA
 
-            // Else branch: remaining cases - add yield at end
-            let elseOps, elseResultSSA = buildIfChain rest
-            let elseOpsWithYield =
-                match elseResultSSA, resultType with
-                | Some ssa, Some ty ->
-                    elseOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
-                | _ ->
-                    elseOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
-            let elseRegion = SCF.singleBlockRegion "else" [] elseOpsWithYield
+                // Only body ops go inside the then block (guard ops are outside)
+                let thenOps =
+                    match resultSSA, resultType with
+                    | Some ssa, Some ty -> bodyOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
+                    | None, Some ty ->
+                        let zeroSSA = nextSSA ()
+                        let zeroOp = MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, 0L, ty))
+                        bodyOps @ [zeroOp; MLIROp.SCFOp (SCF.scfYield [{ SSA = zeroSSA; Type = ty }])]
+                    | _ -> bodyOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
+                let thenRegion = SCF.singleBlockRegion "then" [] thenOps
 
-            let resultSSAOpt = resultType |> Option.map (fun _ -> nextSSA ())
-            let resultSSAs = resultSSAOpt |> Option.toList
-            let resultTypes = resultType |> Option.toList
+                let elseOps, elseResultSSA = buildIfChain rest
+                let elseOpsWithYield =
+                    match elseResultSSA, resultType with
+                    | Some ssa, Some ty ->
+                        elseOps @ [MLIROp.SCFOp (SCF.scfYield [{ SSA = ssa; Type = ty }])]
+                    | _ ->
+                        elseOps @ [MLIROp.SCFOp (SCF.scfYieldVoid)]
+                let elseRegion = SCF.singleBlockRegion "else" [] elseOpsWithYield
 
-            let ifOp = SCFOp.If (resultSSAs, cmpSSA, thenRegion, Some elseRegion, resultTypes)
+                let resultSSAOpt = resultType |> Option.map (fun _ -> nextSSA ())
+                let resultSSAs = resultSSAOpt |> Option.toList
+                let resultTypes = resultType |> Option.toList
 
-            // Return the if op and its result - no yield here, caller handles it
-            (checkOps @ [MLIROp.SCFOp ifOp]), resultSSAOpt
+                let ifOp = SCFOp.If (resultSSAs, cmpSSA, thenRegion, Some elseRegion, resultTypes)
+                (checkOps @ [MLIROp.SCFOp ifOp]), resultSSAOpt
 
     let chainOps, finalResultSSA = buildIfChain cases
     let matchOps = extractOps @ chainOps

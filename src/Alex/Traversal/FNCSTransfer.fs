@@ -190,6 +190,11 @@ let private transferGraphCore
                         | _ -> ()
                     else
                         // Simple DU pattern: extract payload directly
+                        // Get union case index from pattern (for multi-payload DUs like Result)
+                        let unionCaseIndex =
+                            match case.Pattern with
+                            | Pattern.Union (_, tagIndex, _, _) -> tagIndex
+                            | _ -> 0  // Default for non-union patterns
                         for pbNodeId in case.PatternBindings do
                             match SemanticGraph.tryGetNode pbNodeId graph with
                             | Some pbNode ->
@@ -198,7 +203,7 @@ let private transferGraphCore
                                     match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                     | Some ssas when not (List.isEmpty ssas) ->
                                         let patternType = mapType pbNode.Type
-                                        let ops, resultVal = MemWitness.witnessPayloadExtract ssas scrutineeSSA scrutineeType patternType
+                                        let ops, resultVal = MemWitness.witnessPayloadExtract ssas scrutineeSSA scrutineeType patternType unionCaseIndex
                                         for op in ops do emit op z'
                                         z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
                                     | _ -> ()
@@ -315,7 +320,7 @@ let private transferGraphCore
             // ─────────────────────────────────────────────────────────────────
             // Record expressions
             // ─────────────────────────────────────────────────────────────────
-            | SemanticKind.RecordExpr (fields, _copyFrom) ->
+            | SemanticKind.RecordExpr (fields, copyFrom) ->
                 // fields is (string * NodeId) list - resolve each field value
                 let fieldVals =
                     fields
@@ -323,10 +328,46 @@ let private transferGraphCore
                         match resolveNodeToVal valueId z with
                         | Some v -> Some (name, v)
                         | None -> None)
-                let recordType = mapType node.Type
-                let ops, result = MemWitness.witnessRecordExpr node.Id z fieldVals recordType
-                emitAll ops z
-                z, result
+                // Use graph-aware type mapping for records (looks up field types from TypeDef)
+                let recordType = mapNativeTypeWithGraph z.Graph node.Type
+
+                // Get record field definitions from graph
+                let recordFieldDefs =
+                    match node.Type with
+                    | NativeType.TApp(tycon, _) when tycon.FieldCount > 0 ->
+                        SemanticGraph.tryGetRecordFields tycon.Name graph
+                    | _ -> None
+
+                match copyFrom, recordFieldDefs with
+                | Some origId, Some fieldDefs ->
+                    // Copy-and-update: { orig with field1 = val1; field2 = val2 }
+                    // Start from original record and update only the specified fields
+                    match resolveNodeToVal origId z with
+                    | Some origVal ->
+                        // Use specialized witness for copy-and-update
+                        // It will insert updated fields at their correct indices into the original
+                        let ops, result = MemWitness.witnessRecordCopyUpdate node.Id z origVal fieldDefs fieldVals recordType
+                        emitAll ops z
+                        z, result
+                    | None ->
+                        z, TRError "RecordExpr: copyFrom source not computed"
+                | _, Some fieldDefs ->
+                    // New record construction - use field definitions for correct indices
+                    // Build map of provided fields
+                    let fieldMap = fieldVals |> Map.ofList
+                    // Build values in definition order
+                    let orderedFieldVals =
+                        fieldDefs |> List.choose (fun (fieldName, _) ->
+                            Map.tryFind fieldName fieldMap
+                            |> Option.map (fun v -> (fieldName, v)))
+                    let ops, result = MemWitness.witnessRecordExpr node.Id z orderedFieldVals recordType
+                    emitAll ops z
+                    z, result
+                | _, None ->
+                    // Non-record type or unknown type - fallback to original behavior
+                    let ops, result = MemWitness.witnessRecordExpr node.Id z fieldVals recordType
+                    emitAll ops z
+                    z, result
 
             // ─────────────────────────────────────────────────────────────────
             // Lambdas
@@ -505,20 +546,9 @@ let private transferGraphCore
                     | Some (ssa, ty) -> ssa, ty
                     | None -> failwithf "Match: scrutinee node %d result not found" (NodeId.value scrutineeId)
 
-                // Extract tag values from Pattern - returns list of tags for tuple patterns
-                // Tags are pre-resolved in FNCS (Pattern.Union carries tagIndex from UnionCaseInfo)
-                let rec extractTagsFromPattern (pattern: Pattern) : int list =
-                    match pattern with
-                    | Pattern.Union (_caseName, tagIndex, _payload, _unionType) ->
-                        // Tag is pre-resolved from UnionCaseInfo.CaseIndex in FNCS
-                        [tagIndex]
-                    | Pattern.Tuple elements ->
-                        // For tuple patterns, extract tags from each element
-                        elements |> List.collect extractTagsFromPattern
-                    | Pattern.Var _ | Pattern.Wildcard -> []
-                    | _ -> []
-
-                // Build cases with collected region ops
+                // Build cases with Pattern + collected region ops + guard SSA
+                // The witness will inspect Pattern to determine match strategy
+                // (Four Pillars: Pattern IS the classification - witness derives strategy)
                 let caseOps =
                     cases
                     |> List.mapi (fun idx case ->
@@ -528,9 +558,14 @@ let private transferGraphCore
                             match recallNodeResult (NodeId.value case.Body) z with
                             | Some (ssa, _) -> Some ssa
                             | None -> None
-                        // Extract actual tag values from Pattern
-                        let tags = extractTagsFromPattern case.Pattern
-                        (tags, ops, resultSSA))
+                        // Look up guard result SSA (if guard exists)
+                        let guardSSA =
+                            case.Guard
+                            |> Option.bind (fun guardId ->
+                                recallNodeResult (NodeId.value guardId) z
+                                |> Option.map fst)
+                        // Pass Pattern + guard SSA - witness derives strategy from it
+                        (case.Pattern, guardSSA, ops, resultSSA))
 
                 let resultType =
                     let mlirType = mapType node.Type
@@ -655,19 +690,87 @@ let private transferGraphCore
             | SemanticKind.FieldGet (exprId, fieldName) ->
                 match resolveNodeToVal exprId z with
                 | Some exprVal ->
-                    // Resolve field index and type from field name
+                    // Resolve field index(es) and type from field name
                     // For strings (NativeStr = {ptr, i64}):
                     //   Pointer → index 0, type ptr
                     //   Length → index 1, type i64 (NOT F# int!)
-                    // For general records: lookup from type definition
-                    let fieldIndex, fieldType =
+                    // For records: lookup from TypeDef in graph
+                    // For nested access (e.g., "Person.Name"): compute index path
+
+                    // Helper to look up a single field index and type from a record type
+                    let lookupFieldIndex (typeName: string) (fldName: string) : (int * NativeType) option =
+                        match SemanticGraph.tryGetRecordFields typeName graph with
+                        | Some fields ->
+                            fields
+                            |> List.tryFindIndex (fun (name, _) -> name = fldName)
+                            |> Option.map (fun idx -> idx, snd fields.[idx])
+                        | None -> None
+
+                    // Get the record type name from exprNode
+                    let exprTypeName =
+                        match SemanticGraph.tryGetNode exprId graph with
+                        | Some exprNode ->
+                            match exprNode.Type with
+                            | NativeType.TApp(tycon, _) when tycon.FieldCount > 0 -> Some tycon.Name
+                            | _ -> None
+                        | None -> None
+
+                    // Handle field access (simple or nested)
+                    let ops, result =
                         match exprVal.Type, fieldName with
-                        | TStruct [TPtr; TInt I64], "Pointer" -> 0, MLIRTypes.ptr
-                        | TStruct [TPtr; TInt I64], "Length" -> 1, MLIRTypes.i64
-                        | _, "Pointer" -> 0, MLIRTypes.ptr
-                        | _, "Length" -> 1, mapType node.Type
-                        | _ -> 0, mapType node.Type
-                    let ops, result = MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type fieldIndex fieldType
+                        | TStruct [TPtr; TInt I64], "Pointer" ->
+                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 MLIRTypes.ptr
+                        | TStruct [TPtr; TInt I64], "Length" ->
+                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 1 MLIRTypes.i64
+                        | _, "Pointer" ->
+                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 MLIRTypes.ptr
+                        | _, "Length" ->
+                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 1 (mapType node.Type)
+                        | _ when fieldName.Contains(".") ->
+                            // Nested field access - parse path and compute indices
+                            let pathParts = fieldName.Split('.') |> Array.toList
+                            match exprTypeName with
+                            | Some startTypeName ->
+                                // Walk through the path to compute indices
+                                let rec computeIndices (currentTypeName: string) (parts: string list) (acc: int list) : (int list * MLIRType) option =
+                                    match parts with
+                                    | [] -> None  // Empty path - shouldn't happen
+                                    | [lastField] ->
+                                        // Last field in path - get index and final type
+                                        match lookupFieldIndex currentTypeName lastField with
+                                        | Some (idx, fieldTy) ->
+                                            Some (List.rev (idx :: acc), mapNativeType fieldTy)
+                                        | None -> None
+                                    | field :: rest ->
+                                        // Intermediate field - get index and continue
+                                        match lookupFieldIndex currentTypeName field with
+                                        | Some (idx, fieldTy) ->
+                                            // Get the next type name from fieldTy
+                                            match fieldTy with
+                                            | NativeType.TApp(nextTycon, _) when nextTycon.FieldCount > 0 ->
+                                                computeIndices nextTycon.Name rest (idx :: acc)
+                                            | _ ->
+                                                None  // Intermediate field is not a record
+                                        | None -> None
+                                match computeIndices startTypeName pathParts [] with
+                                | Some (indices, fieldType) ->
+                                    MemWitness.witnessNestedFieldGet node.Id z exprVal.SSA exprVal.Type indices fieldType
+                                | None ->
+                                    [], TRError (sprintf "FieldGet: cannot resolve nested path '%s' from type '%s'" fieldName startTypeName)
+                            | None ->
+                                [], TRError (sprintf "FieldGet: nested path '%s' but expr is not a record type" fieldName)
+                        | _ ->
+                            // Simple field access on a record
+                            match exprTypeName with
+                            | Some typeName ->
+                                match lookupFieldIndex typeName fieldName with
+                                | Some (idx, fieldTy) ->
+                                    MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type idx (mapNativeType fieldTy)
+                                | None ->
+                                    [], TRError (sprintf "FieldGet: field '%s' not found in record type '%s'" fieldName typeName)
+                            | None ->
+                                // Not a record type - use node.Type (result type) for field type
+                                MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 (mapType node.Type)
                     emitAll ops z
                     z, result
                 | None ->
@@ -677,11 +780,37 @@ let private transferGraphCore
                 match resolveNodeToVal exprId z, resolveNodeToVal valueId z with
                 | Some exprVal, Some valV ->
                     // Resolve field index from field name
+                    // For strings: Pointer → 0, Length → 1
+                    // For records: look up from TypeDef in graph
+                    // Note: Nested FieldSet (e.g., "Person.Name") is not supported
+
+                    // Helper to look up a single field index from a record type
+                    let lookupFieldIndex (typeName: string) (fldName: string) : int option =
+                        match SemanticGraph.tryGetRecordFields typeName graph with
+                        | Some fields ->
+                            fields |> List.tryFindIndex (fun (name, _) -> name = fldName)
+                        | None -> None
+
                     let fieldIndex =
-                        match fieldName with
-                        | "Pointer" -> 0
-                        | "Length" -> 1
-                        | _ -> 0  // TODO: Look up from type definition
+                        if fieldName.Contains(".") then
+                            failwithf "FieldSet: nested path '%s' not supported - use intermediate bindings" fieldName
+                        else
+                            match fieldName with
+                            | "Pointer" -> 0
+                            | "Length" -> 1
+                            | _ ->
+                                // Look up field index from record's NativeType via graph
+                                match SemanticGraph.tryGetNode exprId graph with
+                                | Some exprNode ->
+                                    match exprNode.Type with
+                                    | NativeType.TApp(tycon, _) when tycon.FieldCount > 0 ->
+                                        // Record type - look up field index
+                                        match lookupFieldIndex tycon.Name fieldName with
+                                        | Some idx -> idx
+                                        | None ->
+                                            failwithf "FieldSet: field '%s' not found in record type '%s'" fieldName tycon.Name
+                                    | _ -> 0  // Not a record type - default
+                                | None -> 0  // Node not found - fallback
                     let ops, result = MemWitness.witnessFieldSet node.Id z exprVal.SSA exprVal.Type fieldIndex valV.SSA
                     emitAll ops z
                     z, result

@@ -880,7 +880,8 @@ let witness
 
     // Resolve arguments to Val list
     let args = resolveArgs argNodeIds z
-    let mlirReturnType = mapNativeType returnType
+    // Use graph-aware mapping for record types
+    let mlirReturnType = mapNativeTypeWithGraph z.Graph returnType
 
     // Get the function node's semantic kind
     match resolveFuncKind funcNodeId z with

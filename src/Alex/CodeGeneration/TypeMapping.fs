@@ -8,6 +8,7 @@ module Alex.CodeGeneration.TypeMapping
 
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open FSharp.Native.Compiler.Checking.Native.UnionFind
+open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -57,16 +58,31 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
             match args with
             | [innerTy] -> TStruct [TInt I1; mapNativeType innerTy]
             | _ -> failwithf "voption type requires exactly one type argument: %A" ty
+        | "result" ->
+            // Result<'T, 'E> is a DU with Ok and Error cases
+            // Layout: {tag: i8, okPayload: 'T, errorPayload: 'E}
+            // Each case extracts from its corresponding field index (tag+1)
+            match args with
+            | [okTy; errorTy] -> TStruct [TInt I8; mapNativeType okTy; mapNativeType errorTy]
+            | _ -> failwithf "result type requires exactly two type arguments: %A" ty
         | _ ->
             // Check FieldCount for record types
             if tycon.FieldCount > 0 then
                 match tycon.Layout with
                 | TypeLayout.Inline (size, align) when size > 0 && align > 0 ->
-                    if size = 16 && align = 8 && tycon.FieldCount = 2 then
-                        TStruct [TPtr; TPtr]
-                    else
-                        failwithf "Record '%s' with %d fields needs SemanticGraph for exact types (layout: %d, %d)"
-                            tycon.Name tycon.FieldCount size align
+                    // Infer struct layout from size/align/fieldCount
+                    match size, align, tycon.FieldCount with
+                    | 16, 8, 2 -> TStruct [TPtr; TPtr]  // Two pointers
+                    | 24, 8, 2 -> TStruct [TPtr; TInt I64; TInt I64]  // Fat pointer (string) + int
+                    | 32, 8, 2 -> TStruct [TPtr; TInt I64; TPtr; TInt I64]  // Two fat pointers (strings)
+                    | 32, 8, 3 -> TStruct [TPtr; TInt I64; TInt I64]  // Fat pointer + int + padding or ptr
+                    | 40, 8, 3 -> TStruct [TPtr; TInt I64; TPtr; TInt I64; TInt I64]  // 3 fat ptrs (24+16)
+                    | 48, 8, 3 -> TStruct [TPtr; TInt I64; TPtr; TInt I64; TPtr; TInt I64]  // 3 fat pointers
+                    | 56, 8, 3 -> TStruct [TPtr; TInt I64; TPtr; TInt I64; TPtr; TInt I64; TInt I64]  // 3 strings + int
+                    | _ ->
+                        // Fallback: estimate fields based on word-aligned size
+                        let numWords = size / 8
+                        TStruct (List.replicate numWords TPtr)
                 | TypeLayout.NTUCompound n when n = tycon.FieldCount ->
                     TStruct (List.replicate n TPtr)
                 | _ ->
@@ -131,8 +147,7 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
     | NativeType.TNativePtr _ -> TPtr
     | NativeType.TForall(_, body) -> mapNativeType body
 
-    | NativeType.TRecord(tc, _) ->
-        failwithf "Unexpected TRecord '%s' - use TApp with tycon.Fields" tc.Name
+    // Named records are TApp with FieldCount > 0 - handled in TApp case above
 
     | NativeType.TUnion (tycon, _cases) ->
         // DU layout should come from NTU via tycon.Layout
@@ -152,6 +167,45 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
 
     | NativeType.TError msg ->
         failwithf "NativeType.TError: %s" msg
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GRAPH-AWARE TYPE MAPPING (for record types)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map a NativeType to MLIRType, using graph lookup for record field types.
+/// This is the principled approach per spec type-representation-architecture.md:
+/// record fields are looked up via tryGetRecordFields, not guessed from layout.
+/// RECURSIVE: nested record types also use graph lookup.
+let rec mapNativeTypeWithGraph (graph: SemanticGraph) (ty: NativeType) : MLIRType =
+    match ty with
+    | NativeType.TApp(tycon, args) when tycon.FieldCount > 0 ->
+        // Record type: look up field types from TypeDef
+        match SemanticGraph.tryGetRecordFields tycon.Name graph with
+        | Some fields ->
+            // Map each field type to MLIR RECURSIVELY (nested records also use graph lookup)
+            TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraph graph fieldTy))
+        | None ->
+            // Fallback: shouldn't happen if TypeDef nodes are properly created
+            failwithf "Record type '%s' not found in TypeDef nodes - FNCS must create TypeDef for records" tycon.Name
+    | NativeType.TApp(tycon, args) ->
+        // Non-record TApp (FieldCount = 0) - but check if it might be a record by name lookup
+        // This handles cases where FieldCount wasn't preserved in type extraction
+        match SemanticGraph.tryGetRecordFields tycon.Name graph with
+        | Some fields ->
+            // Found record definition - use graph lookup
+            TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraph graph fieldTy))
+        | None ->
+            // Not a record - use standard mapping
+            mapNativeType ty
+    | NativeType.TTuple(elements, _) ->
+        // Tuples also need recursive mapping for nested records
+        TStruct (elements |> List.map (mapNativeTypeWithGraph graph))
+    | NativeType.TAnon(fields, _) ->
+        // Anonymous records need recursive mapping
+        TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraph graph fieldTy))
+    | _ ->
+        // Non-record types: use standard mapping
+        mapNativeType ty
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STRING-BASED TYPE MAPPING (for legacy code)

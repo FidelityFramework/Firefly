@@ -136,6 +136,23 @@ let witnessFieldGet
 
     [extractOp], TRValue { SSA = fieldSSA; Type = fieldType }
 
+/// Witness nested field get (struct.field1.field2.etc)
+/// Uses extractvalue with multiple indices for nested access
+/// Uses 1 pre-assigned SSA: extract[0]
+let witnessNestedFieldGet
+    (nodeId: NodeId)
+    (z: PSGZipper)
+    (structSSA: SSA)
+    (structType: MLIRType)
+    (indices: int list)
+    (fieldType: MLIRType)
+    : MLIROp list * TransferResult =
+
+    let fieldSSA = requireNodeSSA nodeId z
+    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (fieldSSA, structSSA, indices, structType))
+
+    [extractOp], TRValue { SSA = fieldSSA; Type = fieldType }
+
 /// Witness field set (struct.field <- value)
 /// Uses insertvalue for value types (returns new struct)
 /// Uses 1 pre-assigned SSA: insert[0]
@@ -217,6 +234,43 @@ let witnessRecordExpr
         ) ([], undefSSA)
 
     [undefOp] @ insertOps, TRValue { SSA = finalSSA; Type = recordType }
+
+/// Witness record copy-and-update expression { orig with field1 = val1 }
+/// Uses original record as base and updates only specified fields
+/// Uses N pre-assigned SSAs for insertvalue operations (N = number of updated fields)
+let witnessRecordCopyUpdate
+    (nodeId: NodeId)
+    (z: PSGZipper)
+    (origVal: Val)
+    (fieldDefs: (string * FSharp.Native.Compiler.Checking.Native.NativeTypes.NativeType) list)
+    (updatedFields: (string * Val) list)
+    (recordType: MLIRType)
+    : MLIROp list * TransferResult =
+
+    if List.isEmpty updatedFields then
+        // No updates - just return the original
+        [], TRValue origVal
+    else
+        let ssas = requireNodeSSAs nodeId z
+
+        // Build map of field names to their indices
+        let fieldIndexMap =
+            fieldDefs
+            |> List.mapi (fun idx (name, _) -> (name, idx))
+            |> Map.ofList
+
+        // Start with original record, insert each updated field at its correct index
+        let insertOps, finalSSA =
+            updatedFields
+            |> List.indexed
+            |> List.fold (fun (ops, prevSSA) (i, (fieldName, fieldVal)) ->
+                let newSSA = ssas.[i]
+                let fieldIdx = Map.find fieldName fieldIndexMap  // Look up correct index
+                let insertOp = MLIROp.LLVMOp (LLVMOp.InsertValue (newSSA, prevSSA, fieldVal.SSA, [fieldIdx], recordType))
+                (ops @ [insertOp], newSSA)
+            ) ([], origVal.SSA)
+
+        insertOps, TRValue { SSA = finalSSA; Type = recordType }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ARRAY CONSTRUCTION
@@ -301,7 +355,9 @@ let witnessListExpr
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Witness discriminated union case construction
-/// DU layout: { tag, payload } where types come from unionType struct
+/// DU layout: { tag, payload... } where types come from unionType struct
+/// For 2-element DUs (option), insert payload at [1]
+/// For multi-payload DUs (result), insert payload at [tag+1]
 /// Uses 3-5 pre-assigned SSAs depending on payload conversion needs
 let witnessUnionCase
     (nodeId: NodeId)
@@ -318,12 +374,19 @@ let witnessUnionCase
         ssaIdx <- ssaIdx + 1
         ssa
 
-    // Extract tag and payload types from the union struct
-    let tagType, payloadSlotType =
+    // Extract tag type and determine payload info based on struct layout
+    let tagType, payloadSlotType, payloadIndex =
         match unionType with
-        | TStruct [t; p] -> t, Some p
-        | TStruct [t] -> t, None
-        | _ -> TInt I8, None  // Fallback
+        | TStruct [t; p] ->
+            // 2-element struct (like option): payload at [1]
+            t, Some p, 1
+        | TStruct (t :: rest) when List.length rest > 1 ->
+            // Multi-payload struct (like result): payload at [tag+1]
+            let idx = tag + 1
+            if idx <= List.length rest then t, Some (List.item (idx - 1) rest), idx
+            else t, None, 1
+        | TStruct [t] -> t, None, 1
+        | _ -> TInt I8, None, 1  // Fallback
 
     // Create discriminator constant with correct type
     let tagSSA = nextSSA ()
@@ -364,9 +427,9 @@ let witnessUnionCase
                         MLIROp.ArithOp (ArithOp.ExtSI (convertedSSA, payloadVal.SSA, payloadVal.Type, slotType))
                 convertedSSA, [convOp]
 
-        // Insert (possibly converted) payload at field 1
+        // Insert (possibly converted) payload at the computed index
         let resultSSA = nextSSA ()
-        let insertPayloadOp = MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withTagSSA, payloadSSA, [1], unionType))
+        let insertPayloadOp = MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withTagSSA, payloadSSA, [payloadIndex], unionType))
         [tagOp; undefOp; insertTagOp] @ conversionOps @ [insertPayloadOp], TRValue { SSA = resultSSA; Type = unionType }
 
     | None, _ ->
@@ -382,7 +445,9 @@ let witnessUnionCase
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Witness payload extraction from a DU for pattern matching
-/// DU layout: { tag, payload } - extracts payload[1] and converts to pattern type
+/// DU layout: { tag, payload... } - extracts payload at caseIndex+1 and converts to pattern type
+/// For 2-element DUs (option), caseIndex is ignored (always extract from [1])
+/// For 3-element DUs (result), extract from [caseIndex+1]: Ok=>[1], Error=>[2]
 /// Uses 1-2 pre-assigned SSAs: extract[0], convert[1] (if conversion needed)
 ///
 /// FOUR PILLARS: This is the witness for pattern payload extraction.
@@ -392,17 +457,25 @@ let witnessPayloadExtract
     (scrutineeSSA: SSA)
     (scrutineeType: MLIRType)
     (patternType: MLIRType)
+    (caseIndex: int)  // 0-based union case index (e.g., Ok=0, Error=1)
     : MLIROp list * Val =
 
-    // Get slot type from scrutinee struct (field 1 is payload)
-    let slotType =
+    // Determine extraction index and slot type based on struct layout
+    let extractIndex, slotType =
         match scrutineeType with
-        | TStruct [_; p] -> p
-        | _ -> patternType  // Fallback
+        | TStruct [_; p] ->
+            // 2-element struct (like option): always extract from [1]
+            1, p
+        | TStruct fields when List.length fields > 2 ->
+            // Multi-payload struct (like result): extract from [caseIndex+1]
+            let idx = caseIndex + 1
+            if idx < List.length fields then idx, fields.[idx]
+            else 1, patternType  // Fallback
+        | _ -> 1, patternType  // Fallback
 
-    // Extract payload as slot type
+    // Extract payload at the computed index
     let extractSSA = ssas.[0]
-    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (extractSSA, scrutineeSSA, [1], scrutineeType))
+    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (extractSSA, scrutineeSSA, [extractIndex], scrutineeType))
 
     // Convert extracted value to pattern type if different
     if slotType = patternType then
