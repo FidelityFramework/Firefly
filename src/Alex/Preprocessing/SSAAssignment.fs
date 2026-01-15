@@ -169,6 +169,9 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.TimeSpan, "seconds" -> 5
                 | IntrinsicModule.TimeSpan, "milliseconds" -> 3
                 | IntrinsicModule.TimeSpan, _ -> 10        // other TimeSpan ops
+                | IntrinsicModule.Bits, "htons" | IntrinsicModule.Bits, "ntohs" -> 2  // byte swap uint16
+                | IntrinsicModule.Bits, "htonl" | IntrinsicModule.Bits, "ntohl" -> 2  // byte swap uint32
+                | IntrinsicModule.Bits, _ -> 1             // bitcast operations
                 | IntrinsicModule.NativePtr, _ -> 5        // pointer ops
                 | IntrinsicModule.Array, _ -> 10           // array ops
                 | IntrinsicModule.Operators, _ -> 5        // arithmetic

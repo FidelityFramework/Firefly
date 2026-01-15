@@ -374,6 +374,7 @@ and LLVMOp =
 
     // === CONVERSION OPERATIONS ===
     | Bitcast of result: SSA * operand: SSA * fromTy: MLIRType * toTy: MLIRType
+    | Bswap of result: SSA * operand: SSA * ty: MLIRType  // llvm.intr.bswap - byte swap
     | IntToPtr of result: SSA * operand: SSA * fromTy: MLIRType
     | PtrToInt of result: SSA * operand: SSA * toTy: MLIRType
     | AddrSpaceCast of result: SSA * operand: SSA * fromAS: int * toAS: int
@@ -647,7 +648,7 @@ let opResults (op: MLIROp) : SSA list =
         match l with
         | Alloca (r,_,_,_) | LLVMOp.Load (r,_,_,_) | GEP (r,_,_,_) | AddressOf (r,_)
         | ExtractValue (r,_,_,_) | InsertValue (r,_,_,_,_) | Undef (r,_) | Poison (r,_) | ZeroInit (r,_)
-        | LLVMOp.Bitcast (r,_,_,_) | IntToPtr (r,_,_) | PtrToInt (r,_,_) | AddrSpaceCast (r,_,_,_)
+        | LLVMOp.Bitcast (r,_,_,_) | Bswap (r,_,_) | IntToPtr (r,_,_) | PtrToInt (r,_,_) | AddrSpaceCast (r,_,_,_)
         | ZExt (r,_,_,_) | SExt (r,_,_,_) | Trunc (r,_,_,_)
         | FPExt (r,_,_,_) | FPTrunc (r,_,_,_)
         | LLVMOp.FPToSI (r,_,_,_) | LLVMOp.FPToUI (r,_,_,_) | LLVMOp.SIToFP (r,_,_,_) | LLVMOp.UIToFP (r,_,_,_)

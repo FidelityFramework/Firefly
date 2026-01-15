@@ -398,6 +398,24 @@ let private witnessConversion
             | "toByte", TInt _, TInt I8 ->
                 Some (ArithOp.TruncI (resultSSA, arg.SSA, arg.Type, MLIRTypes.i8))
 
+            // Unsigned integer conversions (same-size = identity/reinterpret)
+            | "toUInt32", TInt I32, TInt I32 ->
+                None  // Same size, just reinterpret
+            | "toUInt16", TInt I16, TInt I16 ->
+                None
+            | "toUInt64", TInt I64, TInt I64 ->
+                None
+            // Unsigned widening (zero-extend)
+            | "toUInt32", TInt w, TInt I32 when w < I32 ->
+                Some (ArithOp.ExtUI (resultSSA, arg.SSA, arg.Type, MLIRTypes.i32))
+            | "toUInt64", TInt w, TInt I64 when w < I64 ->
+                Some (ArithOp.ExtUI (resultSSA, arg.SSA, arg.Type, MLIRTypes.i64))
+            // Unsigned narrowing (truncate)
+            | "toUInt16", TInt w, TInt I16 when w > I16 ->
+                Some (ArithOp.TruncI (resultSSA, arg.SSA, arg.Type, MLIRTypes.i16))
+            | "toUInt32", TInt w, TInt I32 when w > I32 ->
+                Some (ArithOp.TruncI (resultSSA, arg.SSA, arg.Type, MLIRTypes.i32))
+
             // Identity conversions
             | "toInt", TInt I32, TInt I32 ->
                 None  // No-op, return arg directly
@@ -416,6 +434,12 @@ let private witnessConversion
         | None when convName = "toInt" && arg.Type = MLIRTypes.i32 ->
             Some ([], TRValue arg)  // Identity
         | None when convName = "toInt64" && arg.Type = MLIRTypes.i64 ->
+            Some ([], TRValue arg)  // Identity
+        | None when convName = "toUInt32" && arg.Type = MLIRTypes.i32 ->
+            Some ([], TRValue arg)  // Identity (same bit representation)
+        | None when convName = "toUInt64" && arg.Type = MLIRTypes.i64 ->
+            Some ([], TRValue arg)  // Identity
+        | None when convName = "toUInt16" && arg.Type = MLIRTypes.i16 ->
             Some ([], TRValue arg)  // Identity
         | None ->
             None
@@ -765,6 +789,35 @@ let private witnessIntrinsic
                 MLIROp.ArithOp (ArithOp.TruncI (resultSSA, ssas.[1], MLIRTypes.i64, MLIRTypes.i32))
             ]
             Some (ops, TRValue { SSA = resultSSA; Type = MLIRTypes.i32 })
+        | _ -> None
+
+    // Bits operations - byte swapping and bit casting
+    | BitsOp opName ->
+        match opName, args with
+        | "htons", [val16] | "ntohs", [val16] ->
+            // Byte swap uint16 using llvm.intr.bswap
+            let op = MLIROp.LLVMOp (LLVMOp.Bswap (resultSSA, val16.SSA, MLIRTypes.i16))
+            Some ([op], TRValue { SSA = resultSSA; Type = MLIRTypes.i16 })
+        | "htonl", [val32] | "ntohl", [val32] ->
+            // Byte swap uint32 using llvm.intr.bswap
+            let op = MLIROp.LLVMOp (LLVMOp.Bswap (resultSSA, val32.SSA, MLIRTypes.i32))
+            Some ([op], TRValue { SSA = resultSSA; Type = MLIRTypes.i32 })
+        | "float32ToInt32Bits", [f32] ->
+            // Bitcast float32 to int32
+            let op = MLIROp.LLVMOp (LLVMOp.Bitcast (resultSSA, f32.SSA, MLIRTypes.f32, MLIRTypes.i32))
+            Some ([op], TRValue { SSA = resultSSA; Type = MLIRTypes.i32 })
+        | "int32BitsToFloat32", [i32] ->
+            // Bitcast int32 to float32
+            let op = MLIROp.LLVMOp (LLVMOp.Bitcast (resultSSA, i32.SSA, MLIRTypes.i32, MLIRTypes.f32))
+            Some ([op], TRValue { SSA = resultSSA; Type = MLIRTypes.f32 })
+        | "float64ToInt64Bits", [f64] ->
+            // Bitcast float64 to int64
+            let op = MLIROp.LLVMOp (LLVMOp.Bitcast (resultSSA, f64.SSA, MLIRTypes.f64, MLIRTypes.i64))
+            Some ([op], TRValue { SSA = resultSSA; Type = MLIRTypes.i64 })
+        | "int64BitsToFloat64", [i64] ->
+            // Bitcast int64 to float64
+            let op = MLIROp.LLVMOp (LLVMOp.Bitcast (resultSSA, i64.SSA, MLIRTypes.i64, MLIRTypes.f64))
+            Some ([op], TRValue { SSA = resultSSA; Type = MLIRTypes.f64 })
         | _ -> None
 
     // Unhandled intrinsics

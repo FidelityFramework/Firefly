@@ -2,7 +2,7 @@
 module BitsTest
 
 [<EntryPoint>]
-let main () =
+let main argv =
     // Byte order conversions for uint16
     let networkShort = Bits.htons 0x1234us
     let hostShort = Bits.ntohs networkShort

@@ -620,6 +620,12 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
         ssa op sb; sb.Append(" : ") |> ignore
         llvmType ft sb; sb.Append(" to ") |> ignore
         llvmType tt sb
+    | Bswap (r, op, ty) ->
+        // llvm.intr.bswap : (i16) -> i16  (or i32, i64)
+        ssa r sb; sb.Append(" = llvm.intr.bswap(") |> ignore
+        ssa op sb; sb.Append(") : (") |> ignore
+        llvmType ty sb; sb.Append(") -> ") |> ignore
+        llvmType ty sb
     | IntToPtr (r, op, ft) ->
         ssa r sb; sb.Append(" = llvm.inttoptr ") |> ignore
         ssa op sb; sb.Append(" : ") |> ignore
