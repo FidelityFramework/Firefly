@@ -38,8 +38,8 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
         | "uint" | "uint32" -> TInt I32
         | "int64" -> TInt I64
         | "uint64" -> TInt I64
-        | "nativeint" -> TPtr
-        | "unativeint" -> TPtr
+        | "nativeint" -> TIndex  // Platform-word integer (i64 on 64-bit)
+        | "unativeint" -> TIndex  // Platform-word unsigned integer
         | "float32" | "single" -> TFloat F32
         | "float" | "double" -> TFloat F64
         | "char" -> TInt I32  // Unicode codepoint

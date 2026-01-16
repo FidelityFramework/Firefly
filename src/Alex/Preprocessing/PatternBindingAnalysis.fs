@@ -117,7 +117,7 @@ let findEntryPatternBindings (graph: SemanticGraph) : Map<int, PatternBinding li
                     match SemanticGraph.tryGetNode childId graph with
                     | Some child ->
                         match child.Kind with
-                        | SemanticKind.Lambda (params', _) ->
+                        | SemanticKind.Lambda (params', _, _captures) ->
                             // params' contains the parameter patterns (now includes NodeId)
                             let bindings = params' |> List.collect (fun (name, ty, _nodeId) ->
                                 [{ Name = name; Type = ty }])
@@ -125,7 +125,7 @@ let findEntryPatternBindings (graph: SemanticGraph) : Map<int, PatternBinding li
                                 result <- Map.add (NodeId.value childId) bindings result
                         | _ -> ()
                     | None -> ()
-            | SemanticKind.Lambda (params', _) ->
+            | SemanticKind.Lambda (params', _, _captures) ->
                 // Entry point is directly a Lambda
                 let bindings = params' |> List.collect (fun (name, ty, _nodeId) ->
                     [{ Name = name; Type = ty }])

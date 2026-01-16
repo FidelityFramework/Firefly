@@ -60,11 +60,8 @@ let rec mlirType (t: MLIRType) (sb: StringBuilder) : unit =
     | TIndex -> sb.Append("index") |> ignore
     | TPtr -> sb.Append("!llvm.ptr") |> ignore
     | TStruct fields ->
-        sb.Append("!llvm.struct<(") |> ignore
-        fields |> List.iteri (fun i f ->
-            if i > 0 then sb.Append(", ") |> ignore
-            mlirType f sb)
-        sb.Append(")>") |> ignore
+        // LLVM structs delegate to llvmType for proper index -> i64 conversion
+        llvmStruct fields sb
     | TArray (count, elem) ->
         sb.Append("!llvm.array<").Append(count).Append(" x ") |> ignore
         mlirType elem sb
@@ -94,10 +91,25 @@ let rec mlirType (t: MLIRType) (sb: StringBuilder) : unit =
     | TUnit -> sb.Append("i32") |> ignore  // Unit maps to i32 for ABI
     | TError msg -> failwithf "COMPILER ERROR: Attempted to serialize TError: %s" msg
 
+/// Emit LLVM struct type with proper field type conversion
+/// Separate from mlirType to break circular dependency
+and llvmStruct (fields: MLIRType list) (sb: StringBuilder) : unit =
+    sb.Append("!llvm.struct<(") |> ignore
+    fields |> List.iteri (fun i f ->
+        if i > 0 then sb.Append(", ") |> ignore
+        llvmType f sb)  // Struct fields must use LLVM types (index -> i64)
+    sb.Append(")>") |> ignore
+
 /// Emit MLIR type for LLVM dialect (Index -> i64 on 64-bit)
-let rec llvmType (t: MLIRType) (sb: StringBuilder) : unit =
+and llvmType (t: MLIRType) (sb: StringBuilder) : unit =
     match t with
     | TIndex -> sb.Append("i64") |> ignore  // Platform word on 64-bit
+    | TStruct fields -> llvmStruct fields sb  // Handle struct recursively
+    | TArray (count, elem) ->
+        // LLVM arrays also need llvmType for elements
+        sb.Append("!llvm.array<").Append(count).Append(" x ") |> ignore
+        llvmType elem sb
+        sb.Append(">") |> ignore
     | _ -> mlirType t sb
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -457,7 +469,7 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
         | _ -> sb.Append("atomic ") |> ignore; atomicOrdering ordering sb; sb.Append(" ") |> ignore
         ssa v sb; sb.Append(", ") |> ignore
         ssa ptr sb; sb.Append(" : ") |> ignore
-        mlirType valueTy sb; sb.Append(", !llvm.ptr") |> ignore
+        llvmType valueTy sb; sb.Append(", !llvm.ptr") |> ignore
     | GEP (r, base', indices, elemTy) ->
         ssa r sb; sb.Append(" = llvm.getelementptr ") |> ignore
         ssa base' sb
@@ -471,6 +483,14 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
             mlirType idxTy sb
         sb.Append(") -> !llvm.ptr, ") |> ignore
         llvmType elemTy sb
+    | StructGEP (r, base', fieldIndex, structTy) ->
+        // Emit: %r = llvm.getelementptr inbounds %base[0, fieldIndex] : (!llvm.ptr) -> !llvm.ptr, structTy
+        ssa r sb; sb.Append(" = llvm.getelementptr inbounds ") |> ignore
+        ssa base' sb
+        sb.Append("[0, ") |> ignore
+        sb.Append(fieldIndex) |> ignore
+        sb.Append("] : (!llvm.ptr) -> !llvm.ptr, ") |> ignore
+        llvmType structTy sb
     | MemCpy (dst, src, len, isVolatile) ->
         sb.Append("llvm.intr.memcpy ") |> ignore
         ssa dst sb; sb.Append(", ") |> ignore
@@ -897,6 +917,9 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
             ssa v sb
         | None, _ -> ()
 
+    // LLVMFuncDef is handled in the recursive group (needs access to `region`)
+    | LLVMFuncDef _ -> failwith "LLVMFuncDef should be serialized via llvmFuncDef in recursive group"
+
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS FOR DIALECT SERIALIZATION (before recursive group)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -908,14 +931,31 @@ let private binaryIndex (opName: string) (r: SSA) (l: SSA) (rh: SSA) (sb: String
     ssa rh sb
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SCF DIALECT SERIALIZATION
+// SCF DIALECT SERIALIZATION (recursive group - needs access to `region`)
 // ═══════════════════════════════════════════════════════════════════════════
+
+/// Emit LLVM function definition (in recursive group because it needs `region`)
+/// llvm.func @name(%arg0: type, ...) -> retType { ... }
+let rec llvmFuncDef (name: string) (args: (SSA * MLIRType) list) (retTy: MLIRType) (body: Region) (linkage: LLVMLinkage) (sb: StringBuilder) : unit =
+    sb.Append("llvm.func ") |> ignore
+    match linkage with
+    | LLVMPrivate -> sb.Append("private ") |> ignore
+    | LLVMInternal -> sb.Append("internal ") |> ignore
+    | LLVMExternal -> ()
+    sb.Append("@").Append(name).Append("(") |> ignore
+    args |> List.iteri (fun i (a, t) ->
+        if i > 0 then sb.Append(", ") |> ignore
+        ssa a sb; sb.Append(": ") |> ignore
+        llvmType t sb)
+    sb.Append(") -> ") |> ignore
+    llvmType retTy sb
+    region body 2 sb
 
 /// Emit region
 /// For single-block regions with no block args, emit ops directly (MLIR doesn't need labels)
 /// For multi-block or blocks with args, emit full block structure
 /// Empty label (BlockRef "") means implicit entry block - no label emitted
-let rec region (r: Region) (indent: int) (sb: StringBuilder) : unit =
+and region (r: Region) (indent: int) (sb: StringBuilder) : unit =
     sb.Append(" {") |> ignore
     for i, blk in r.Blocks |> List.indexed do
         sb.AppendLine() |> ignore
@@ -1547,6 +1587,9 @@ and mlirOp (op: MLIROp) (sb: StringBuilder) : unit =
     | Envelope env -> opEnvelope env 1 sb
     // === DIALECT-SPECIFIC ===
     | ArithOp a -> arithOp a sb
+    | LLVMOp (LLVMFuncDef (name, args, retTy, body, linkage)) ->
+        // LLVMFuncDef needs special handling (uses region from recursive group)
+        llvmFuncDef name args retTy body linkage sb
     | LLVMOp l -> llvmOp l sb
     | SCFOp s -> scfOp s 1 sb
     | CFOp c -> cfOp c sb

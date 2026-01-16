@@ -79,6 +79,10 @@ type EmissionState = {
     /// Counter for lambda names
     mutable NextLambdaId: int
 
+    /// Counter for synthetic SSAs (used for closure construction, etc.)
+    /// Starts at 10000 to avoid conflicts with pre-assigned SSAs
+    mutable NextSynthSSAId: int
+
     // ─────────────────────────────────────────────────────────────────────────
     // ACCUMULATED OUTPUT
     // ─────────────────────────────────────────────────────────────────────────
@@ -130,6 +134,10 @@ type EmissionState = {
 
     /// Node SSA bindings: NodeId value -> (SSA, MLIRType)
     mutable NodeBindings: Map<int, SSA * MLIRType>
+
+    /// Captured mutable variable names (ByRef captures)
+    /// These are pointers to the original mutable's alloca - VarRef must load, Set must store
+    mutable CapturedMutables: Set<string>
 
     /// Entry point lambda IDs (for determining "main")
     EntryPointLambdaIds: Set<int>
@@ -189,6 +197,7 @@ module EmissionState =
             Platform = platform
             PatternBindings = patternBindings
             NextLambdaId = maxLambdaId + 1
+            NextSynthSSAId = 10000  // Start at 10000 to avoid conflicts with pre-assigned SSAs
             CurrentOps = []
             TopLevel = []
             Strings = stringTable  // Pre-collected, immutable coeffect
@@ -202,6 +211,7 @@ module EmissionState =
             FuncRetTypeStack = []
             VarBindings = Map.empty
             NodeBindings = Map.empty
+            CapturedMutables = Set.empty
             EntryPointLambdaIds = entryPointLambdaIds
         }
 
@@ -577,6 +587,16 @@ let bindVarSSA (name: string) (ssa: SSA) (ty: MLIRType) (z: PSGZipper) : PSGZipp
 let recallVarSSA (name: string) (z: PSGZipper) : (SSA * MLIRType) option =
     Map.tryFind name z.State.VarBindings
 
+/// Mark a variable as a captured mutable (ByRef capture)
+/// These need load/store indirection when accessed
+let markCapturedMutable (name: string) (z: PSGZipper) : PSGZipper =
+    z.State.CapturedMutables <- Set.add name z.State.CapturedMutables
+    z
+
+/// Check if a variable is a captured mutable (ByRef capture)
+let isCapturedMutable (name: string) (z: PSGZipper) : bool =
+    Set.contains name z.State.CapturedMutables
+
 /// Bind a node's SSA result (structured)
 let bindNodeResult (nodeId: int) (ssa: SSA) (ty: MLIRType) (z: PSGZipper) : PSGZipper =
     z.State.NodeBindings <- Map.add nodeId (ssa, ty) z.State.NodeBindings
@@ -671,6 +691,13 @@ let yieldLambdaName (z: PSGZipper) : string =
     let id = z.State.NextLambdaId
     z.State.NextLambdaId <- id + 1
     sprintf "lambda_%d" id
+
+/// Generate a fresh synthetic SSA (for closure construction and other synthesized code)
+/// These SSAs start at 10000 to avoid conflicts with pre-assigned node SSAs
+let freshSynthSSA (z: PSGZipper) : SSA =
+    let id = z.State.NextSynthSSAId
+    z.State.NextSynthSSAId <- id + 1
+    V id
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SCOPE ACCESSORS

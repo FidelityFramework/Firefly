@@ -105,7 +105,7 @@ let pBinding : PSGParser<string * bool * bool * bool> =
 let pLambda : PSGParser<(string * FSharp.Native.Compiler.Checking.Native.NativeTypes.NativeType * NodeId) list * NodeId> =
     fun state ->
         match state.Current.Kind with
-        | SemanticKind.Lambda (params', bodyId) -> Matched (params', bodyId), state
+        | SemanticKind.Lambda (params', bodyId, _captures) -> Matched (params', bodyId), state
         | _ -> NoMatch "Expected Lambda", state
 
 /// Match an IfThenElse node

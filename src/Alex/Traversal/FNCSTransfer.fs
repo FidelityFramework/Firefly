@@ -372,7 +372,7 @@ let private transferGraphCore
             // ─────────────────────────────────────────────────────────────────
             // Lambdas
             // ─────────────────────────────────────────────────────────────────
-            | SemanticKind.Lambda (params', bodyId) ->
+            | SemanticKind.Lambda (params', bodyId, _captures) ->
                 // Get accumulated body ops from regionOps (populated by scfHook)
                 let bodyKey = (nodeIdVal, regionKindToInt RegionKind.LambdaBodyRegion)
                 let bodyOps = regionOps.GetValueOrDefault(bodyKey, [])
@@ -386,11 +386,13 @@ let private transferGraphCore
                 | Some funcDef -> emitTopLevel funcDef z
                 | None -> ()
 
-                // Emit local ops (addressof) to current scope
-                emitAll localOps z
-
-                // ARCHITECTURAL FIX: Exit function scope to restore parent's CurrentOps
+                // ARCHITECTURAL FIX: Exit function scope to restore parent's CurrentOps FIRST
+                // localOps (closure construction) belong in the PARENT scope, not the Lambda's scope
                 let z' = exitFunction z
+
+                // Now emit local ops (closure construction) to parent scope
+                emitAll localOps z'
+
                 z', result
 
             // ─────────────────────────────────────────────────────────────────
@@ -818,11 +820,26 @@ let private transferGraphCore
                     z, TRError (sprintf "FieldSet '%s': expr or value not computed" fieldName)
 
             | SemanticKind.PatternBinding name ->
+                // PatternBindings can be:
+                // 1. Lambda parameters - already bound by preBindParams, or discarded
+                // 2. Match case bindings - bound during match processing
+                // 3. Discarded bindings ('_') - no value needed
                 match Map.tryFind name z.State.VarBindings with
                 | Some (ssa, ty) ->
                     z, TRValue { SSA = ssa; Type = ty }
+                | None when name = "_" || name.StartsWith("_") ->
+                    // Discarded binding or synthetic parameter - no value to return
+                    z, TRVoid
                 | None ->
-                    z, TRError (sprintf "PatternBinding '%s' not found" name)
+                    // Check if this is a Lambda parameter (definition, not use)
+                    // Lambda parameters are definitions - they don't need lookup
+                    // The binding happens in preBindParams when the Lambda is entered
+                    match z.Path with
+                    | step :: _ when (match step.Parent.Kind with SemanticKind.Lambda _ -> true | _ -> false) ->
+                        // This is a Lambda parameter definition - it's OK if not in VarBindings yet
+                        z, TRVoid
+                    | _ ->
+                        z, TRError (sprintf "PatternBinding '%s' not found" name)
 
             | SemanticKind.UnionCase (_caseName, caseIndex, payloadOpt) ->
                 let payload =

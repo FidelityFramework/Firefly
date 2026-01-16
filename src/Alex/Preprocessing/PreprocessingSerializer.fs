@@ -37,7 +37,7 @@ let serializeSSAAssignment (ssa: SSAAssignment) (graph: SemanticGraph) : SSAAssi
         graph.Nodes.Values
         |> Seq.choose (fun node ->
             match node.Kind with
-            | SemanticKind.Lambda(params', _) ->
+            | SemanticKind.Lambda(params', _, _captures) ->
                 let nodeIdVal = NodeId.value node.Id
                 let name = ssa.LambdaNames |> Map.tryFind nodeIdVal |> Option.defaultValue "unknown"
                 Some {

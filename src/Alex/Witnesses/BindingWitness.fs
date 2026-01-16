@@ -123,7 +123,17 @@ let witness
 
 /// Witness a variable reference (look up its SSA from coeffect)
 /// INVARIANT: PSG guarantees definitions are traversed before uses
-/// varRefNodeId: The NodeId of the VarRef node itself (for SSA lookup)
+/// Witness a VarRef node - resolve variable to its SSA value
+///
+/// LOOKUP ORDER (architectural invariant):
+/// 1. VarBindings (by name) - function parameters, captured variables
+/// 2. NodeBindings (by defId) - let-bound values computed during traversal
+/// 3. SSAAssignment (by defId) - pre-computed coeffects
+/// 4. Function reference - Lambda/Binding to Lambda returns TRVoid (called by name)
+///
+/// Special cases:
+/// - Module-level mutables: addressof + load from global
+/// - Addressed mutables (local): load from alloca
 let witnessVarRef
     (ctx: WitnessContext)
     (z: PSGZipper)
@@ -132,87 +142,86 @@ let witnessVarRef
     (defId: NodeId option)
     : MLIROp list * TransferResult =
 
-    // Check if this references a module-level mutable
+    // Helper: get type from definition node
+    let getDefType nodeId =
+        match SemanticGraph.tryGetNode nodeId ctx.Graph with
+        | Some node -> mapNativeType node.Type
+        | None -> MLIRTypes.i32
+
+    // Helper: check if defNode is a function reference (Lambda or Binding to Lambda)
+    let isFunctionRef nodeId =
+        match SemanticGraph.tryGetNode nodeId ctx.Graph with
+        | Some defNode ->
+            match defNode.Kind with
+            | SemanticKind.Lambda _ -> true
+            | SemanticKind.Binding _ ->
+                match defNode.Children with
+                | [childId] ->
+                    match SemanticGraph.tryGetNode childId ctx.Graph with
+                    | Some cn -> match cn.Kind with SemanticKind.Lambda _ -> true | _ -> false
+                    | None -> false
+                | _ -> false
+            | _ -> false
+        | None -> false
+
+    // 1. Module-level mutable: addressof + load
     match getModuleLevelMutable name ctx with
-    | Some mlm ->
-        // Module-level mutable: emit addressof + load (needs 2 SSAs)
+    | Some _ ->
         let ssas = requireNodeSSAs varRefNodeId z
-        let ptrSSA = ssas.[0]
-        let loadSSA = ssas.[1]
-        
+        let ptrSSA, loadSSA = ssas.[0], ssas.[1]
         let globalName = sprintf "g_%s" name
+        let elemType = defId |> Option.map getDefType |> Option.defaultValue MLIRTypes.i32
         let addrOp = MLIROp.LLVMOp (AddressOf (ptrSSA, GFunc globalName))
-
-        // Get element type from definition node
-        let elemType =
-            match defId with
-            | Some nodeId ->
-                match SemanticGraph.tryGetNode nodeId ctx.Graph with
-                | Some node -> mapNativeType node.Type
-                | None -> MLIRTypes.i32
-            | None -> MLIRTypes.i32
-
         let loadOp = MLIROp.LLVMOp (Load (loadSSA, ptrSSA, elemType, NotAtomic))
         [addrOp; loadOp], TRValue { SSA = loadSSA; Type = elemType }
-
     | None ->
-        // Local variable: look up SSA from coeffect
-        match defId with
-        | Some nodeId ->
-            let nodeIdVal = NodeId.value nodeId
 
-            // Check if it's an addressed mutable (need to load from alloca)
-            if isAddressedMutable nodeIdVal ctx then
-                match lookupSSAs nodeId ctx.SSA with
-                | Some ssas when ssas.Length >= 2 ->
-                    // The binding has: [oneConst, allocaPtr]
-                    // We need the allocaPtr (index 1) to load from
-                    let allocaSSA = ssas.[1]
-                    // The VarRef node gets its own load result SSA
-                    let loadSSA = requireNodeSSA varRefNodeId z
-                    match SemanticGraph.tryGetNode nodeId ctx.Graph with
-                    | Some defNode ->
-                        let elemType = mapNativeType defNode.Type
-                        let loadOp = MLIROp.LLVMOp (Load (loadSSA, allocaSSA, elemType, NotAtomic))
-                        [loadOp], TRValue { SSA = loadSSA; Type = elemType }
-                    | None ->
-                        [], TRError (sprintf "Definition node %d not found" nodeIdVal)
-                | _ ->
-                    [], TRError (sprintf "No SSA for addressed mutable '%s'" name)
-            else
-                // Regular variable: look up runtime value from NodeBindings first
-                // This captures the actual value SSA set during traversal (e.g., from stackalloc result)
-                match recallNodeResult nodeIdVal z with
-                | Some (ssa, ty) ->
-                    [], TRValue { SSA = ssa; Type = ty }
-                | None ->
-                    // Fallback: try SSAAssignment for parameters and special cases
-                    match lookupSSA nodeId ctx.SSA with
-                    | Some ssa ->
-                        // Get type from definition node
-                        match SemanticGraph.tryGetNode nodeId ctx.Graph with
-                        | Some defNode ->
-                            let mlirType = mapNativeType defNode.Type
-                            [], TRValue { SSA = ssa; Type = mlirType }
-                        | None ->
-                            [], TRError (sprintf "Definition node %d not found" nodeIdVal)
-                    | None ->
-                        // Function references don't get SSAs - called by name via Application witness
-                        match SemanticGraph.tryGetNode nodeId ctx.Graph with
-                        | Some defNode ->
-                            match defNode.Kind with
-                            | SemanticKind.Lambda _ -> [], TRVoid
-                            | SemanticKind.Binding _ ->
-                                match defNode.Children with
-                                | [childId] ->
-                                    match SemanticGraph.tryGetNode childId ctx.Graph with
-                                    | Some cn when (match cn.Kind with SemanticKind.Lambda _ -> true | _ -> false) -> [], TRVoid
-                                    | _ -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
-                                | _ -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
-                            | _ -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
-                        | None -> [], TRError (sprintf "No SSA assigned for variable '%s'" name)
-        | None ->
-            [], TRError (sprintf "Variable '%s' has no definition" name)
+    // 2. VarBindings: parameters and captured variables (bound by name)
+    match recallVarSSA name z with
+    | Some (ptrSSA, ptrTy) when isCapturedMutable name z ->
+        // Captured mutable (ByRef): ptrSSA is pointer to the value, need to load
+        // Get element type from the definition node
+        let elemType = defId |> Option.map getDefType |> Option.defaultValue MLIRTypes.i32
+        let loadSSA = requireNodeSSA varRefNodeId z
+        let loadOp = MLIROp.LLVMOp (Load (loadSSA, ptrSSA, elemType, NotAtomic))
+        [loadOp], TRValue { SSA = loadSSA; Type = elemType }
+    | Some (ssa, ty) ->
+        // Regular VarBinding (parameter or ByValue capture): return value directly
+        [], TRValue { SSA = ssa; Type = ty }
+    | None ->
+
+    // Need defId for remaining lookups
+    match defId with
+    | None -> [], TRError (sprintf "Variable '%s' has no definition" name)
+    | Some nodeId ->
+
+    let nodeIdVal = NodeId.value nodeId
+
+    // 3. Addressed mutable (local): load from alloca
+    if isAddressedMutable nodeIdVal ctx then
+        match lookupSSAs nodeId ctx.SSA with
+        | Some ssas when ssas.Length >= 2 ->
+            let allocaSSA = ssas.[1]
+            let loadSSA = requireNodeSSA varRefNodeId z
+            let elemType = getDefType nodeId
+            let loadOp = MLIROp.LLVMOp (Load (loadSSA, allocaSSA, elemType, NotAtomic))
+            [loadOp], TRValue { SSA = loadSSA; Type = elemType }
+        | _ -> [], TRError (sprintf "No alloca SSA for addressed mutable '%s'" name)
+    else
+
+    // 4. NodeBindings: let-bound values computed during traversal
+    match recallNodeResult nodeIdVal z with
+    | Some (ssa, ty) -> [], TRValue { SSA = ssa; Type = ty }
+    | None ->
+
+    // 5. SSAAssignment: pre-computed coeffects
+    match lookupSSA nodeId ctx.SSA with
+    | Some ssa -> [], TRValue { SSA = ssa; Type = getDefType nodeId }
+    | None ->
+
+    // 6. Function reference: called by name, not by SSA
+    if isFunctionRef nodeId then [], TRVoid
+    else [], TRError (sprintf "No SSA for variable '%s'" name)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MUTABLE SET WITNESSING
@@ -242,26 +251,36 @@ let witnessSet
         [addrOp; storeOp], TRVoid
 
     | None ->
-        // Local variable: check if addressed mutable
-        match defId with
-        | Some nodeId ->
-            let nodeIdVal = NodeId.value nodeId
+        // Check if this is a captured mutable (ByRef capture)
+        if isCapturedMutable name z then
+            // Captured mutable: VarBindings has the pointer, store through it
+            match recallVarSSA name z with
+            | Some (ptrSSA, _ptrTy) ->
+                let storeOp = MLIROp.LLVMOp (Store (valueSSA, ptrSSA, valueType, NotAtomic))
+                [storeOp], TRVoid
+            | None ->
+                [], TRError (sprintf "Captured mutable '%s' not bound in scope" name)
+        else
+            // Local variable: check if addressed mutable
+            match defId with
+            | Some nodeId ->
+                let nodeIdVal = NodeId.value nodeId
 
-            if isAddressedMutable nodeIdVal ctx then
-                // Addressed mutable: store to the alloca
-                match lookupSSAs nodeId ctx.SSA with
-                | Some ssas when ssas.Length >= 2 ->
-                    // The binding has: [oneConst, allocaPtr]
-                    // We store to the allocaPtr (index 1)
-                    let allocaSSA = ssas.[1]
-                    let storeOp = MLIROp.LLVMOp (Store (valueSSA, allocaSSA, valueType, NotAtomic))
-                    [storeOp], TRVoid
-                | _ ->
-                    [], TRError (sprintf "No alloca SSA for addressed mutable '%s'" name)
-            else
-                // Not an addressed mutable - this shouldn't happen for Set
-                // (Set targets must be mutable bindings)
-                [], TRError (sprintf "Set target '%s' is not a mutable binding" name)
+                if isAddressedMutable nodeIdVal ctx then
+                    // Addressed mutable: store to the alloca
+                    match lookupSSAs nodeId ctx.SSA with
+                    | Some ssas when ssas.Length >= 2 ->
+                        // The binding has: [oneConst, allocaPtr]
+                        // We store to the allocaPtr (index 1)
+                        let allocaSSA = ssas.[1]
+                        let storeOp = MLIROp.LLVMOp (Store (valueSSA, allocaSSA, valueType, NotAtomic))
+                        [storeOp], TRVoid
+                    | _ ->
+                        [], TRError (sprintf "No alloca SSA for addressed mutable '%s'" name)
+                else
+                    // Not an addressed mutable - this shouldn't happen for Set
+                    // (Set targets must be mutable bindings)
+                    [], TRError (sprintf "Set target '%s' is not a mutable binding" name)
 
-        | None ->
-            [], TRError (sprintf "Set target '%s' has no definition" name)
+            | None ->
+                [], TRError (sprintf "Set target '%s' has no definition" name)

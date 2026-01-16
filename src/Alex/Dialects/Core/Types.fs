@@ -344,6 +344,8 @@ and LLVMOp =
     | Load of result: SSA * ptr: SSA * ty: MLIRType * ordering: AtomicOrdering
     | Store of value: SSA * ptr: SSA * valueTy: MLIRType * ordering: AtomicOrdering
     | GEP of result: SSA * base': SSA * indices: (SSA * MLIRType) list * elemTy: MLIRType
+    /// GEP for struct field access with constant indices: getelementptr inbounds %ptr[0, fieldIndex] : ...
+    | StructGEP of result: SSA * base': SSA * fieldIndex: int * structTy: MLIRType
     | MemCpy of dst: SSA * src: SSA * len: SSA * isVolatile: bool
     | MemMove of dst: SSA * src: SSA * len: SSA * isVolatile: bool
     | MemSet of dst: SSA * value: SSA * len: SSA * isVolatile: bool
@@ -439,6 +441,16 @@ and LLVMOp =
 
     // === RETURN ===
     | Return of value: SSA option * valueTy: MLIRType option
+
+    // === FUNCTION DEFINITION (llvm.func) ===
+    // Used for functions whose address is taken (e.g., closures)
+    // llvm.func @name(%arg0: type, ...) -> retType { ... }
+    | LLVMFuncDef of name: string * args: (SSA * MLIRType) list * retTy: MLIRType * body: Region * linkage: LLVMLinkage
+
+and LLVMLinkage =
+    | LLVMPrivate
+    | LLVMInternal
+    | LLVMExternal
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SCF DIALECT - EXHAUSTIVE (from SCFOps.td)
@@ -646,7 +658,7 @@ let opResults (op: MLIROp) : SSA list =
 
     | LLVMOp l ->
         match l with
-        | Alloca (r,_,_,_) | LLVMOp.Load (r,_,_,_) | GEP (r,_,_,_) | AddressOf (r,_)
+        | Alloca (r,_,_,_) | LLVMOp.Load (r,_,_,_) | GEP (r,_,_,_) | StructGEP (r,_,_,_) | AddressOf (r,_)
         | ExtractValue (r,_,_,_) | InsertValue (r,_,_,_,_) | Undef (r,_) | Poison (r,_) | ZeroInit (r,_)
         | LLVMOp.Bitcast (r,_,_,_) | Bswap (r,_,_) | IntToPtr (r,_,_) | PtrToInt (r,_,_) | AddrSpaceCast (r,_,_,_)
         | ZExt (r,_,_,_) | SExt (r,_,_,_) | Trunc (r,_,_,_)
@@ -665,7 +677,8 @@ let opResults (op: MLIROp) : SSA list =
         | Call (Some r,_,_,_) | IndirectCall (Some r,_,_,_) | Invoke (Some r,_,_,_,_,_) | InlineAsm (Some r,_,_,_,_,_,_) -> [r]
         | Call (None,_,_,_) | IndirectCall (None,_,_,_) | Invoke (None,_,_,_,_,_) | InlineAsm (None,_,_,_,_,_,_)
         | LLVMOp.Store _ | MemCpy _ | MemMove _ | MemSet _ | Fence _ | GlobalDef _ | GlobalString _
-        | LLVMBr _ | LLVMCondBr _ | LLVMSwitch _ | Unreachable | Resume _ | Return _ -> []
+        | LLVMBr _ | LLVMCondBr _ | LLVMSwitch _ | Unreachable | Resume _ | Return _
+        | LLVMFuncDef _ -> []
 
     | SCFOp s ->
         match s with

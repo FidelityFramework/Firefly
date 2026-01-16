@@ -36,6 +36,58 @@ module NodeSSAAllocation =
         | _ -> { SSAs = ssas; Result = List.last ssas }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// CLOSURE LAYOUT (Coeffect for Closing Lambdas)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// For Lambdas with captures, we pre-compute the complete closure layout.
+// This is deterministic - derived from CaptureInfo list in PSG.
+// Witnesses observe this coeffect; they do NOT compute layout during emission.
+
+/// How a variable is captured in a closure
+type CaptureMode =
+    | ByValue  // Immutable variable: copy value into env struct
+    | ByRef    // Mutable variable: store pointer to alloca in env struct
+
+/// Layout information for a single captured variable
+type CaptureSlot = {
+    /// Name of the captured variable
+    Name: string
+    /// Index in the environment struct (0, 1, 2, ...)
+    SlotIndex: int
+    /// MLIR type of the slot (value type for ByValue, ptr for ByRef)
+    SlotType: MLIRType
+    /// Source NodeId of the captured binding (for SSA lookup)
+    SourceNodeId: NodeId option
+    /// How the variable is captured
+    Mode: CaptureMode
+    /// SSA for GEP to this slot during closure construction
+    GepSSA: SSA
+}
+
+/// Complete closure layout for a Lambda with captures
+/// This is the coeffect that LambdaWitness observes
+type ClosureLayout = {
+    /// The Lambda node this layout is for
+    LambdaNodeId: NodeId
+    /// Ordered list of capture slots (matches env struct field order)
+    Captures: CaptureSlot list
+    /// SSA for addressof code_ptr
+    CodeAddrSSA: SSA
+    /// SSA for undef closure struct
+    ClosureUndefSSA: SSA
+    /// SSA for insertvalue of code_ptr at [0]
+    ClosureWithCodeSSA: SSA
+    /// SSAs for insertvalue of each capture at [1..N] (one per capture)
+    CaptureInsertSSAs: SSA list
+    /// SSA for final closure result (last insertvalue)
+    ClosureResultSSA: SSA
+    /// MLIR type of the environment struct (kept for compatibility)
+    EnvStructType: MLIRType
+    /// MLIR type of the closure struct: {ptr, T0, T1, ...} = {code_ptr, captures...}
+    ClosureStructType: MLIRType
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // STRUCTURAL SSA DERIVATION
 // ═══════════════════════════════════════════════════════════════════════════
 //
@@ -57,6 +109,140 @@ let private literalExpansionCost (lit: LiteralValue) : int =
     | LiteralValue.Char _ -> 1
     | LiteralValue.Float32 _ | LiteralValue.Float64 _ -> 1
     | _ -> 1  // Default
+
+/// Compute exact SSA count for Lambda based on captures list
+/// This is DETERMINISTIC - derived directly from PSG structure (captures list from FNCS)
+///
+/// TRUE FLAT CLOSURE: For a Lambda with N captures, emission requires:
+/// - Simple Lambda (0 captures): 0 SSAs (emits func.func, no local value needed)
+/// - Closing Lambda (N captures):
+///   - 1 SSA: addressof for code pointer
+///   - N SSAs: (reserved for extractvalue in callee, reused as intermediate insertvalue results)
+///   - 1 SSA: undef for closure struct
+///   - 1 SSA: insertvalue for code_ptr at [0]
+///   - N SSAs: insertvalue for each capture at [1..N] (LAST one is final result)
+///   Total: 2N + 3 SSAs
+///
+/// Additionally, for mutable captures (ByRef), we need the address of the captured variable.
+/// This is handled by the captured variable's binding (alloca), not here.
+let private computeLambdaSSACost (captures: CaptureInfo list) : int =
+    let n = List.length captures
+    if n = 0 then
+        0  // Simple function - no closure struct needed
+    else
+        2 * n + 3  // addressof + N extracts + undef + (1 + N) insertvalues
+
+/// Minimal NativeType to MLIRType mapping for capture slots
+/// This is a subset of TypeMapping.mapNativeType, inlined here to avoid
+/// circular dependencies (SSAAssignment must compile before TypeMapping)
+let rec private mapCaptureType (ty: NativeType) : MLIRType =
+    match ty with
+    | NativeType.TApp(tycon, args) ->
+        match tycon.Name with
+        | "unit" -> TInt I32
+        | "bool" -> TInt I1
+        | "int8" | "sbyte" -> TInt I8
+        | "uint8" | "byte" -> TInt I8
+        | "int16" -> TInt I16
+        | "uint16" -> TInt I16
+        | "int" | "int32" -> TInt I32
+        | "uint" | "uint32" -> TInt I32
+        | "int64" -> TInt I64
+        | "uint64" -> TInt I64
+        | "nativeint" | "unativeint" -> TIndex  // Platform-word integer (i64 on 64-bit)
+        | "float32" | "single" -> TFloat F32
+        | "float" | "double" -> TFloat F64
+        | "char" -> TInt I32
+        | "string" -> TStruct [TPtr; TInt I64]  // Fat pointer
+        | "Ptr" | "nativeptr" | "byref" | "inref" | "outref" -> TPtr
+        | "array" -> TStruct [TPtr; TInt I64]  // Fat pointer
+        | "option" | "voption" ->
+            match args with
+            | [innerTy] -> TStruct [TInt I1; mapCaptureType innerTy]
+            | _ -> TPtr  // Fallback
+        | _ -> TPtr  // Records, DUs, unknown types - treat as pointer-sized
+    | NativeType.TFun _ -> TStruct [TPtr; TPtr]  // Function = closure struct
+    | NativeType.TTuple (elements, _) ->
+        TStruct (elements |> List.map mapCaptureType)
+    | NativeType.TVar _ -> TPtr  // Type variable - assume pointer-sized
+    | NativeType.TByref _ -> TPtr
+    | _ -> TPtr  // Fallback for other cases
+
+/// Compute the MLIR type for a capture slot based on capture mode
+let private captureSlotType (capture: CaptureInfo) : MLIRType =
+    if capture.IsMutable then
+        // Mutable capture: store pointer to the alloca
+        TPtr
+    else
+        // Immutable capture: store the value directly
+        mapCaptureType capture.Type
+
+/// Build the environment struct type from captures
+let private buildEnvStructType (captures: CaptureInfo list) : MLIRType =
+    let slotTypes = captures |> List.map captureSlotType
+    TStruct slotTypes
+
+/// Build complete ClosureLayout from Lambda captures and pre-assigned SSAs
+/// This is computed once during SSAAssignment - witnesses observe the result
+///
+/// TRUE FLAT CLOSURE SSA layout for N captures (total 2N+3 SSAs):
+///   ssas[0]           = addressof code_ptr
+///   ssas[1..N]        = extractvalue SSAs (for callee extraction)
+///   ssas[N+1]         = undef closure struct
+///   ssas[N+2]         = insertvalue code_ptr at [0]
+///   ssas[N+3..2N+2]   = insertvalue for each capture at [1..N]
+///   ssas[2N+2]        = final result (last insertvalue)
+let private buildClosureLayout
+    (lambdaNodeId: NodeId)
+    (captures: CaptureInfo list)
+    (ssas: SSA list)
+    : ClosureLayout =
+
+    let n = List.length captures
+
+    // Extract SSAs by position for TRUE FLAT CLOSURE
+    let codeAddrSSA = ssas.[0]
+    let gepSSAs = ssas.[1..n]  // N SSAs for extractvalue in callee
+    let undefSSA = ssas.[n + 1]
+    let withCodeSSA = ssas.[n + 2]
+    // InsertValue SSAs for captures: ssas[N+3], ssas[N+4], ..., ssas[2N+2]
+    let captureInsertSSAs = ssas.[(n + 3)..(2 * n + 2)]
+    // The final result is the last insertvalue SSA
+    let resultSSA = ssas.[2 * n + 2]
+
+    // Build capture slots with their GEP SSAs (for extraction in callee)
+    let captureSlots =
+        captures
+        |> List.mapi (fun i capture ->
+            {
+                Name = capture.Name
+                SlotIndex = i
+                SlotType = captureSlotType capture
+                SourceNodeId = capture.SourceNodeId
+                Mode = if capture.IsMutable then ByRef else ByValue
+                GepSSA = gepSSAs.[i]
+            })
+
+    // Build env struct type (for internal tracking, kept for compatibility)
+    let envStructType = buildEnvStructType captures
+
+    // TRUE FLAT CLOSURE: {code_ptr, capture_0, capture_1, ...}
+    // Captures are inlined directly, not via env_ptr indirection
+    // This eliminates lifetime issues - closure is returned by value with all state inline
+    let captureTypes = captures |> List.map captureSlotType
+    let closureStructType = TStruct (TPtr :: captureTypes)
+
+    {
+        LambdaNodeId = lambdaNodeId
+        Captures = captureSlots
+        CodeAddrSSA = codeAddrSSA
+        ClosureUndefSSA = undefSSA
+        ClosureWithCodeSSA = withCodeSSA
+        CaptureInsertSSAs = captureInsertSSAs
+        ClosureResultSSA = resultSSA
+        EnvStructType = envStructType
+        ClosureStructType = closureStructType
+    }
 
 /// Calculate SSA cost for interpolated string based on parts
 let private interpolatedStringCost (parts: InterpolatedPart list) : int =
@@ -223,9 +409,12 @@ let private nodeExpansionCost (graph: SemanticGraph) (node: SemanticNode) : int 
     | SemanticKind.Literal lit -> literalExpansionCost lit
     | SemanticKind.InterpolatedString parts -> interpolatedStringCost parts
 
+    // Lambda: cost depends on captures (structural analysis)
+    | SemanticKind.Lambda (_, _, captures) ->
+        computeLambdaSSACost captures
+
     // Fixed costs (these don't vary by structure)
     | SemanticKind.ForLoop _ -> 2
-    | SemanticKind.Lambda _ -> 1
     | SemanticKind.IfThenElse _ -> 3
     | SemanticKind.Binding _ -> 3
     | SemanticKind.IndexGet _ -> 2
@@ -323,6 +512,9 @@ type SSAAssignment = {
     LambdaNames: Map<int, string>
     /// Set of entry point Lambda IDs
     EntryPointLambdas: Set<int>
+    /// Closure layouts for Lambdas with captures (NodeId.value -> ClosureLayout)
+    /// Empty for simple lambdas (no captures)
+    ClosureLayouts: Map<int, ClosureLayout>
 }
 
 /// Assign SSA names to all nodes in a function body
@@ -341,16 +533,21 @@ let rec private assignFunctionBody
             node.Children |> List.fold (fun s childId -> assignFunctionBody graph s childId) scope
 
         // Special handling for nested Lambdas - they get their own scope
-        // (but we still assign this Lambda node an SSA in parent scope)
+        // (but we still assign this Lambda node SSAs in parent scope for closure construction)
         match node.Kind with
-        | SemanticKind.Lambda(_params, bodyId) ->
+        | SemanticKind.Lambda(_params, bodyId, captures) ->
             // Process Lambda body in a NEW scope (SSA counter resets)
             let _innerScope = assignFunctionBody graph FunctionScope.empty bodyId
-            // Lambda itself gets an SSA in the PARENT scope (function pointer)
-            if producesValue node.Kind then
-                let ssaName, scopeWithSSA = FunctionScope.yieldSSA scopeAfterChildren
-                FunctionScope.assign node.Id (NodeSSAAllocation.single ssaName) scopeWithSSA
+            // Lambda itself gets SSAs in the PARENT scope for closure struct construction
+            // SSA count is deterministic based on captures (from FNCS)
+            let cost = computeLambdaSSACost captures
+            if cost > 0 then
+                let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
+                let alloc = NodeSSAAllocation.multi ssas
+                FunctionScope.assign node.Id alloc scopeWithSSAs
             else
+                // Simple lambda (no captures) - no SSAs needed in parent scope
+                // The function is emitted as func.func @name, called via func.call @name
                 scopeAfterChildren
         // VarRef now gets SSAs for mutable variable loads
         // (Regular VarRefs to immutable values may not use their SSAs, but unused SSAs are harmless)
@@ -487,11 +684,12 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
 
     // For each Lambda, assign SSAs to its body in its own scope
     let mutable allAssignments = Map.empty
+    let mutable closureLayouts = Map.empty
 
     for kvp in graph.Nodes do
         let node = kvp.Value
         match node.Kind with
-        | SemanticKind.Lambda(params', bodyId) ->
+        | SemanticKind.Lambda(params', bodyId, captures) ->
             // Assign SSAs to parameter PatternBindings (Arg 0, Arg 1, etc.)
             // This allows VarRefs to parameters to look up their SSAs
             let paramScope =
@@ -511,11 +709,18 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
             for kvp in bodyScope.Assignments do
                 allAssignments <- Map.add kvp.Key kvp.Value allAssignments
 
-            // CRITICAL: Lambda node itself needs an SSA for return value synthesis
-            // Used by createDefaultReturn and reconcileReturnType in LambdaWitness
-            // Use next available SSA in the Lambda's scope
-            let lambdaSSA = V bodyScope.Counter
-            allAssignments <- Map.add (NodeId.value node.Id) (NodeSSAAllocation.single lambdaSSA) allAssignments
+            // Lambda node SSAs are assigned by assignFunctionBody (via nodeExpansionCost)
+            // For closing lambdas (with captures), also compute ClosureLayout
+            if not (List.isEmpty captures) then
+                // Look up the SSAs assigned to this Lambda node
+                match Map.tryFind (NodeId.value node.Id) bodyScope.Assignments with
+                | Some alloc when alloc.SSAs.Length >= (List.length captures + 4) ->
+                    let layout = buildClosureLayout node.Id captures alloc.SSAs
+                    closureLayouts <- Map.add (NodeId.value node.Id) layout closureLayouts
+                | _ ->
+                    // SSAs should have been assigned by assignFunctionBody
+                    // If not, something went wrong - but we don't want to crash here
+                    ()
         | _ -> ()
 
     // Also process top-level nodes (module bindings, etc.)
@@ -526,10 +731,26 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
     for kvp in topLevelScope.Assignments do
         allAssignments <- Map.add kvp.Key kvp.Value allAssignments
 
+    // Compute ClosureLayouts from top-level scope assignments as well
+    for kvp in graph.Nodes do
+        let node = kvp.Value
+        match node.Kind with
+        | SemanticKind.Lambda(_, _, captures) when not (List.isEmpty captures) ->
+            // Check if we already computed this layout (from Lambda body processing above)
+            if not (Map.containsKey (NodeId.value node.Id) closureLayouts) then
+                // Check top-level scope
+                match Map.tryFind (NodeId.value node.Id) topLevelScope.Assignments with
+                | Some alloc when alloc.SSAs.Length >= (List.length captures + 4) ->
+                    let layout = buildClosureLayout node.Id captures alloc.SSAs
+                    closureLayouts <- Map.add (NodeId.value node.Id) layout closureLayouts
+                | _ -> ()
+        | _ -> ()
+
     {
         NodeSSA = allAssignments
         LambdaNames = lambdaNames
         EntryPointLambdas = entryPoints
+        ClosureLayouts = closureLayouts
     }
 
 /// Look up the full SSA allocation for a node (coeffect lookup)
@@ -551,3 +772,12 @@ let lookupLambdaName (nodeId: NodeId) (assignment: SSAAssignment) : string optio
 /// Check if a Lambda is an entry point
 let isEntryPoint (nodeId: NodeId) (assignment: SSAAssignment) : bool =
     Set.contains (NodeId.value nodeId) assignment.EntryPointLambdas
+
+/// Look up ClosureLayout for a Lambda with captures (coeffect lookup)
+/// Returns None for simple lambdas (no captures)
+let lookupClosureLayout (nodeId: NodeId) (assignment: SSAAssignment) : ClosureLayout option =
+    Map.tryFind (NodeId.value nodeId) assignment.ClosureLayouts
+
+/// Check if a Lambda has captures (is a closure)
+let hasClosure (nodeId: NodeId) (assignment: SSAAssignment) : bool =
+    Map.containsKey (NodeId.value nodeId) assignment.ClosureLayouts
