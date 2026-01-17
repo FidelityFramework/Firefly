@@ -31,8 +31,7 @@ open Alex.Traversal.PSGZipper
 open Alex.CodeGeneration.TypeMapping
 open Alex.Preprocessing.SSAAssignment
 
-/// Map FNCS NativeType to MLIR type - delegates to canonical implementation
-let private mapType = Alex.CodeGeneration.TypeMapping.mapNativeType
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // GLOBAL ARENA ALLOCATION
@@ -115,10 +114,25 @@ let private buildClosureConstruction
                         | None ->
                             match lookupLambdaName srcId z.State.SSAAssignment with
                             | Some funcName ->
-                                // Function reference captured: MUST be a closure pair
-                                // (BindingWitness will provide thunks for Simple Lambdas)
-                                let ssa = match lookupSSA srcId z.State.SSAAssignment with Some s -> s | None -> V 0
-                                ssa, []
+                                // Found a global function: create {ptr, null}
+                                // This happens when capturing a top-level function like 'write'
+                                let funcPtrSSA = freshSynthSSA z
+                                let addrOp = MLIROp.LLVMOp (AddressOf (funcPtrSSA, GFunc funcName))
+                                
+                                let closureStructSSA = freshSynthSSA z
+                                let undefSSA = freshSynthSSA z
+                                let withPtrSSA = freshSynthSSA z
+                                let nullEnvSSA = freshSynthSSA z
+                                let closureTy = TStruct [TPtr; TPtr]
+                                
+                                let ops = [
+                                    addrOp
+                                    MLIROp.LLVMOp (Undef (undefSSA, closureTy))
+                                    MLIROp.LLVMOp (InsertValue (withPtrSSA, undefSSA, funcPtrSSA, [0], closureTy))
+                                    MLIROp.LLVMOp (NullPtr nullEnvSSA)
+                                    MLIROp.LLVMOp (InsertValue (closureStructSSA, withPtrSSA, nullEnvSSA, [1], closureTy))
+                                ]
+                                closureStructSSA, ops
                             | None ->
                                 let ssa = match lookupSSA srcId z.State.SSAAssignment with Some s -> s | None -> V 0
                                 ssa, []

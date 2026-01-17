@@ -67,7 +67,7 @@ let witness
         // Module-level mutable: emit LLVM global definition
         match getModuleLevelMutable name ctx with
         | Some mlm ->
-            let mlirType = mapNativeType node.Type
+            let mlirType = mapNativeTypeWithGraph ctx.Graph node.Type
             let globalName = sprintf "g_%s" name
             // Global definition with zero initialization
             // (actual initialization requires an init function for non-const values)
@@ -152,7 +152,7 @@ let witnessVarRef
     // Helper: get type from definition node
     let getDefType nodeId =
         match SemanticGraph.tryGetNode nodeId ctx.Graph with
-        | Some node -> mapNativeType node.Type
+        | Some node -> mapNativeTypeWithGraph ctx.Graph node.Type
         | None -> MLIRTypes.i32
 
     // Helper: check if defNode is a function reference (Lambda or Binding to Lambda)
@@ -312,12 +312,12 @@ let witnessVarRef
             // Map types to MLIR
             let mlirParams = 
                 paramTypes 
-                |> List.map mapNativeType
+                |> List.map (mapNativeTypeWithGraph ctx.Graph)
                 |> List.mapi (fun i ty -> Arg (i + 1), ty) // Arg 1+ for user params
             
             // Add Env param (Arg 0)
             let thunkParams = (Arg 0, MLIRTypes.ptr) :: mlirParams
-            let mlirRetType = mapNativeType retType
+            let mlirRetType = mapNativeTypeWithGraph ctx.Graph retType
             
             // Build body: call original function
             // Original function expects (args...) - NO env

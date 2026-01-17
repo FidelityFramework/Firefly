@@ -114,10 +114,10 @@ let private buildStartWrapper (os: OSFamily) (arch: Architecture) : MLIROp list 
             ))
 
             // Call main(argc, argv) -> i32
-            // %result = func.call @main(%argc32, %argv) : (i32, !llvm.ptr) -> i32
-            MLIROp.FuncOp (FuncOp.FuncCall (
+            // %result = llvm.call @main(%argc32, %argv) : (i32, !llvm.ptr) -> i32
+            MLIROp.LLVMOp (LLVMOp.Call (
                 Some (V 3),
-                "main",
+                GFunc "main",
                 [{ SSA = V 1; Type = MLIRTypes.i32 }; { SSA = V 2; Type = MLIRTypes.ptr }],
                 MLIRTypes.i32
             ))
@@ -157,12 +157,12 @@ let private buildStartWrapper (os: OSFamily) (arch: Architecture) : MLIROp list 
         let bodyRegion: Region = { Blocks = [entryBlock] }
 
         [
-            MLIROp.FuncOp (FuncOp.FuncDef (
+            MLIROp.LLVMOp (LLVMOp.LLVMFuncDef (
                 "_start",
                 [],  // No parameters - we read from stack
-                TUnit,  // Never returns (unreachable)
+                MLIRTypes.i32,  // Dummy return type
                 bodyRegion,
-                FuncVisibility.Public
+                LLVMLinkage.LLVMExternal
             ))
         ]
 
@@ -189,9 +189,9 @@ let private buildStartWrapper (os: OSFamily) (arch: Architecture) : MLIROp list 
                 false,
                 false
             ))
-            MLIROp.FuncOp (FuncOp.FuncCall (
+            MLIROp.LLVMOp (LLVMOp.Call (
                 Some (V 3),
-                "main",
+                GFunc "main",
                 [{ SSA = V 1; Type = MLIRTypes.i32 }; { SSA = V 2; Type = MLIRTypes.ptr }],
                 MLIRTypes.i32
             ))
@@ -218,12 +218,12 @@ let private buildStartWrapper (os: OSFamily) (arch: Architecture) : MLIROp list 
         }
 
         [
-            MLIROp.FuncOp (FuncOp.FuncDef (
+            MLIROp.LLVMOp (LLVMOp.LLVMFuncDef (
                 "_start",
                 [],
-                TUnit,
+                MLIRTypes.i32,
                 { Blocks = [entryBlock] },
-                FuncVisibility.Public
+                LLVMLinkage.LLVMExternal
             ))
         ]
 

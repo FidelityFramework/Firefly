@@ -23,8 +23,7 @@ open Alex.CodeGeneration.TypeMapping
 // TYPE HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Map NativeType to MLIRType (delegated to TypeMapping)
-let private mapType = mapNativeType
+
 
 /// Check if a type is the native string type
 let private isNativeStrType (ty: MLIRType) : bool =

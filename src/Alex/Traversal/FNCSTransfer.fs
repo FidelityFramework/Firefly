@@ -37,8 +37,7 @@ module StringCollect = Alex.Preprocessing.StringCollection
 module PlatformResolution = Alex.Preprocessing.PlatformBindingResolution
 module PatternAnalysis = Alex.Preprocessing.PatternBindingAnalysis
 
-/// Map FNCS NativeType to MLIR type
-let private mapType = mapNativeType
+
 
 /// Convert RegionKind to int for dictionary key
 let private regionKindToInt (kind: RegionKind) : int =
@@ -179,7 +178,7 @@ let private transferGraphCore
                                             | Some pbNode ->
                                                 match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                                 | Some ssas when not (List.isEmpty ssas) ->
-                                                    let patternType = mapType pbNode.Type
+                                                    let patternType = mapNativeTypeWithGraph graph pbNode.Type
                                                     // WITNESS: Extract tuple element, then DU payload
                                                     let ops, resultVal = MemWitness.witnessTuplePatternExtract ssas scrutineeSSA scrutineeType elemIdx patternType
                                                     for op in ops do emit op z'
@@ -198,7 +197,7 @@ let private transferGraphCore
                                             | Some pbNode ->
                                                 match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                                 | Some ssas when not (List.isEmpty ssas) ->
-                                                    let patternType = mapType pbNode.Type
+                                                    let patternType = mapNativeTypeWithGraph graph pbNode.Type
                                                     // WITNESS: Extract tuple element directly
                                                     // We can reuse witnessTuplePatternExtract but need to know if it handles simple var?
                                                     // witnessTuplePatternExtract extracts elem, then does payload extraction.
@@ -231,7 +230,7 @@ let private transferGraphCore
                                 | SemanticKind.PatternBinding name ->
                                     match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                     | Some ssas when not (List.isEmpty ssas) ->
-                                        let patternType = mapType pbNode.Type
+                                        let patternType = mapNativeTypeWithGraph graph pbNode.Type
                                         let ops, resultVal = MemWitness.witnessPayloadExtract ssas scrutineeSSA scrutineeType patternType unionCaseIndex
                                         for op in ops do emit op z'
                                         z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
@@ -670,7 +669,7 @@ let private transferGraphCore
                     | None -> None, None
 
                 let resultType =
-                    let mlirType = mapType node.Type
+                    let mlirType = mapNativeTypeWithGraph graph node.Type
                     if mlirType = TUnit then None else Some mlirType
 
                 let ops, result = CFWitness.witnessIfThenElse node.Id z condSSA thenOps thenResultSSA elseOps elseResultSSA resultType
@@ -754,7 +753,7 @@ let private transferGraphCore
                         (case.Pattern, guardSSA, ops, resultSSA))
 
                 let resultType =
-                    let mlirType = mapType node.Type
+                    let mlirType = mapNativeTypeWithGraph graph node.Type
                     if mlirType = TUnit then None else Some mlirType
 
                 let ops, result = CFWitness.witnessMatch node.Id z scrutineeSSA scrutineeType caseOps resultType
@@ -842,7 +841,7 @@ let private transferGraphCore
             | SemanticKind.TraitCall (memberName, _typeArgs, argId) ->
                 match resolveNodeToVal argId z with
                 | Some receiverVal ->
-                    let memberType = mapType node.Type
+                    let memberType = mapNativeTypeWithGraph graph node.Type
                     let ops, result = MemWitness.witnessTraitCall node.Id z receiverVal.SSA receiverVal.Type memberName memberType
                     emitAll ops z
                     z, result
@@ -911,7 +910,7 @@ let private transferGraphCore
                         | _, "Pointer" ->
                             MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 MLIRTypes.ptr
                         | _, "Length" ->
-                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 1 (mapType node.Type)
+                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 1 (mapNativeTypeWithGraph graph node.Type)
                         | _ when fieldName.Contains(".") ->
                             // Nested field access - parse path and compute indices
                             let pathParts = fieldName.Split('.') |> Array.toList
@@ -956,7 +955,7 @@ let private transferGraphCore
                                     [], TRError (sprintf "FieldGet: field '%s' not found in record type '%s'" fieldName typeName)
                             | None ->
                                 // Not a record type - use node.Type (result type) for field type
-                                MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 (mapType node.Type)
+                                MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 (mapNativeTypeWithGraph graph node.Type)
                     emitAll ops z
                     z, result
                 | None ->
@@ -1036,7 +1035,7 @@ let private transferGraphCore
                     match payloadOpt with
                     | Some payloadId -> resolveNodeToVal payloadId z
                     | None -> None
-                let unionType = mapType node.Type
+                let unionType = mapNativeTypeWithGraph graph node.Type
                 let ops, result = MemWitness.witnessUnionCase node.Id z caseIndex payload unionType
                 emitAll ops z
                 z, result
