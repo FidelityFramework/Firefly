@@ -34,8 +34,8 @@ let compose (f: int -> int) (g: int -> int) : (int -> int) =
 /// Simple increment
 let increment (x: int) : int = x + 1
 
-/// Simple double
-let double (x: int) : int = x * 2
+/// Simple timesTwo
+let timesTwo (x: int) : int = x * 2
 
 /// Simple square
 let square (x: int) : int = x * x
@@ -48,23 +48,25 @@ let main _ =
     Console.write "increment twice on 5: "
     Console.writeln (Format.int (applyTwice increment 5))  // 7
 
-    Console.write "double twice on 3: "
-    Console.writeln (Format.int (applyTwice double 3))  // 12
+    Console.write "timesTwo twice on 3: "
+    Console.writeln (Format.int (applyTwice timesTwo 3))  // 12
 
     // Map over pair
     Console.writeln ""
-    Console.write "double both (3, 7): "
-    let (a, b) = mapPair double 3 7
-    Console.write (Format.int a)
-    Console.write ", "
-    Console.writeln (Format.int b)
+    Console.write "timesTwo both (3, 7): "
+    let resultPair = mapPair timesTwo 3 7
+    match resultPair with
+    | (a, b) ->
+        Console.write (Format.int a)
+        Console.write ", "
+        Console.writeln (Format.int b)
 
     // Conditional function application
     Console.writeln ""
-    Console.write "chooseAndApply true double square 5: "
-    Console.writeln (Format.int (chooseAndApply true double square 5))  // 10
-    Console.write "chooseAndApply false double square 5: "
-    Console.writeln (Format.int (chooseAndApply false double square 5))  // 25
+    Console.write "chooseAndApply true timesTwo square 5: "
+    Console.writeln (Format.int (chooseAndApply true timesTwo square 5))  // 10
+    Console.write "chooseAndApply false timesTwo square 5: "
+    Console.writeln (Format.int (chooseAndApply false timesTwo square 5))  // 25
 
     // Function factories
     Console.writeln ""
@@ -77,11 +79,11 @@ let main _ =
 
     // Function composition
     Console.writeln ""
-    let doubleThenIncrement = compose double increment
-    let incrementThenDouble = compose increment double
-    Console.write "double then increment on 5: "
+    let doubleThenIncrement = compose timesTwo increment
+    let incrementThenDouble = compose increment timesTwo
+    Console.write "timesTwo then increment on 5: "
     Console.writeln (Format.int (doubleThenIncrement 5))  // 11
-    Console.write "increment then double on 5: "
+    Console.write "increment then timesTwo on 5: "
     Console.writeln (Format.int (incrementThenDouble 5))  // 12
 
     0

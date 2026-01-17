@@ -186,6 +186,32 @@ let private transferGraphCore
                                                     z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
                                                 | _ -> ()
                                             | None -> ())
+                                    | Pattern.Var (name, _) ->
+                                        // Simple variable binding in tuple
+                                        case.PatternBindings
+                                        |> List.tryFind (fun pbId ->
+                                            match SemanticGraph.tryGetNode pbId graph with
+                                            | Some n -> match n.Kind with SemanticKind.PatternBinding n' -> n' = name | _ -> false
+                                            | None -> false)
+                                        |> Option.iter (fun pbNodeId ->
+                                            match SemanticGraph.tryGetNode pbNodeId graph with
+                                            | Some pbNode ->
+                                                match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
+                                                | Some ssas when not (List.isEmpty ssas) ->
+                                                    let patternType = mapType pbNode.Type
+                                                    // WITNESS: Extract tuple element directly
+                                                    // We can reuse witnessTuplePatternExtract but need to know if it handles simple var?
+                                                    // witnessTuplePatternExtract extracts elem, then does payload extraction.
+                                                    // If we just want the element, we should emit extractvalue directly.
+                                                    
+                                                    // Manual extract logic here to be safe and simple
+                                                    // Extract element at elemIdx from scrutinee tuple
+                                                    let ssa = ssas.[0] // Use first SSA for result
+                                                    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (ssa, scrutineeSSA, [elemIdx], scrutineeType))
+                                                    emit extractOp z'
+                                                    z' <- bindVarSSA name ssa patternType z'
+                                                | _ -> ()
+                                            | None -> ())
                                     | Pattern.Union (_, _, Some payload, _) ->
                                         processElement payload elemIdx
                                     | _ -> ()
@@ -1065,8 +1091,16 @@ let private transferGraphCore
             | Some ops -> ops
             | None -> []
 
-        // Combine and serialize: strings, _start (if any), then user functions
-        let allOps = stringOps @ startWrapperOps @ (List.rev topLevelOps)
+        // GLOBAL CLOSURE ARENA (Native "Heap" for Closures)
+        // 1MB static buffer for closure environments.
+        // This avoids malloc/libc and provides a simple bump allocator.
+        let closureArenaOps = [
+            MLIROp.LLVMOp (GlobalDef ("closure_heap", "dense<0> : vector<1048576xi8>", TArray (1048576, TInt I8), false))
+            MLIROp.LLVMOp (GlobalDef ("closure_pos", "0", TInt I64, false))
+        ]
+
+        // Combine and serialize: strings, arena, _start (if any), then user functions
+        let allOps = stringOps @ closureArenaOps @ startWrapperOps @ (List.rev topLevelOps)
         let body = opsToString allOps
         let mlir = sprintf "module {\n%s}\n" body
 

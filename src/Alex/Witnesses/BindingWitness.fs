@@ -241,9 +241,122 @@ let witnessVarRef
     | Some ssa -> [], TRValue { SSA = ssa; Type = getDefType nodeId }
     | None ->
 
-    // 7. Function reference: called by name, not by SSA
-    if isFunctionRef nodeId then [], TRVoid
-    else [], TRError (sprintf "No SSA for variable '%s' (defId=%d)" name nodeIdVal)
+    // 7. Function reference (Simple Lambda used as value): Emit Thunk
+    // Simple Lambdas expect (args...), but HOFs call (env, args...).
+    // We generate a Thunk: (env, args...) -> original(args...)
+    match Alex.Preprocessing.SSAAssignment.lookupLambdaName nodeId ctx.SSA with
+    | Some funcName ->
+        // Check if we already emitted a thunk for this function
+        let thunkName = sprintf "thunk_%s" funcName
+        
+        // Retrieve the VarRef node to get its type
+        let varRefNode = 
+            match SemanticGraph.tryGetNode varRefNodeId ctx.Graph with
+            | Some n -> n
+            | None -> failwithf "VarRef node %A not found" varRefNodeId
+
+        // Resolve the definition node to determine exact parameter count
+        // This is critical for functions like 'makeAdder' which return closures (int -> Closure)
+        // vs functions like 'add' which return values (int -> int -> int)
+        let targetParamCount =
+            match defId with
+            | Some defNodeId ->
+                match SemanticGraph.tryGetNode defNodeId ctx.Graph with
+                | Some defNode ->
+                    // Def might be Binding(Lambda) or just Lambda
+                    let lambdaNode =
+                        match defNode.Kind with
+                        | SemanticKind.Lambda _ -> Some defNode
+                        | SemanticKind.Binding _ ->
+                            match defNode.Children with
+                            | childId :: _ ->
+                                match SemanticGraph.tryGetNode childId ctx.Graph with
+                                | Some child when (match child.Kind with SemanticKind.Lambda _ -> true | _ -> false) -> Some child
+                                | _ -> None
+                            | _ -> None
+                        | _ -> None
+                    
+                    match lambdaNode with
+                    | Some { Kind = SemanticKind.Lambda(params', _, _) } -> List.length params'
+                    | _ -> 
+                        // Fallback: heuristic peeling (unsafe, but better than nothing)
+                        // This happens for intrinsics or externals if they end up here
+                        1 
+                | None -> 1
+            | None -> 1
+
+        // We need to emit the thunk if it doesn't exist
+        if not (isFuncInternal thunkName z) then
+            // 1. Determine signature by peeling node.Type exactly targetParamCount times
+            let rec peel ty count =
+                if count <= 0 then [], ty
+                else
+                    match ty with
+                    | NativeType.TFun(arg, ret) -> 
+                        let args, r = peel ret (count - 1)
+                        arg :: args, r
+                    | _ -> [], ty // Should not happen if count matches type
+            
+            // Handle unit param logic (same as LambdaWitness)
+            // If TFun(Unit, Ret), native param list is empty
+            let isUnitParam = 
+                match varRefNode.Type with
+                | NativeType.TFun(NativeType.TApp(tc, _), _) -> tc.Name = "unit"
+                | _ -> false
+                
+            let paramTypes, retType = 
+                if isUnitParam then [], match varRefNode.Type with NativeType.TFun(_, r) -> r | _ -> varRefNode.Type
+                else 
+                    peel varRefNode.Type targetParamCount
+
+            // Map types to MLIR
+            let mlirParams = 
+                paramTypes 
+                |> List.map mapNativeType
+                |> List.mapi (fun i ty -> Arg (i + 1), ty) // Arg 1+ for user params
+            
+            // Add Env param (Arg 0)
+            let thunkParams = (Arg 0, MLIRTypes.ptr) :: mlirParams
+            let mlirRetType = mapNativeType retType
+            
+            // Build body: call original function
+            // Original function expects (args...) - NO env
+            let callArgs = mlirParams |> List.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
+            
+            // Use callFunc template
+            let resultSSA = V 0 // Local SSA 0 in thunk
+            let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) funcName callArgs mlirRetType)
+            let retOp = MLIROp.LLVMOp (Return (Some resultSSA, Some mlirRetType))
+            
+            let block = { Label = BlockRef "entry"; Args = []; Ops = [callOp; retOp] }
+            let region = { Blocks = [block] }
+            let thunkDef = MLIROp.LLVMOp (LLVMFuncDef (thunkName, thunkParams, mlirRetType, region, LLVMPrivate))
+            
+            emitTopLevel thunkDef z
+            registerFunc thunkName true z
+
+        // Return {thunk_ptr, null}
+        let funcPtrSSA = freshSynthSSA z
+        let addrOp = MLIROp.LLVMOp (AddressOf (funcPtrSSA, GFunc thunkName))
+        
+        let closureStructSSA = freshSynthSSA z
+        let undefSSA = freshSynthSSA z
+        let withPtrSSA = freshSynthSSA z
+        let nullEnvSSA = freshSynthSSA z
+        let closureTy = TStruct [TPtr; TPtr]
+        
+        let ops = [
+            addrOp
+            MLIROp.LLVMOp (Undef (undefSSA, closureTy))
+            MLIROp.LLVMOp (InsertValue (withPtrSSA, undefSSA, funcPtrSSA, [0], closureTy))
+            MLIROp.LLVMOp (NullPtr nullEnvSSA)
+            MLIROp.LLVMOp (InsertValue (closureStructSSA, withPtrSSA, nullEnvSSA, [1], closureTy))
+        ]
+        
+        ops, TRValue { SSA = closureStructSSA; Type = closureTy }
+        
+    | None ->
+        [], TRError (sprintf "No SSA for variable '%s' (defId=%d)" name nodeIdVal)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MUTABLE SET WITNESSING

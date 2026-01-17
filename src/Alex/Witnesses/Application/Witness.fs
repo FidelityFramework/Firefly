@@ -1010,13 +1010,7 @@ let witness
                     | Some { Kind = SemanticKind.Lambda (params', _, _) } ->
                         if List.length args = List.length params' then
                             // Saturated - regular call
-                            let effectiveRetType =
-                                match defIdOpt with
-                                | Some defId ->
-                                    match tryGetClosureReturnType defId z with
-                                    | Some closureType -> closureType
-                                    | None -> mlirReturnType
-                                | None -> mlirReturnType
+                            let effectiveRetType = mlirReturnType
                             let callOp = MLIROp.FuncOp (FuncOp.FuncCall (Some resultSSA, funcName, args, effectiveRetType))
                             [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
                         else
@@ -1043,13 +1037,7 @@ let witness
                                 else
                                     match lookupNodeSSA appNodeId z with
                                     | Some resultSSA ->
-                                        let effectiveRetType =
-                                            match defIdOpt with
-                                            | Some defId ->
-                                                match tryGetClosureReturnType defId z with
-                                                | Some closureType -> closureType
-                                                | None -> mlirReturnType
-                                            | None -> mlirReturnType
+                                        let effectiveRetType = mlirReturnType
                                         let callOp = MLIROp.FuncOp (FuncOp.FuncCall (Some resultSSA, funcName, args, effectiveRetType))
                                         [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
                                     | None ->
@@ -1090,6 +1078,7 @@ let witness
                                                 | _ -> false
                                             | None -> false
                                         | _ -> false
+                                    | SemanticKind.PatternBinding _ -> true // Parameters are always values (closures/ptrs)
                                     | _ -> false
                                 | None -> false
                             | None -> false
@@ -1109,17 +1098,22 @@ let witness
                             match closureSSAOpt with
                             | Some (closureSSA, closureType) ->
                                 let codePtrSSA = freshSynthSSA z
+                                let envPtrSSA = freshSynthSSA z
                                 let extractCodeOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (codePtrSSA, closureSSA, [0], closureType))
-                                let closureArg = { SSA = closureSSA; Type = closureType }
-                                let callArgs = closureArg :: args
+                                let extractEnvOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (envPtrSSA, closureSSA, [1], closureType))
+                                
+                                // Pass ONLY the environment pointer (Arg 0)
+                                let envArg = { SSA = envPtrSSA; Type = MLIRTypes.ptr }
+                                let callArgs = envArg :: args
+                                
                                 if isUnitType returnType then
                                     let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (None, codePtrSSA, callArgs, mlirReturnType))
-                                    [extractCodeOp; callOp], TRVoid
+                                    [extractCodeOp; extractEnvOp; callOp], TRVoid
                                 else
                                     match lookupNodeSSA appNodeId z with
                                     | Some resultSSA ->
                                         let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (Some resultSSA, codePtrSSA, callArgs, mlirReturnType))
-                                        [extractCodeOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
+                                        [extractCodeOp; extractEnvOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
                                     | None ->
                                         [], TRError (sprintf "No SSA assigned for closure call result: %s" name)
                             | None ->
@@ -1133,13 +1127,7 @@ let witness
                             else
                                 match lookupNodeSSA appNodeId z with
                                 | Some resultSSA ->
-                                    let effectiveRetType =
-                                        match defIdOpt with
-                                        | Some defId ->
-                                            match tryGetClosureReturnType defId z with
-                                            | Some closureType -> closureType
-                                            | None -> mlirReturnType
-                                        | None -> mlirReturnType
+                                    let effectiveRetType = mlirReturnType
                                     let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) funcName args effectiveRetType)
                                     [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
                                 | None ->
@@ -1154,26 +1142,28 @@ let witness
             // Post-order traversal guarantees it's already processed
             match recallNodeResult (NodeId.value funcNodeId) z with
             | Some (closureSSA, closureType) ->
-                // The result is a flat closure struct {code_ptr, capture_0, capture_1, ...}
-                // Do an indirect call through code_ptr, passing entire closure as first arg
+                // The result is a closure pair {code_ptr, env_ptr}
+                // Do an indirect call through code_ptr, passing env_ptr as first arg
                 let codePtrSSA = freshSynthSSA z
+                let envPtrSSA = freshSynthSSA z
 
-                // Extract code_ptr (index 0)
+                // Extract code_ptr (index 0) and env_ptr (index 1)
                 let extractCodeOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (codePtrSSA, closureSSA, [0], closureType))
+                let extractEnvOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (envPtrSSA, closureSSA, [1], closureType))
 
-                // Pass ENTIRE closure struct as first arg
-                let closureArg = { SSA = closureSSA; Type = closureType }
-                let callArgs = closureArg :: args
+                // Pass ONLY the environment pointer (Arg 0)
+                let envArg = { SSA = envPtrSSA; Type = MLIRTypes.ptr }
+                let callArgs = envArg :: args
 
                 // Indirect call through code_ptr
                 if isUnitType returnType then
                     let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (None, codePtrSSA, callArgs, mlirReturnType))
-                    [extractCodeOp; callOp], TRVoid
+                    [extractCodeOp; extractEnvOp; callOp], TRVoid
                 else
                     match lookupNodeSSA appNodeId z with
                     | Some resultSSA ->
                         let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (Some resultSSA, codePtrSSA, callArgs, mlirReturnType))
-                        [extractCodeOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
+                        [extractCodeOp; extractEnvOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
                     | None ->
                         [], TRError (sprintf "No SSA assigned for nested closure call result")
             | None ->

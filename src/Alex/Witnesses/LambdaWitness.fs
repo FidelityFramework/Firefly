@@ -35,24 +35,45 @@ open Alex.Preprocessing.SSAAssignment
 let private mapType = Alex.CodeGeneration.TypeMapping.mapNativeType
 
 // ═══════════════════════════════════════════════════════════════════════════
+// GLOBAL ARENA ALLOCATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Allocate memory in the global 'closure_heap' bump allocator
+/// Returns (ops, resultPtrSSA)
+let private allocateInClosureArena (z: PSGZipper) (sizeSSA: SSA) : MLIROp list * SSA =
+    let posPtrSSA = freshSynthSSA z
+    let posSSA = freshSynthSSA z
+    let heapBaseSSA = freshSynthSSA z
+    let resultPtrSSA = freshSynthSSA z
+    let newPosSSA = freshSynthSSA z
+    
+    let ops = [
+        // Load current position
+        MLIROp.LLVMOp (AddressOf (posPtrSSA, GFunc "closure_pos"))
+        MLIROp.LLVMOp (Load (posSSA, posPtrSSA, MLIRTypes.i64, NotAtomic))
+        
+        // Compute result pointer: heap_base + pos
+        MLIROp.LLVMOp (AddressOf (heapBaseSSA, GFunc "closure_heap"))
+        MLIROp.LLVMOp (GEP (resultPtrSSA, heapBaseSSA, [(posSSA, MLIRTypes.i64)], MLIRTypes.i8))
+        
+        // Update position: pos + size
+        MLIROp.ArithOp (ArithOp.AddI (newPosSSA, posSSA, sizeSSA, MLIRTypes.i64))
+        MLIROp.LLVMOp (Store (newPosSSA, posPtrSSA, MLIRTypes.i64, NotAtomic))
+    ]
+    ops, resultPtrSSA
+
+// ═══════════════════════════════════════════════════════════════════════════
 // CLOSURE CONSTRUCTION HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Build closure construction ops for a Lambda with captures
 /// Uses pre-computed ClosureLayout from SSAAssignment (coeffect pattern)
 ///
-/// TRUE FLAT CLOSURE: Captures are inlined directly in the closure struct.
-/// Struct layout: {code_ptr, capture_0, capture_1, ...}
-/// No alloca, no env_ptr - captures are copied by value into the struct.
-///
-/// ALL SSAs come from SSAAssignment - witnesses OBSERVE, do NOT compute.
-///
-/// Emits (in parent scope):
-///   %code_addr = llvm.mlir.addressof @lambda_name
-///   %undef = llvm.mlir.undef : !llvm.struct<(ptr, T0, T1, ...)>
-///   %with_code = llvm.insertvalue %undef, %code_addr[0] : ...
-///   %with_cap0 = llvm.insertvalue %with_code, %captured0[1] : ...
-///   %closure = llvm.insertvalue %with_capN-1, %capturedN[N] : ...
+/// TRUE FLAT CLOSURE (HEAP ALLOCATED):
+/// 1. Construct the environment struct (captures) by value.
+/// 2. Allocate space in the global closure arena.
+/// 3. Store the environment struct to the arena.
+/// 4. Return Uniform Pair: {code_ptr, env_ptr}
 let private buildClosureConstruction
     (layout: ClosureLayout)
     (lambdaName: string)
@@ -62,32 +83,28 @@ let private buildClosureConstruction
     // 1. Get address of the lambda function (SSA from SSAAssignment)
     let codeAddrOp = MLIROp.LLVMOp (AddressOf (layout.CodeAddrSSA, GFunc lambdaName))
 
-    // 2. Create undef closure struct (SSA from SSAAssignment)
-    let undefOp = MLIROp.LLVMOp (Undef (layout.ClosureUndefSSA, layout.ClosureStructType))
-
-    // 3. Insert code_ptr at index 0 (SSA from SSAAssignment)
-    let withCodeOp = MLIROp.LLVMOp (InsertValue (layout.ClosureWithCodeSSA, layout.ClosureUndefSSA,
+    // 2. Create the Flat Environment struct (contains captures)
+    // We use synthetic SSAs for the intermediate construction
+    let flatUndefSSA = freshSynthSSA z
+    let flatUndefOp = MLIROp.LLVMOp (Undef (flatUndefSSA, layout.ClosureStructType))
+    
+    // Insert code_ptr at index 0
+    let flatWithCodeSSA = freshSynthSSA z
+    let flatWithCodeOp = MLIROp.LLVMOp (InsertValue (flatWithCodeSSA, flatUndefSSA,
         layout.CodeAddrSSA, [0], layout.ClosureStructType))
-
-    // 4. Insert each captured value at index (1 + slotIndex)
-    // Use pre-computed CaptureInsertSSAs from SSAAssignment
-    // Each insertvalue uses the PREVIOUS insertvalue result as input
-    let captureOps =
-        // Helper to look up variable in PARENT scope (since z is in inner scope)
-        let recallParentVarSSA name =
-            match z.State.VarBindingsStack with
-            | parentBindings :: _ -> Map.tryFind name parentBindings
-            | [] -> None // Should be main/module level if stack empty
-
+        
+    // Insert each captured value
+    let mutable currentFlatSSA = flatWithCodeSSA
+    let flatOps = 
         layout.Captures
         |> List.mapi (fun i slot ->
-            // Get the captured value's SSA from the source binding
-            // PRIORITY: Check VarBindings in PARENT SCOPE first (handles allocas/rebindings)
-            // Then check NodeBindings by ID (handles intermediate results)
-            // Finally check if it is a FUNCTION reference (needs addressof)
-            // Finally fallback to SSAAssignment (coeffect)
-            
             let capturedSSA, funcOps =
+                // Helper to look up variable in PARENT scope (since z is in inner scope)
+                let recallParentVarSSA name =
+                    match z.State.VarBindingsStack with
+                    | parentBindings :: _ -> Map.tryFind name parentBindings
+                    | [] -> None
+                
                 match recallParentVarSSA slot.Name with
                 | Some (ssa, _) -> ssa, []
                 | None ->
@@ -96,53 +113,59 @@ let private buildClosureConstruction
                         match recallNodeResult (NodeId.value srcId) z with
                         | Some (ssa, _ty) -> ssa, []
                         | None ->
-                            // Check if source node maps to a known function name in SSAAssignment
                             match lookupLambdaName srcId z.State.SSAAssignment with
                             | Some funcName ->
-                                // Emit addressof @funcName
-                                let funcPtrSSA = freshSynthSSA z
-                                let addrOp = MLIROp.LLVMOp (AddressOf (funcPtrSSA, GFunc funcName))
-                                
-                                // Create closure struct {func_ptr, null}
-                                let closureStructSSA = freshSynthSSA z
-                                let undefSSA = freshSynthSSA z
-                                let withPtrSSA = freshSynthSSA z
-                                let nullEnvSSA = freshSynthSSA z
-                                
-                                // TFun maps to {ptr, ptr}
-                                let closureTy = TStruct [TPtr; TPtr]
-                                
-                                let ops = [
-                                    addrOp
-                                    MLIROp.LLVMOp (Undef (undefSSA, closureTy))
-                                    MLIROp.LLVMOp (InsertValue (withPtrSSA, undefSSA, funcPtrSSA, [0], closureTy))
-                                    MLIROp.LLVMOp (NullPtr nullEnvSSA)
-                                    MLIROp.LLVMOp (InsertValue (closureStructSSA, withPtrSSA, nullEnvSSA, [1], closureTy))
-                                ]
-                                closureStructSSA, ops
+                                // Function reference captured: MUST be a closure pair
+                                // (BindingWitness will provide thunks for Simple Lambdas)
+                                let ssa = match lookupSSA srcId z.State.SSAAssignment with Some s -> s | None -> V 0
+                                ssa, []
                             | None ->
-                                // Not a function, fallback to SSA lookup
                                 let ssa = match lookupSSA srcId z.State.SSAAssignment with Some s -> s | None -> V 0
                                 ssa, []
                     | None -> V 0, []
-
-            // Previous SSA: for i=0, use ClosureWithCodeSSA; otherwise use previous CaptureInsertSSA
-            let prevSSA =
-                if i = 0 then layout.ClosureWithCodeSSA
-                else layout.CaptureInsertSSAs.[i - 1]
-
-            // Result SSA from pre-computed CaptureInsertSSAs
-            let resultSSA = layout.CaptureInsertSSAs.[i]
-
-            // Insert at index (1 + slotIndex) since index 0 is code_ptr
+            
+            let nextSSA = freshSynthSSA z
             let insertIndex = 1 + slot.SlotIndex
-            // Prepend function construction ops if any
-            funcOps @ [MLIROp.LLVMOp (InsertValue (resultSSA, prevSSA, capturedSSA, [insertIndex], layout.ClosureStructType))]
+            let op = MLIROp.LLVMOp (InsertValue (nextSSA, currentFlatSSA, capturedSSA, [insertIndex], layout.ClosureStructType))
+            currentFlatSSA <- nextSSA
+            funcOps @ [op]
         )
         |> List.concat
+        
+    // 3. Allocate in Global Arena (avoiding stack lifetime issues)
+    // Calculate size using GEP null trick
+    let nullPtrSSA = freshSynthSSA z
+    let sizePtrSSA = freshSynthSSA z
+    let sizeSSA = freshSynthSSA z
+    let oneSSA = freshSynthSSA z
+    
+    let nullOp = MLIROp.LLVMOp (NullPtr nullPtrSSA)
+    // Generate constant 1 for GEP index
+    let oneOp = MLIROp.ArithOp (ArithOp.ConstI (oneSSA, 1L, MLIRTypes.i32))
+    // GEP null[1] gives pointer to address == sizeof(type)
+    let sizeGepOp = MLIROp.LLVMOp (GEP (sizePtrSSA, nullPtrSSA, [(oneSSA, MLIRTypes.i32)], layout.ClosureStructType))
+    let ptrToIntOp = MLIROp.LLVMOp (PtrToInt (sizeSSA, sizePtrSSA, MLIRTypes.i64))
+    
+    // Allocate
+    let allocOps, envPtrSSA = allocateInClosureArena z sizeSSA
+    
+    // Store the environment struct to the arena
+    let storeOp = MLIROp.LLVMOp (Store (currentFlatSSA, envPtrSSA, layout.ClosureStructType, NotAtomic))
+    
+    // 4. Build the uniform {ptr, ptr} Function Value pair
+    // Use layout.ClosureResultSSA for the FINAL result (aligns with AppWitness/SSAAssignment)
+    let pairTy = TStruct [TPtr; TPtr]
+    let pairUndefSSA = freshSynthSSA z
+    let pairWithCodeSSA = freshSynthSSA z
+    
+    let buildPairOps = [
+        MLIROp.LLVMOp (Undef (pairUndefSSA, pairTy))
+        MLIROp.LLVMOp (InsertValue (pairWithCodeSSA, pairUndefSSA, layout.CodeAddrSSA, [0], pairTy))
+        MLIROp.LLVMOp (InsertValue (layout.ClosureResultSSA, pairWithCodeSSA, envPtrSSA, [1], pairTy))
+    ]
 
-    // The final CaptureInsertSSA equals ClosureResultSSA (per SSAAssignment)
-    [codeAddrOp; undefOp; withCodeOp] @ captureOps
+    [codeAddrOp; flatUndefOp; flatWithCodeOp] @ flatOps @ 
+    [nullOp; oneOp; sizeGepOp; ptrToIntOp] @ allocOps @ [storeOp] @ buildPairOps
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CAPTURE EXTRACTION (Inside Closure Function)
@@ -151,33 +174,35 @@ let private buildClosureConstruction
 /// Generate ops to extract captured values from closure struct at function entry
 /// These ops are prepended to the function body
 ///
-/// TRUE FLAT CLOSURE: Arg 0 is the closure struct itself (passed by value).
-/// Layout: {code_ptr, capture_0, capture_1, ...}
+/// CLOSURE CONVENTION: Closing Lambdas take env_ptr (Arg 0) which points to the closure struct.
+/// We load the struct from the pointer, then extract values.
 ///
 /// For each capture slot:
-///   %extracted = llvm.extractvalue %closure_arg[1 + slotIndex]
-///
-/// The extracted SSA is bound to the capture name in preBindParams
+///   %struct = load %env_ptr
+///   %extracted = llvm.extractvalue %struct[1 + slotIndex]
 let private buildCaptureExtractionOps
     (layout: ClosureLayout)
-    (_z: PSGZipper)
+    (z: PSGZipper)
     : MLIROp list =
 
-    // For true flat closures, Arg 0 is the closure struct itself (not a pointer to env)
-    let closureArgSSA = Arg 0
+    // Arg 0 is the environment pointer (passed as TPtr)
+    let envPtrSSA = Arg 0
+    
+    // Load the closure struct from the environment pointer
+    let structSSA = freshSynthSSA z
+    let loadOp = MLIROp.LLVMOp (Load (structSSA, envPtrSSA, layout.ClosureStructType, NotAtomic))
 
-    // Extract each captured value directly from the closure struct
+    // Extract each captured value from the loaded struct
     // Captures are at indices 1, 2, ... (index 0 is code_ptr)
     let extractOps =
         layout.Captures
         |> List.map (fun slot ->
             // slot.GepSSA is the SSA we bound in preBindParams - use it for the extracted value
-            // Extract from index (1 + slotIndex) since index 0 is code_ptr
             let extractIndex = 1 + slot.SlotIndex
-            MLIROp.LLVMOp (ExtractValue (slot.GepSSA, closureArgSSA, [extractIndex], layout.ClosureStructType))
+            MLIROp.LLVMOp (ExtractValue (slot.GepSSA, structSSA, [extractIndex], layout.ClosureStructType))
         )
 
-    extractOps
+    loadOp :: extractOps
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Entry Point Argv Conversion
@@ -260,19 +285,8 @@ let private extractFinalReturnType (ty: NativeType) (paramCount: int) : NativeTy
         | _ -> ty
     peel ty paramCount
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Lambda Witnessing
-// ═══════════════════════════════════════════════════════════════════════════
+// ... (Lambda Witnessing) ...
 
-/// Witness a Lambda node when in function scope
-/// Body operations were accumulated during child traversal
-/// Returns: (ops to emit, result) - following witness pattern
-///
-/// CLOSURE HANDLING:
-/// - Simple Lambda (no captures): Emit func.func, return TRVoid
-/// - Closing Lambda (with captures):
-///   - Emit func.func with env_ptr as first parameter (Arg 0)
-///   - Return closure construction ops and TRValue with closure struct
 let private witnessInFunctionScope
     (lambdaName: string)
     (node: SemanticNode)
@@ -283,7 +297,7 @@ let private witnessInFunctionScope
     (z: PSGZipper)
     : MLIROp option * MLIROp list * TransferResult =
 
-    // Determine declared return type (use graph-aware mapping for record types)
+    // ... (paramCount logic) ...
     let paramCount =
         match node.Kind with
         | SemanticKind.Lambda (params', _bodyId, _captures) -> List.length params'
@@ -291,77 +305,56 @@ let private witnessInFunctionScope
     let finalRetType = extractFinalReturnType node.Type paramCount
     let declaredRetType = mapNativeTypeWithGraph z.Graph finalRetType
 
-    // Look up body's SSA result (already processed in post-order)
-    // Using structured recallNodeResult which returns (SSA * MLIRType) option
-    let bodyResult =
-        recallNodeResult (NodeId.value bodyId) z
+    // ... (bodyResult logic) ...
+    let bodyResult = recallNodeResult (NodeId.value bodyId) z
 
-    // Build return/terminator ops
-    // TRUE FLAT CLOSURE: When body produces a closure struct, use its ACTUAL type
-    // (not the mapped TFun -> {ptr,ptr} type from declaredRetType)
+    // ... (returnOps logic) ...
     let returnOps, terminator, actualRetType =
         match bodyResult with
         | Some (ssa, bodyType) ->
-            // Check if body produces a closure struct (TStruct starting with TPtr)
-            // If so, use bodyType as the actual return type
             let effectiveRetType =
                 match bodyType, declaredRetType with
-                | TStruct (TPtr :: _), TStruct [TPtr; TPtr] ->
-                    // Body is a flat closure struct, declaredRetType is old {ptr,ptr} model
-                    // Use the actual closure struct type
-                    bodyType
-                | _ ->
-                    declaredRetType
-            // Normal return - may need type reconciliation
+                | TStruct (TPtr :: _), TStruct [TPtr; TPtr] -> bodyType
+                | _ -> declaredRetType
             let reconcileOps, finalSSA = reconcileReturnType z ssa bodyType effectiveRetType
             reconcileOps, createReturnOp (Some finalSSA) (Some effectiveRetType), effectiveRetType
         | None ->
-            // No body result - create default (uses synthetic SSA)
+            let defaultOps, defaultSSA = createDefaultReturn z declaredRetType
+            defaultOps, createReturnOp (Some defaultSSA) (Some declaredRetType), declaredRetType
+
+    // ... (bodyRes logic) ...
+    let bodyOps, bodyRes = witnessBody z
+    let returnOps, terminator, actualRetType =
+        match bodyRes with
+        | TRValue { SSA = ssa; Type = bodyType } ->
+            let effectiveRetType =
+                match bodyType, declaredRetType with
+                | TStruct (TPtr :: _), TStruct [TPtr; TPtr] -> bodyType
+                | _ -> declaredRetType
+            let reconcileOps, finalSSA = reconcileReturnType z ssa bodyType effectiveRetType
+            reconcileOps, createReturnOp (Some finalSSA) (Some effectiveRetType), effectiveRetType
+        | _ ->
             let defaultOps, defaultSSA = createDefaultReturn z declaredRetType
             defaultOps, createReturnOp (Some defaultSSA) (Some declaredRetType), declaredRetType
 
     // For closing lambdas: bind captured variables (already done in preBindParams)
-    // These ops extract captured values from env struct at function entry
     let captureExtractionOps =
         match closureLayoutOpt with
         | Some layout -> buildCaptureExtractionOps layout z
         | None -> []
 
-    // Recursively witness the body
-    // This will emit body ops into zBody's CurrentOps
-    // We capture the result (Val) and the accumulated ops
-    let bodyOps, bodyRes = witnessBody z
-
-    // Build return/terminator ops
-    // TRUE FLAT CLOSURE: When body produces a closure struct, use its ACTUAL type
-    // (not the mapped TFun -> {ptr,ptr} type from declaredRetType)
-    let returnOps, terminator, actualRetType =
-        match bodyRes with
-        | TRValue { SSA = ssa; Type = bodyType } ->
-            // Check if body produces a closure struct (TStruct starting with TPtr)
-            // If so, use bodyType as the actual return type
-            let effectiveRetType =
-                match bodyType, declaredRetType with
-                | TStruct (TPtr :: _), TStruct [TPtr; TPtr] ->
-                    // Body is a flat closure struct, declaredRetType is old {ptr,ptr} model
-                    // Use the actual closure struct type
-                    bodyType
-                | _ ->
-                    declaredRetType
-            // Normal return - may need type reconciliation
-            let reconcileOps, finalSSA = reconcileReturnType z ssa bodyType effectiveRetType
-            reconcileOps, createReturnOp (Some finalSSA) (Some effectiveRetType), effectiveRetType
-        | _ ->
-            // No body result - create default (uses synthetic SSA)
-            let defaultOps, defaultSSA = createDefaultReturn z declaredRetType
-            defaultOps, createReturnOp (Some defaultSSA) (Some declaredRetType), declaredRetType
-
-    // Build complete body ops: capture extraction + accumulated + return + terminator
+    // Build complete body ops
     let completeBodyOps = captureExtractionOps @ bodyOps @ returnOps @ [terminator]
 
-    // funcParams already includes env_ptr if this is a closing lambda (from preBindParams)
-    // No additional modification needed here
-    let finalFuncParams = funcParams
+    // Check if this is a closing lambda (has captures)
+    // For TRUE FLAT CLOSURES: first parameter is the environment pointer
+    let finalMlirParams =
+        match closureLayoutOpt with
+        | Some layout ->
+            // Prepend env pointer (Arg 0) - passed as opaque ptr
+            (Arg 0, MLIRTypes.ptr) :: funcParams
+        | None ->
+            funcParams
 
     // Build function body as single entry block
     let entryBlock: Block = {
@@ -371,24 +364,21 @@ let private witnessInFunctionScope
     }
     let bodyRegion: Region = { Blocks = [entryBlock] }
 
-    // For closing lambdas: emit closure construction ops and return TRValue
-    // For simple lambdas: just the funcDef, TRVoid
-    
-    // ARCHITECTURAL CHANGE: Always use llvm.func (LLVM Dialect)
-    // This allows taking address of any function (for closures) and matches llvm.return.
-    // Also requires callers to use llvm.call.
+    // ... (emit logic) ...
     
     // Fix linkage mapping:
     let linkage = if isFuncInternal lambdaName z then LLVMPrivate else LLVMExternal
 
-    let llvmFuncDef = LLVMOp.LLVMFuncDef (lambdaName, finalFuncParams, actualRetType, bodyRegion, linkage)
+    let llvmFuncDef = LLVMOp.LLVMFuncDef (lambdaName, finalMlirParams, actualRetType, bodyRegion, linkage)
 
     match closureLayoutOpt with
     | Some layout ->
         // CLOSING LAMBDA: Emit closure construction ops (in parent scope)
         let closureOps = buildClosureConstruction layout lambdaName z
         // Return: llvmFuncDef for TopLevel, closureOps for CurrentOps, TRValue with closure
-        Some (MLIROp.LLVMOp llvmFuncDef), closureOps, TRValue { SSA = layout.ClosureResultSSA; Type = layout.ClosureStructType }
+        // FIX: The result of buildClosureConstruction is now {ptr, ptr} (generic closure),
+        // NOT layout.ClosureStructType (flat struct). The flat struct is hidden in the arena.
+        Some (MLIROp.LLVMOp llvmFuncDef), closureOps, TRValue { SSA = layout.ClosureResultSSA; Type = TStruct [TPtr; TPtr] }
     | None ->
         // Simple lambda: no closure construction
         // Return: llvmFuncDef for TopLevel, no local ops, TRVoid
@@ -570,16 +560,10 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
         let closureLayoutOpt = lookupClosureLayout node.Id z.State.SSAAssignment
         let hasCapturesClosure = Option.isSome closureLayoutOpt
 
-        // For TRUE FLAT CLOSURES: first parameter is the closure struct itself (not env_ptr)
-        // Layout: {code_ptr, capture_0, capture_1, ...}
-        // The closure struct is passed BY VALUE, enabling safe stack returns
-        let finalMlirParams =
-            match closureLayoutOpt with
-            | Some layout ->
-                // Prepend closure struct (Arg 0) - the full closure with inline captures
-                (Arg 0, layout.ClosureStructType) :: mlirParams
-            | None ->
-                mlirParams
+        // For TRUE FLAT CLOSURES (Arena): parameters start at Arg 1.
+        // Arg 0 (env_ptr) is prepended by witnessInFunctionScope.
+        // We pass only user params here.
+        let finalMlirParams = mlirParams
 
         // Enter function scope - this sets State.Focus = InFunction lambdaName
         let z1 = enterFunction lambdaName finalMlirParams returnType visibility z
