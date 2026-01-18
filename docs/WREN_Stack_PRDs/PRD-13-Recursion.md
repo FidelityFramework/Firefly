@@ -134,14 +134,93 @@ match findEnclosingFunctionName lambdaId with
 With proper PSG (VarRefs have defIds), the existing witness code handles recursive calls correctly:
 - VarRef has defId → lookup in lambdaNames → emit call
 
-## 5. Verification
+## 5. FNCS: Nested Function Captures (Issue Found Jan 2026)
 
-### 5.1 PSG Check
+### 5.1 The Problem
+
+Nested recursive functions may **capture variables from enclosing scope**, but the current implementation in `checkSingleBinding` hardcodes `captures = []` for ALL named function bindings:
+
+```fsharp
+// Bindings.fs line ~223 - CURRENT (BUGGY)
+SemanticKind.Lambda(lambdaParams, bodyNode.Id, [], env.EnclosingFunction, LambdaContext.RegularClosure),
+//                                               ^^ captures hardcoded to empty!
+```
+
+The comment says:
+```fsharp
+// Named function bindings don't capture from outer scope (they ARE the outer scope)
+```
+
+This is **correct for top-level functions** but **wrong for nested functions**.
+
+### 5.2 Example: sumTo vs factorialTail
+
+```fsharp
+// factorialTail - WORKS (no capture needed)
+let factorialTail (n: int) : int =
+    let rec loop acc n =     // 'n' is a PARAMETER, shadows outer n
+        if n <= 1 then acc
+        else loop (acc * n) (n - 1)
+    loop 1 n
+
+// sumTo - BROKEN (capture needed but not computed)
+let sumTo (n: int) : int =
+    let rec loop acc i =     // only 'acc' and 'i' are parameters
+        if i > n then acc    // 'n' CAPTURED from outer scope!
+        else loop (acc + i) (i + 1)
+    loop 0 1
+```
+
+In `sumTo`, the nested `loop` references `n` from the enclosing function. This is a capture that must flow to MLIR.
+
+**Current MLIR output (wrong):**
+```mlir
+llvm.func @sumTo_loop(%arg0: i64, %arg1: i64) -> i64 {
+    %cmp = arith.cmpi sgt, %arg1, %arg0 : i64   // comparing i > acc, NOT i > n!
+```
+
+The condition `i > n` became `i > acc` because `n` wasn't passed.
+
+### 5.3 The Fix
+
+When `env.EnclosingFunction.IsSome`, we're inside a function, so this is a nested function that may need captures. Call `computeCaptures` (from Applications.fs) instead of passing `[]`:
+
+```fsharp
+// Bindings.fs - CORRECTED
+let paramNames = lambdaParams |> List.map (fun (name, _, _) -> name) |> Set.ofList
+// Also exclude the function's own name (for recursive self-reference)
+let excludeNames = Set.add name paramNames
+
+// Compute captures only for nested functions (top-level never captures)
+let captures =
+    if env.EnclosingFunction.IsSome then
+        computeCaptures builder env bodyNode.Id excludeNames
+    else
+        []
+
+let lambdaNode = builder.Create(
+    SemanticKind.Lambda(lambdaParams, bodyNode.Id, captures, env.EnclosingFunction, LambdaContext.RegularClosure),
+    funcType,
+    range,
+    children = lambdaChildren)
+```
+
+### 5.4 Alex Impact
+
+Once captures flow through the PSG, Alex/LambdaWitness must handle them for nested recursive functions:
+- Either pass captures as additional parameters (parameter-passing style)
+- Or create a closure environment (flat closure style, as in PRD-11)
+
+For tail-recursive nested functions that don't escape, parameter-passing is more efficient.
+
+## 6. Verification
+
+### 6.1 PSG Check
 ```
 VarRef ("factorial", Some (NodeId 547))  // Self-reference has defId
 ```
 
-### 5.2 MLIR Check
+### 6.2 MLIR Check
 ```mlir
 llvm.func @factorial(%n: i32) -> i32 {
     ...
@@ -150,31 +229,47 @@ llvm.func @factorial(%n: i32) -> i32 {
 }
 ```
 
-### 5.3 Execution Check
+### 6.3 Execution Check
 ```
 factorial 5: 120
 factorialTail 5: 120
+sumTo 10: 55        // After capture fix
 ```
 
-## 6. Implementation Checklist
+## 7. Implementation Checklist
 
 ### Phase 1: FNCS - Recursive Binding NodeIds
-- [ ] Restructure `checkLetOrUse` to pre-create Binding nodes for `let rec`
-- [ ] Add NodeIds to environment before checking bodies
-- [ ] Verify: VarRef to self has `defId = Some nodeId`
+- [x] Restructure `checkLetOrUse` to pre-create Binding nodes for `let rec`
+- [x] Add NodeIds to environment before checking bodies
+- [x] Verify: VarRef to self has `defId = Some nodeId`
+- [x] FNCS builds
+
+### Phase 2: Firefly - Nested Function Naming (Parent Links)
+- [x] Bindings.fs: `buildSequential` sets parent on all children
+- [x] Bindings.fs: Lambda creation sets parent on params and body
+- [x] TypeOperations.fs: TypeAnnotation sets parent on inner node
+- [x] SSAAssignment uses Parent chain for qualified names
+- [x] Verify: `@factorialTail_loop` not `@loop`
+- [x] Firefly builds
+
+### Phase 3: FNCS - Nested Function Captures (NEW)
+- [ ] Import `computeCaptures` into Bindings.fs (or move to shared module)
+- [ ] Call `computeCaptures` when `env.EnclosingFunction.IsSome`
+- [ ] Exclude function's own name and parameters from capture set
+- [ ] Verify: sumTo's loop Lambda has `captures = [{Name="n"; ...}]`
 - [ ] FNCS builds
 
-### Phase 2: Firefly - Nested Function Naming
-- [ ] SSAAssignment uses Parent chain for qualified names
-- [ ] Verify: `@factorialTail_loop` not `@loop`
-- [ ] Firefly builds
+### Phase 4: Alex - Handle Nested Function Captures
+- [ ] LambdaWitness: pass captures as additional parameters for non-escaping nested functions
+- [ ] Generate `@sumTo_loop(n, acc, i)` not `@sumTo_loop(acc, i)`
+- [ ] Verify: sumTo returns 55 for n=10
 
-### Phase 3: Validation
-- [ ] RecursionSimple compiles
-- [ ] RecursionSimple executes correctly
-- [ ] Samples 01-12 still pass
+### Phase 5: Validation
+- [ ] RecursionSimple compiles and executes
+- [ ] Recursion.fidproj (full) compiles and executes with correct sumTo results
+- [ ] Samples 01-14 still pass
 
-## 7. Related PRDs
+## 8. Related PRDs
 
 - **PRD-11**: Closures - nested functions may capture
 - **PRD-12**: HOFs - recursive functions as values

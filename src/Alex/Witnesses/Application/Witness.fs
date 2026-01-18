@@ -1117,31 +1117,45 @@ let witness
                         ops, result
                     | None ->
                         // Check if this is a closure call (VarRef points to a closure value)
-                        let isClosureCall =
+                        // DISTINCTION: Nested named functions with captures are NOT closure calls -
+                        // they use direct calls with captures passed as additional parameters.
+                        // Only escaping closures (anonymous lambdas, partial applications) use closure structs.
+                        let isClosureCall, nestedCapturesOpt =
                             match defIdOpt with
                             | Some defId ->
                                 match SemanticGraph.tryGetNode defId z.Graph with
                                 | Some defNode ->
                                     match defNode.Kind with
-                                    | SemanticKind.Lambda (_, _, captures, _, _) -> not (List.isEmpty captures)
+                                    | SemanticKind.Lambda (_, _, captures, enclosingFunc, _) ->
+                                        if not (List.isEmpty captures) && Option.isSome enclosingFunc then
+                                            // Nested named function with captures - NOT a closure call
+                                            // Return captures for parameter-passing
+                                            false, Some captures
+                                        else
+                                            not (List.isEmpty captures), None
                                     | SemanticKind.Binding (_, _, _, _) ->
                                         match defNode.Children with
                                         | [childId] ->
                                             match SemanticGraph.tryGetNode childId z.Graph with
                                             | Some childNode ->
                                                 match childNode.Kind with
-                                                | SemanticKind.Lambda (_, _, captures, _, _) -> not (List.isEmpty captures)
+                                                | SemanticKind.Lambda (_, _, captures, enclosingFunc, _) ->
+                                                    if not (List.isEmpty captures) && Option.isSome enclosingFunc then
+                                                        // Nested named function with captures
+                                                        false, Some captures
+                                                    else
+                                                        not (List.isEmpty captures), None
                                                 | SemanticKind.Application _ ->
                                                     match childNode.Type with
-                                                    | NativeType.TFun _ -> true
-                                                    | _ -> false
-                                                | _ -> false
-                                            | None -> false
-                                        | _ -> false
-                                    | SemanticKind.PatternBinding _ -> true // Parameters are always values (closures/ptrs)
-                                    | _ -> false
-                                | None -> false
-                            | None -> false
+                                                    | NativeType.TFun _ -> true, None
+                                                    | _ -> false, None
+                                                | _ -> false, None
+                                            | None -> false, None
+                                        | _ -> false, None
+                                    | SemanticKind.PatternBinding _ -> true, None // Parameters are always values (closures/ptrs)
+                                    | _ -> false, None
+                                | None -> false, None
+                            | None -> false, None
 
                         if isClosureCall then
                             // Get the closure struct SSA
@@ -1179,19 +1193,47 @@ let witness
                             | None ->
                                 [], TRError (sprintf "Closure '%s' not bound in scope" name)
                         else
-                            // Regular function call
-                            if isUnitType returnType then
-                                // Void function
-                                let callOp = MLIROp.LLVMOp (callFunc None funcName args mlirReturnType)
-                                [callOp], TRVoid
+                            // Regular function call (or nested function with captures)
+                            // For nested functions with captures, prepend capture values as arguments
+                            let captureArgs, captureErrors =
+                                match nestedCapturesOpt with
+                                | Some captures ->
+                                    let mutable errors = []
+                                    let args =
+                                        captures |> List.choose (fun cap ->
+                                            match recallVarSSA cap.Name z with
+                                            | Some (ssa, ty) -> Some { SSA = ssa; Type = ty }
+                                            | None ->
+                                                // Try looking up by SourceNodeId
+                                                match cap.SourceNodeId with
+                                                | Some srcId ->
+                                                    match recallNodeResult (NodeId.value srcId) z with
+                                                    | Some (ssa, ty) -> Some { SSA = ssa; Type = ty }
+                                                    | None ->
+                                                        errors <- (sprintf "Capture '%s' not found in scope" cap.Name) :: errors
+                                                        None
+                                                | None ->
+                                                    errors <- (sprintf "Capture '%s' has no source node" cap.Name) :: errors
+                                                    None)
+                                    args, List.rev errors
+                                | None -> [], []
+
+                            if not (List.isEmpty captureErrors) then
+                                [], TRError (String.concat "; " captureErrors)
                             else
-                                match lookupNodeSSA appNodeId z with
-                                | Some resultSSA ->
-                                    let effectiveRetType = mlirReturnType
-                                    let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) funcName args effectiveRetType)
-                                    [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
-                                | None ->
-                                    [], TRError (sprintf "No SSA assigned for function call result: %s" funcName)
+                                let allArgs = captureArgs @ args
+                                if isUnitType returnType then
+                                    // Void function
+                                    let callOp = MLIROp.LLVMOp (callFunc None funcName allArgs mlirReturnType)
+                                    [callOp], TRVoid
+                                else
+                                    match lookupNodeSSA appNodeId z with
+                                    | Some resultSSA ->
+                                        let effectiveRetType = mlirReturnType
+                                        let callOp = MLIROp.LLVMOp (callFunc (Some resultSSA) funcName allArgs effectiveRetType)
+                                        [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
+                                    | None ->
+                                        [], TRError (sprintf "No SSA assigned for function call result: %s" funcName)
 
         // Nested Application - the function is itself an Application result (closure)
         // This happens with curried functions: App(App(makeCounter, [0]), [_eta0])

@@ -538,25 +538,46 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                         // don't elide parameters (safe behavior, just potentially suboptimal)
                         false
 
-                // CLOSURE HANDLING: If this lambda has captures, Arg 0 is env_ptr
-                // and all regular parameters shift by 1
-                let hasCapturesClosure = not (List.isEmpty captures)
-                let argOffset = if hasCapturesClosure then 1 else 0
+                // CLOSURE HANDLING:
+                // 1. Escaping closures (with ClosureLayout): Arg 0 is env_ptr, params shift by 1
+                // 2. Nested functions with captures (no ClosureLayout): captures become explicit params
+                // 3. Simple lambdas (no captures): no offset
+                let closureLayoutOpt = lookupClosureLayout node.Id z.State.SSAAssignment
+                let hasEscapingClosure = Option.isSome closureLayoutOpt
+                let hasNestedCaptures = not (List.isEmpty captures) && Option.isNone closureLayoutOpt
+
+                // Use graph-aware type mapping for record types
+                let mapTypeWithGraph = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph
+
+                // Build capture params for nested functions
+                let captureParams, captureBindings =
+                    if hasNestedCaptures then
+                        let capPs = captures |> List.mapi (fun i cap ->
+                            (Arg i, mapTypeWithGraph cap.Type))
+                        let capBs = captures |> List.mapi (fun i cap ->
+                            (cap.Name, Some (Arg i, mapTypeWithGraph cap.Type)))
+                        capPs, capBs
+                    else
+                        [], []
+
+                let captureCount = List.length captureParams
+                let argOffset =
+                    if hasEscapingClosure then 1  // env_ptr at Arg 0
+                    elif hasNestedCaptures then captureCount  // captures at Arg 0..N-1
+                    else 0
 
                 let mlirPs, bindings =
                     if isUnitParam then
                         // NTUunit has size 0 - no parameter generated
                         // A function taking unit is nullary at the native level
                         // This aligns with call sites which also elide unit arguments
-                        [], []
+                        captureParams, captureBindings  // Still include capture params if nested
                     else
                         let nodeParamTypes = extractParamTypes node.Type (List.length params')
 
-                        // Use graph-aware type mapping for record types
-                        let mapTypeWithGraph = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph
-
                         // Build structured params: (Arg i+offset, MLIRType)
                         // For closing lambdas, params start at Arg 1 (Arg 0 is env_ptr)
+                        // For nested functions with captures, params start at Arg N (captures at Arg 0..N-1)
                         let ps = params' |> List.mapi (fun i (_name, nativeTy, _nodeId) ->
                             let actualType =
                                 if i < List.length nodeParamTypes then nodeParamTypes.[i]
@@ -569,7 +590,8 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                                 if i < List.length nodeParamTypes then nodeParamTypes.[i]
                                 else paramType
                             (paramName, Some (Arg (i + argOffset), mapTypeWithGraph actualType)))
-                        ps, bs
+
+                        captureParams @ ps, captureBindings @ bs
 
                 mlirPs, bindings, false, isUnitParam
 

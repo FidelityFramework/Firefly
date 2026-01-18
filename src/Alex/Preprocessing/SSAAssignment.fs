@@ -639,28 +639,51 @@ let rec private assignFunctionBody
         // Special handling for nested Lambdas - they get their own scope
         // (but we still assign this Lambda node SSAs in parent scope for closure construction)
         match node.Kind with
-        | SemanticKind.Lambda(_params, bodyId, captures, _, context) ->
+        | SemanticKind.Lambda(_params, bodyId, captures, enclosingFuncOpt, context) ->
             // Process Lambda body in a NEW scope (SSA counter resets)
             let _innerScope = assignFunctionBody arch graph closureLayouts FunctionScope.empty bodyId
-            // Lambda itself gets SSAs in the PARENT scope for closure struct construction
-            // SSA count is deterministic based on captures (from FNCS)
-            let cost = computeLambdaSSACost captures
-            if cost > 0 then
-                let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
-                let alloc = NodeSSAAllocation.multi ssas
-                FunctionScope.assign node.Id alloc scopeWithSSAs
 
-                // Compute ClosureLayout immediately using the allocated SSAs from the parent scope
-                // Pass the context so witnesses know how to extract captures
-                // PRD-14: Pass graph and bodyId for lazy struct type computation
-                if not (List.isEmpty captures) then
-                    let layout = buildClosureLayout arch graph node.Id bodyId captures ssas context
-                    if not (closureLayouts.ContainsKey(NodeId.value node.Id)) then
-                        closureLayouts.Add(NodeId.value node.Id, layout)
-                scopeWithSSAs
-            else
-                // Simple lambda (no captures) - no SSAs needed in parent scope
+            // DISTINCTION: Nested NAMED functions with captures use parameter-passing, NOT closure structs.
+            // Anonymous lambdas (fun x -> ...) that escape STILL need closure structs.
+            // Check: Lambda is nested (enclosingFuncOpt = Some _) AND its parent is a Binding (named function).
+            // Anonymous lambdas have non-Binding parents (Application, Sequential, etc.).
+            let isNestedNamedFunction =
+                Option.isSome enclosingFuncOpt &&
+                match node.Parent with
+                | Some parentId ->
+                    match Map.tryFind parentId graph.Nodes with
+                    | Some parentNode ->
+                        match parentNode.Kind with
+                        | SemanticKind.Binding _ -> true  // Named function definition
+                        | _ -> false  // Anonymous lambda (value, argument, etc.)
+                    | None -> false
+                | None -> false
+
+            if isNestedNamedFunction then
+                // Nested function: NO closure layout, captures passed as explicit parameters
+                // No SSAs needed in parent scope for closure construction
                 scopeAfterChildren
+            else
+                // Potentially escaping closure: use closure struct model
+                // Lambda itself gets SSAs in the PARENT scope for closure struct construction
+                // SSA count is deterministic based on captures (from FNCS)
+                let cost = computeLambdaSSACost captures
+                if cost > 0 then
+                    let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
+                    let alloc = NodeSSAAllocation.multi ssas
+                    let scopeWithAlloc = FunctionScope.assign node.Id alloc scopeWithSSAs
+
+                    // Compute ClosureLayout immediately using the allocated SSAs from the parent scope
+                    // Pass the context so witnesses know how to extract captures
+                    // PRD-14: Pass graph and bodyId for lazy struct type computation
+                    if not (List.isEmpty captures) then
+                        let layout = buildClosureLayout arch graph node.Id bodyId captures ssas context
+                        if not (closureLayouts.ContainsKey(NodeId.value node.Id)) then
+                            closureLayouts.Add(NodeId.value node.Id, layout)
+                    scopeWithAlloc
+                else
+                    // Simple lambda (no captures) - no SSAs needed in parent scope
+                    scopeAfterChildren
         // VarRef now gets SSAs for mutable variable loads
         // (Regular VarRefs to immutable values may not use their SSAs, but unused SSAs are harmless)
 
