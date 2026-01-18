@@ -9,6 +9,7 @@ open System
 open System.IO
 open System.Diagnostics
 open System.Text
+open System.Threading.Tasks
 open Fidelity.Toml
 
 // =============================================================================
@@ -48,7 +49,7 @@ type TestResult = { Sample: SampleDef; CompileResult: CompileResult; RunResult: 
 type TestConfig = { SamplesRoot: string; CompilerPath: string; DefaultTimeoutSeconds: int }
 type TestReport = { RunId: string; ManifestPath: string; CompilerPath: string; StartTime: DateTime; EndTime: DateTime; Results: TestResult list }
 
-type CliOptions = { ManifestPath: string; TargetSample: string option; Verbose: bool; TimeoutOverride: int option }
+type CliOptions = { ManifestPath: string; TargetSamples: string list; Verbose: bool; TimeoutOverride: int option; Parallel: bool }
 
 // =============================================================================
 // Process Runner
@@ -267,15 +268,24 @@ let buildCompiler compilerDir verbose =
 // CLI and Main
 // =============================================================================
 
-let defaultOptions = { ManifestPath = Path.Combine(__SOURCE_DIRECTORY__, "Manifest.toml"); TargetSample = None; Verbose = false; TimeoutOverride = None }
+let defaultOptions = { ManifestPath = Path.Combine(__SOURCE_DIRECTORY__, "Manifest.toml"); TargetSamples = []; Verbose = false; TimeoutOverride = None; Parallel = false }
 
 let rec parseArgs args opts =
     match args with
     | [] -> opts
-    | "--sample" :: name :: rest -> parseArgs rest { opts with TargetSample = Some name }
+    | "--sample" :: name :: rest -> parseArgs rest { opts with TargetSamples = name :: opts.TargetSamples }
     | "--verbose" :: rest -> parseArgs rest { opts with Verbose = true }
+    | "--parallel" :: rest -> parseArgs rest { opts with Parallel = true }
     | "--timeout" :: sec :: rest -> match Int32.TryParse(sec) with true, n -> parseArgs rest { opts with TimeoutOverride = Some n } | _ -> parseArgs rest opts
-    | "--help" :: _ -> printfn "Usage: dotnet fsi Runner.fsx [--sample NAME] [--verbose] [--timeout SEC] [--help]"; exit 0
+    | "--help" :: _ ->
+        printfn "Usage: dotnet fsi Runner.fsx [options]"
+        printfn "Options:"
+        printfn "  --sample NAME    Run specific sample(s) (can be repeated)"
+        printfn "  --verbose        Show detailed output"
+        printfn "  --parallel       Run samples in parallel"
+        printfn "  --timeout SEC    Override timeout for all samples"
+        printfn "  --help           Show this help"
+        exit 0
     | _ :: rest -> parseArgs rest opts
 
 let main argv =
@@ -284,17 +294,33 @@ let main argv =
     if not (File.Exists opts.ManifestPath) then printfn "ERROR: Manifest not found at %s" opts.ManifestPath; exit 1
     let (config, allSamples) = loadManifest opts.ManifestPath
     let samples = match opts.TimeoutOverride with Some t -> allSamples |> List.map (fun s -> { s with TimeoutSeconds = t }) | None -> allSamples
-    let samplesToRun = match opts.TargetSample with
-                       | Some name -> let f = samples |> List.filter (fun s -> s.Name = name)
-                                      if f.IsEmpty then printfn "Sample '%s' not found" name; exit 1
-                                      f
-                       | None -> samples
-    printfn "Manifest: %s\nCompiler: %s\nSamples: %d\n" opts.ManifestPath config.CompilerPath samplesToRun.Length
+    let samplesToRun =
+        match opts.TargetSamples with
+        | [] -> samples  // No specific samples = run all
+        | targets ->
+            let targetSet = Set.ofList targets
+            let found = samples |> List.filter (fun s -> Set.contains s.Name targetSet)
+            let missing = targets |> List.filter (fun t -> not (List.exists (fun s -> s.Name = t) found))
+            if not (List.isEmpty missing) then
+                printfn "WARNING: Sample(s) not found: %s" (String.concat ", " missing)
+            found
+    printfn "Manifest: %s\nCompiler: %s\nSamples: %d%s\n"
+        opts.ManifestPath config.CompilerPath samplesToRun.Length
+        (if opts.Parallel then " (parallel)" else "")
     let srcDir = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(config.CompilerPath), "..", "..", "..", ".."))
     if not (buildCompiler srcDir opts.Verbose) then exit 1
     printfn "\nRunning %d tests...\n" samplesToRun.Length
     let startTime = DateTime.Now
-    let results = samplesToRun |> List.map (fun s -> runSampleTest config s opts.Verbose)
+    let results =
+        if opts.Parallel then
+            // Run samples in parallel
+            samplesToRun
+            |> List.toArray
+            |> Array.Parallel.map (fun s -> runSampleTest config s opts.Verbose)
+            |> Array.toList
+        else
+            // Run samples sequentially
+            samplesToRun |> List.map (fun s -> runSampleTest config s opts.Verbose)
     let endTime = DateTime.Now
     let report = { RunId = startTime.ToString("yyyy-MM-ddTHH:mm:ss"); ManifestPath = opts.ManifestPath; CompilerPath = config.CompilerPath; StartTime = startTime; EndTime = endTime; Results = results }
     printfn "\n%s" (generateReport report opts.Verbose)

@@ -336,7 +336,15 @@ let private witnessInFunctionScope
     // FLAT CLOSURE PATTERN (January 2026):
     // Closures (address taken via llvm.mlir.addressof) need llvm.func + llvm.return
     // Non-closures (called by name) use func.func + func.return
-    let isClosure = closureLayoutOpt.IsSome
+    //
+    // PRD-14 FIX (January 2026):
+    // Lazy thunks ALWAYS have their address taken (even without captures),
+    // so they must use llvm.func. Check the Lambda's context.
+    let isLazyThunk =
+        match node.Kind with
+        | SemanticKind.Lambda (_, _, _, _, LambdaContext.LazyThunk) -> true
+        | _ -> false
+    let isClosure = closureLayoutOpt.IsSome || isLazyThunk
 
     // ... (bodyResult logic) ...
     let bodyResult = recallNodeResult (NodeId.value bodyId) z
@@ -423,8 +431,8 @@ let private witnessInFunctionScope
     // Closures (address taken) use llvm.func because llvm.mlir.addressof requires it
     // Non-closures (called by name) use func.func for MLIR portability
     // See fsnative-spec/spec/drafts/backend-lowering-architecture.md
-    match closureLayoutOpt with
-    | Some layout ->
+    match closureLayoutOpt, isLazyThunk with
+    | Some layout, _ ->
         // CLOSING LAMBDA: use llvm.func (address will be taken)
         let llvmVisibility = if isFuncInternal lambdaName z then LLVMPrivate else LLVMPrivate // closures always private
         let llvmFuncDef = LLVMOp.LLVMFuncDef (lambdaName, finalMlirParams, actualRetType, bodyRegion, llvmVisibility)
@@ -433,7 +441,12 @@ let private witnessInFunctionScope
         // FIX: The result of buildClosureConstruction is now {ptr, ptr} (generic closure),
         // NOT layout.ClosureStructType (flat struct). The flat struct is hidden in the arena.
         Some (MLIROp.LLVMOp llvmFuncDef), closureOps, TRValue { SSA = layout.ClosureResultSSA; Type = TStruct [TPtr; TPtr] }
-    | None ->
+    | None, true ->
+        // PRD-14: Lazy thunk without captures - use llvm.func (address will be taken)
+        // but no closure construction needed
+        let llvmFuncDef = LLVMOp.LLVMFuncDef (lambdaName, finalMlirParams, actualRetType, bodyRegion, LLVMPrivate)
+        Some (MLIROp.LLVMOp llvmFuncDef), [], TRVoid
+    | None, false ->
         // Simple lambda: no closure construction, use func.func (MLIR portable)
         let visibility = if isFuncInternal lambdaName z then Private else Public
         let funcDef = FuncOp.FuncDef (lambdaName, finalMlirParams, actualRetType, bodyRegion, visibility)

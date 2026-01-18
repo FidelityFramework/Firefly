@@ -447,6 +447,11 @@ and LLVMOp =
     // llvm.func @name(%arg0: type, ...) -> retType { ... }
     | LLVMFuncDef of name: string * args: (SSA * MLIRType) list * retTy: MLIRType * body: Region * linkage: LLVMLinkage
 
+    // === FUNCTION DECLARATION (llvm.func without body) ===
+    // Forward declaration for llvm.call to reference before definition
+    // llvm.func @name(type, ...) -> retType
+    | LLVMFuncDecl of name: string * argTypes: MLIRType list * retTy: MLIRType * linkage: LLVMLinkage
+
 and LLVMLinkage =
     | LLVMPrivate
     | LLVMInternal
@@ -679,7 +684,7 @@ let opResults (op: MLIROp) : SSA list =
         | Call (None,_,_,_) | IndirectCall (None,_,_,_) | Invoke (None,_,_,_,_,_) | InlineAsm (None,_,_,_,_,_,_)
         | LLVMOp.Store _ | MemCpy _ | MemMove _ | MemSet _ | Fence _ | GlobalDef _ | GlobalString _
         | LLVMBr _ | LLVMCondBr _ | LLVMSwitch _ | Unreachable | Resume _ | Return _
-        | LLVMFuncDef _ -> []
+        | LLVMFuncDef _ | LLVMFuncDecl _ -> []
 
     | SCFOp s ->
         match s with

@@ -920,6 +920,21 @@ let llvmOp (op: LLVMOp) (sb: StringBuilder) : unit =
     // LLVMFuncDef is handled in the recursive group (needs access to `region`)
     | LLVMFuncDef _ -> failwith "LLVMFuncDef should be serialized via llvmFuncDef in recursive group"
 
+    // LLVMFuncDecl - forward declaration without body
+    // llvm.func @name(type, ...) -> retType
+    | LLVMFuncDecl (name, argTypes, retTy, linkage) ->
+        sb.Append("llvm.func ") |> ignore
+        match linkage with
+        | LLVMPrivate -> sb.Append("private ") |> ignore
+        | LLVMInternal -> sb.Append("internal ") |> ignore
+        | LLVMExternal -> ()
+        sb.Append("@").Append(name).Append("(") |> ignore
+        argTypes |> List.iteri (fun i t ->
+            if i > 0 then sb.Append(", ") |> ignore
+            llvmType t sb)
+        sb.Append(") -> ") |> ignore
+        llvmType retTy sb
+
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS FOR DIALECT SERIALIZATION (before recursive group)
 // ═══════════════════════════════════════════════════════════════════════════

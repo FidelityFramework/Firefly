@@ -122,10 +122,11 @@ let private buildStartWrapper (os: OSFamily) (arch: Architecture) (mainReturnTyp
             ))
 
             // Call main(argc, argv) -> mainReturnType (platform word)
-            // The return type matches what FNCS generates for main
-            MLIROp.LLVMOp (LLVMOp.Call (
+            // Use func.call since main is func.func (not llvm.func)
+            // MLIR allows mixing dialects within function bodies
+            MLIROp.FuncOp (FuncOp.FuncCall (
                 Some (V 3),
-                GFunc "main",
+                "main",
                 [{ SSA = V 1; Type = MLIRTypes.i32 }; { SSA = V 2; Type = MLIRTypes.ptr }],
                 mainReturnType
             ))
@@ -210,9 +211,10 @@ let private buildStartWrapper (os: OSFamily) (arch: Architecture) (mainReturnTyp
                 false,
                 false
             ))
-            MLIROp.LLVMOp (LLVMOp.Call (
+            // Use func.call since main is func.func (not llvm.func)
+            MLIROp.FuncOp (FuncOp.FuncCall (
                 Some (V 3),
-                GFunc "main",
+                "main",
                 [{ SSA = V 1; Type = MLIRTypes.i32 }; { SSA = V 2; Type = MLIRTypes.ptr }],
                 mainReturnType
             ))
