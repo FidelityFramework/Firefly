@@ -54,7 +54,7 @@ let witness (z: PSGZipper) (nodeId: NodeId) (lit: LiteralValue) : MLIROp list * 
     // Example: `let x : int = 10` has type `int` (PlatformWord → i64), stored as Int32.
     let literalType =
         match SemanticGraph.tryGetNode nodeId z.Graph with
-        | Some node -> Alex.CodeGeneration.TypeMapping.mapNativeType node.Type
+        | Some node -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch z.State.Platform.TargetArch node.Type
         | None -> failwithf "Literal node %A not found in graph - pipeline bug" nodeId
 
     match lit with

@@ -321,7 +321,7 @@ let private witnessInFunctionScope
         | SemanticKind.Lambda (params', _bodyId, _captures, _, _) -> List.length params'
         | _ -> 0
     let finalRetType = extractFinalReturnType node.Type paramCount
-    let declaredRetType = mapNativeTypeWithGraph z.Graph finalRetType
+    let declaredRetType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph finalRetType
 
     // ... (bodyResult logic) ...
     let bodyResult = recallNodeResult (NodeId.value bodyId) z
@@ -553,7 +553,7 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                         let nodeParamTypes = extractParamTypes node.Type (List.length params')
 
                         // Use graph-aware type mapping for record types
-                        let mapTypeWithGraph = mapNativeTypeWithGraph z.Graph
+                        let mapTypeWithGraph = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph
 
                         // Build structured params: (Arg i+offset, MLIRType)
                         // For closing lambdas, params start at Arg 1 (Arg 0 is env_ptr)
@@ -574,7 +574,7 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
                 mlirPs, bindings, false, isUnitParam
 
         // Use graph-aware type mapping for return type (may be record type)
-        let mapTypeWithGraph = mapNativeTypeWithGraph z.Graph
+        let mapTypeWithGraph = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph
 
         // Return type
         let returnType =

@@ -15,6 +15,7 @@ open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open FSharp.Native.Compiler.Checking.Native.UnionFind
 open Alex.Dialects.Core.Types
+open Alex.Bindings.PlatformTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SSA ALLOCATION FOR NODES
@@ -168,8 +169,9 @@ let private computeLambdaSSACost (captures: CaptureInfo list) : int =
 /// This is a subset of TypeMapping.mapNativeType, inlined here to avoid
 /// circular dependencies (SSAAssignment must compile before TypeMapping)
 /// CRITICAL: Must check Layout + NTUKind first to match TypeMapping behavior,
-/// especially for PlatformWord types like int which are i64 on 64-bit platforms.
-let rec private mapCaptureType (ty: NativeType) : MLIRType =
+/// especially for PlatformWord types like int which depend on target architecture.
+let rec private mapCaptureType (arch: Architecture) (ty: NativeType) : MLIRType =
+    let wordWidth = platformWordWidth arch
     match ty with
     | NativeType.TApp(tycon, args) ->
         // FIRST: Check Layout + NTUKind for platform-aware type mapping
@@ -189,14 +191,14 @@ let rec private mapCaptureType (ty: NativeType) : MLIRType =
         | _, Some NTUKind.NTUint64 -> TInt I64
         | _, Some NTUKind.NTUuint64 -> TInt I64
         // Platform-word integers (int, uint, nativeint, size_t, ptrdiff_t)
-        // On 64-bit platforms, these are concrete i64
+        // Size depends on target architecture via platformWordWidth
         | TypeLayout.PlatformWord, Some NTUKind.NTUint
         | TypeLayout.PlatformWord, Some NTUKind.NTUuint
         | TypeLayout.PlatformWord, Some NTUKind.NTUnint
         | TypeLayout.PlatformWord, Some NTUKind.NTUunint
         | TypeLayout.PlatformWord, Some NTUKind.NTUsize
         | TypeLayout.PlatformWord, Some NTUKind.NTUdiff
-        | TypeLayout.PlatformWord, None -> TInt I64  // Platform word = i64 on 64-bit
+        | TypeLayout.PlatformWord, None -> TInt wordWidth  // Platform word resolved per architecture
         // Pointers
         | TypeLayout.PlatformWord, Some NTUKind.NTUptr
         | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TPtr
@@ -215,7 +217,7 @@ let rec private mapCaptureType (ty: NativeType) : MLIRType =
             | "array" -> TStruct [TPtr; TInt I64]  // Fat pointer
             | "option" | "voption" ->
                 match args with
-                | [innerTy] -> TStruct [TInt I1; mapCaptureType innerTy]
+                | [innerTy] -> TStruct [TInt I1; mapCaptureType arch innerTy]
                 | _ -> TPtr  // Fallback
             | _ ->
                 // Records, DUs, unknown types - check if has fields or treat as pointer
@@ -225,27 +227,27 @@ let rec private mapCaptureType (ty: NativeType) : MLIRType =
                     TPtr  // Fallback for other cases
     | NativeType.TFun _ -> TStruct [TPtr; TPtr]  // Function = closure struct
     | NativeType.TTuple (elements, _) ->
-        TStruct (elements |> List.map mapCaptureType)
+        TStruct (elements |> List.map (mapCaptureType arch))
     | NativeType.TVar tvar ->
         // Resolve type variable using Union-Find
         match find tvar with
-        | (_, Some boundTy) -> mapCaptureType boundTy
+        | (_, Some boundTy) -> mapCaptureType arch boundTy
         | (_, None) -> TPtr  // Unbound type variable - assume pointer-sized
     | NativeType.TByref _ -> TPtr
     | _ -> TPtr  // Fallback for other cases
 
 /// Compute the MLIR type for a capture slot based on capture mode
-let private captureSlotType (capture: CaptureInfo) : MLIRType =
+let private captureSlotType (arch: Architecture) (capture: CaptureInfo) : MLIRType =
     if capture.IsMutable then
         // Mutable capture: store pointer to the alloca
         TPtr
     else
         // Immutable capture: store the value directly
-        mapCaptureType capture.Type
+        mapCaptureType arch capture.Type
 
 /// Build the environment struct type from captures
-let private buildEnvStructType (captures: CaptureInfo list) : MLIRType =
-    let slotTypes = captures |> List.map captureSlotType
+let private buildEnvStructType (arch: Architecture) (captures: CaptureInfo list) : MLIRType =
+    let slotTypes = captures |> List.map (captureSlotType arch)
     TStruct slotTypes
 
 /// Build complete ClosureLayout from Lambda captures and pre-assigned SSAs
@@ -259,6 +261,7 @@ let private buildEnvStructType (captures: CaptureInfo list) : MLIRType =
 ///   ssas[N+3..2N+2]   = insertvalue for each capture at [1..N]
 ///   ssas[2N+2]        = final result (last insertvalue)
 let private buildClosureLayout
+    (arch: Architecture)
     (graph: SemanticGraph)
     (lambdaNodeId: NodeId)
     (bodyNodeId: NodeId)
@@ -286,19 +289,19 @@ let private buildClosureLayout
             {
                 Name = capture.Name
                 SlotIndex = i
-                SlotType = captureSlotType capture
+                SlotType = captureSlotType arch capture
                 SourceNodeId = capture.SourceNodeId
                 Mode = if capture.IsMutable then ByRef else ByValue
                 GepSSA = gepSSAs.[i]
             })
 
     // Build env struct type (for internal tracking, kept for compatibility)
-    let envStructType = buildEnvStructType captures
+    let envStructType = buildEnvStructType arch captures
 
     // TRUE FLAT CLOSURE: {code_ptr, capture_0, capture_1, ...}
     // Captures are inlined directly, not via env_ptr indirection
     // This eliminates lifetime issues - closure is returned by value with all state inline
-    let captureTypes = captures |> List.map captureSlotType
+    let captureTypes = captures |> List.map (captureSlotType arch)
     let closureStructType = TStruct (TPtr :: captureTypes)
 
     // PRD-14 Option B: For lazy thunks, compute the FULL lazy struct type
@@ -310,7 +313,7 @@ let private buildClosureLayout
             // Get the body's return type (T in Lazy<T>)
             match SemanticGraph.tryGetNode bodyNodeId graph with
             | Some bodyNode ->
-                let elementType = mapCaptureType bodyNode.Type
+                let elementType = mapCaptureType arch bodyNode.Type
                 // Lazy struct: {i1, T, ptr, cap0, cap1, ...}
                 Some (TStruct ([TInt I1; elementType; TPtr] @ captureTypes))
             | None ->
@@ -619,6 +622,7 @@ type SSAAssignment = {
 /// Assign SSA names to all nodes in a function body
 /// Returns updated scope with assignments
 let rec private assignFunctionBody
+    (arch: Architecture)
     (graph: SemanticGraph)
     (closureLayouts: System.Collections.Generic.Dictionary<int, ClosureLayout>)
     (scope: FunctionScope)
@@ -630,14 +634,14 @@ let rec private assignFunctionBody
     | Some node ->
         // Post-order: process children first
         let scopeAfterChildren =
-            node.Children |> List.fold (fun s childId -> assignFunctionBody graph closureLayouts s childId) scope
+            node.Children |> List.fold (fun s childId -> assignFunctionBody arch graph closureLayouts s childId) scope
 
         // Special handling for nested Lambdas - they get their own scope
         // (but we still assign this Lambda node SSAs in parent scope for closure construction)
         match node.Kind with
         | SemanticKind.Lambda(_params, bodyId, captures, _, context) ->
             // Process Lambda body in a NEW scope (SSA counter resets)
-            let _innerScope = assignFunctionBody graph closureLayouts FunctionScope.empty bodyId
+            let _innerScope = assignFunctionBody arch graph closureLayouts FunctionScope.empty bodyId
             // Lambda itself gets SSAs in the PARENT scope for closure struct construction
             // SSA count is deterministic based on captures (from FNCS)
             let cost = computeLambdaSSACost captures
@@ -650,7 +654,7 @@ let rec private assignFunctionBody
                 // Pass the context so witnesses know how to extract captures
                 // PRD-14: Pass graph and bodyId for lazy struct type computation
                 if not (List.isEmpty captures) then
-                    let layout = buildClosureLayout graph node.Id bodyId captures ssas context
+                    let layout = buildClosureLayout arch graph node.Id bodyId captures ssas context
                     if not (closureLayouts.ContainsKey(NodeId.value node.Id)) then
                         closureLayouts.Add(NodeId.value node.Id, layout)
                 scopeWithSSAs
@@ -864,7 +868,7 @@ let private findModuleLevelValueBindings (graph: SemanticGraph) (mainLambdaId: N
 /// Pass 2: Each Lambda body gets its own scope with counter starting at 0
 ///
 /// This prevents SSA collisions between module-level bindings and function bodies.
-let assignSSA (graph: SemanticGraph) : SSAAssignment =
+let assignSSA (arch: Architecture) (graph: SemanticGraph) : SSAAssignment =
     let lambdaNames, entryPoints = collectLambdas graph
 
     let mutable allAssignments = Map.empty
@@ -887,7 +891,7 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
     let moduleLevelScope =
         moduleLevelValueBindings
         |> List.fold (fun scope bindingId ->
-            assignFunctionBody graph mutableClosureLayouts scope bindingId
+            assignFunctionBody arch graph mutableClosureLayouts scope bindingId
         ) FunctionScope.empty
 
     // Track the counter after module-level bindings
@@ -924,7 +928,7 @@ let assignSSA (graph: SemanticGraph) : SSAAssignment =
 
             // Assign SSAs to body nodes
             // This will also compute ClosureLayouts for any nested lambdas found in the body
-            let bodyScope = assignFunctionBody graph mutableClosureLayouts paramScope bodyId
+            let bodyScope = assignFunctionBody arch graph mutableClosureLayouts paramScope bodyId
 
             // Merge into global assignments (including parameter SSAs)
             for kvp in paramScope.Assignments do
@@ -985,7 +989,7 @@ let hasClosure (nodeId: NodeId) (assignment: SSAAssignment) : bool =
 /// If the function body is a LazyExpr with captures, returns the actual lazy struct type
 /// including the inlined captures: {i1, T, ptr, cap0, cap1, ...}
 /// Returns None if the function doesn't return a lazy with captures.
-let getActualFunctionReturnType (graph: SemanticGraph) (defId: NodeId) (assignment: SSAAssignment) : MLIRType option =
+let getActualFunctionReturnType (arch: Architecture) (graph: SemanticGraph) (defId: NodeId) (assignment: SSAAssignment) : MLIRType option =
     // defId may be a Binding node - need to find the Lambda child
     let lambdaNode =
         match Map.tryFind defId graph.Nodes with
@@ -1021,11 +1025,11 @@ let getActualFunctionReturnType (graph: SemanticGraph) (defId: NodeId) (assignme
                     // Get element type from the LazyExpr's type
                     let elemMlir =
                         match bodyNode.Type with
-                        | NativeType.TLazy elemType -> mapCaptureType elemType
+                        | NativeType.TLazy elemType -> mapCaptureType arch elemType
                         | _ -> TInt I64  // Fallback
 
                     // Compute capture types using the same logic as closure construction
-                    let captureTypes = captures |> List.map captureSlotType
+                    let captureTypes = captures |> List.map (captureSlotType arch)
 
                     // Build the actual lazy struct type with captures inlined
                     let actualLazyType = TStruct (TInt I1 :: elemMlir :: TPtr :: captureTypes)

@@ -10,6 +10,7 @@ open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open FSharp.Native.Compiler.Checking.Native.UnionFind
 open FSharp.Native.Compiler.Checking.Native.SemanticGraph
 open Alex.Dialects.Core.Types
+open Alex.Bindings.PlatformTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE CONSTANTS
@@ -22,10 +23,19 @@ let NativeStrType = TStruct [TPtr; TInt I64]
 // MAIN TYPE MAPPING
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Map FNCS NativeType to structured MLIRType
+/// Map FNCS NativeType to structured MLIRType with architecture awareness.
 /// This is the canonical conversion used throughout Alex.
 /// Uses NTU layout information for platform-aware type mapping.
-let rec mapNativeType (ty: NativeType) : MLIRType =
+///
+/// PRINCIPLED DESIGN (January 2026):
+/// PlatformWord types (int, uint, nativeint, size_t, ptrdiff_t) resolve to
+/// the actual word size of the target architecture. This is NOT hardcoded to i64!
+/// - 64-bit targets (x86_64, ARM64, RISCV64): i64
+/// - 32-bit targets (ARM32, RISCV32, WASM32): i32
+///
+/// The architecture is passed explicitly to ensure correct codegen for all targets.
+let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
+    let wordWidth = platformWordWidth arch
     match ty with
     | NativeType.TApp(tycon, args) ->
         // FIRST: Check NTU layout for types that have it - this is the authoritative source
@@ -45,15 +55,14 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
         | _, Some NTUKind.NTUint64 -> TInt I64
         | _, Some NTUKind.NTUuint64 -> TInt I64
         // Platform-word integers (int, uint, nativeint, size_t, ptrdiff_t)
-        // On 64-bit platforms, these are concrete i64 (not MLIR index type)
-        // TODO: When platform quotations are implemented, this will be configurable
+        // Size depends on target architecture via platformWordWidth coeffect
         | TypeLayout.PlatformWord, Some NTUKind.NTUint
         | TypeLayout.PlatformWord, Some NTUKind.NTUuint
         | TypeLayout.PlatformWord, Some NTUKind.NTUnint
         | TypeLayout.PlatformWord, Some NTUKind.NTUunint
         | TypeLayout.PlatformWord, Some NTUKind.NTUsize
         | TypeLayout.PlatformWord, Some NTUKind.NTUdiff
-        | TypeLayout.PlatformWord, None -> TInt I64  // Platform word = i64 on 64-bit
+        | TypeLayout.PlatformWord, None -> TInt wordWidth  // Platform word resolved per architecture
         // Pointers
         | TypeLayout.PlatformWord, Some NTUKind.NTUptr
         | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TPtr
@@ -74,16 +83,16 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
             | "Ptr" | "nativeptr" -> TPtr
             | "option" ->
                 match args with
-                | [innerTy] -> TStruct [TInt I1; mapNativeType innerTy]
+                | [innerTy] -> TStruct [TInt I1; mapNativeTypeForArch arch innerTy]
                 | _ -> failwithf "option type requires exactly one type argument: %A" ty
             | "voption" ->
                 match args with
-                | [innerTy] -> TStruct [TInt I1; mapNativeType innerTy]
+                | [innerTy] -> TStruct [TInt I1; mapNativeTypeForArch arch innerTy]
                 | _ -> failwithf "voption type requires exactly one type argument: %A" ty
             | "result" ->
                 // Result<'T, 'E> is a DU with Ok and Error cases
                 match args with
-                | [okTy; errorTy] -> TStruct [TInt I8; mapNativeType okTy; mapNativeType errorTy]
+                | [okTy; errorTy] -> TStruct [TInt I8; mapNativeTypeForArch arch okTy; mapNativeTypeForArch arch errorTy]
                 | _ -> failwithf "result type requires exactly two type arguments: %A" ty
             | "list" -> failwithf "list type not yet implemented: %A" ty
             | "array" | "Array" ->
@@ -138,7 +147,7 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
                         NativeStrType
                     | TypeLayout.PlatformWord ->
                         // Should have been handled by NTU-aware code at top; this is a fallback
-                        TIndex
+                        TInt wordWidth
                     | TypeLayout.Opaque ->
                         failwithf "TApp with Opaque layout - FNCS must resolve type '%s'" tycon.Name
                     | TypeLayout.Reference _ ->
@@ -153,23 +162,23 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
     | NativeType.TFun _ -> TStruct [TPtr; TPtr]  // Function pointer + closure
 
     | NativeType.TTuple(elements, _) ->
-        TStruct (elements |> List.map mapNativeType)
+        TStruct (elements |> List.map (mapNativeTypeForArch arch))
 
     | NativeType.TVar tvar ->
         // Use Union-Find to resolve type variable chains
         match find tvar with
-        | (_, Some boundTy) -> mapNativeType boundTy
+        | (_, Some boundTy) -> mapNativeTypeForArch arch boundTy
         | (root, None) ->
             failwithf "Unbound type variable '%s' - type inference incomplete" root.Name
 
     | NativeType.TByref _ -> TPtr
     | NativeType.TNativePtr _ -> TPtr
-    | NativeType.TForall(_, body) -> mapNativeType body
+    | NativeType.TForall(_, body) -> mapNativeTypeForArch arch body
 
     // PRD-14: Lazy<T> - FLAT CLOSURE: { computed: i1, value: T, code_ptr: ptr }
     // Captures are added dynamically at witness time, not in type mapping
     | NativeType.TLazy elemTy ->
-        let elemMlir = mapNativeType elemTy
+        let elemMlir = mapNativeTypeForArch arch elemTy
         TStruct [TInt I1; elemMlir; TPtr]  // Flat: just code_ptr, no env_ptr
 
     // Named records are TApp with FieldCount > 0 - handled in TApp case above
@@ -185,7 +194,7 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
         failwithf "TUnion '%s' layout not yet integrated with NTU - needs FNCS enhancement" tycon.Name
 
     | NativeType.TAnon(fields, _) ->
-        TStruct (fields |> List.map (fun (_, ty) -> mapNativeType ty))
+        TStruct (fields |> List.map (fun (_, ty) -> mapNativeTypeForArch arch ty))
 
     | NativeType.TMeasure _ ->
         failwith "Measure type should have been stripped - this is an FNCS issue"
@@ -193,22 +202,31 @@ let rec mapNativeType (ty: NativeType) : MLIRType =
     | NativeType.TError msg ->
         failwithf "NativeType.TError: %s" msg
 
+/// BACKWARD COMPATIBLE: mapNativeType without explicit architecture
+/// Defaults to X86_64 for host compilation. For cross-compilation,
+/// callers should use mapNativeTypeForArch explicitly.
+let mapNativeType (ty: NativeType) : MLIRType =
+    mapNativeTypeForArch X86_64 ty
+
 // ═══════════════════════════════════════════════════════════════════════════
 // GRAPH-AWARE TYPE MAPPING (for record types)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Map a NativeType to MLIRType, using graph lookup for record field types.
+/// Map a NativeType to MLIRType with architecture awareness, using graph lookup for record field types.
 /// This is the principled approach per spec type-representation-architecture.md:
 /// record fields are looked up via tryGetRecordFields, not guessed from layout.
 /// RECURSIVE: nested record types also use graph lookup.
-let rec mapNativeTypeWithGraph (graph: SemanticGraph) (ty: NativeType) : MLIRType =
+///
+/// PRINCIPLED DESIGN (January 2026):
+/// Takes Architecture explicitly to ensure PlatformWord types resolve correctly.
+let rec mapNativeTypeWithGraphForArch (arch: Architecture) (graph: SemanticGraph) (ty: NativeType) : MLIRType =
     match ty with
     | NativeType.TApp(tycon, args) when tycon.FieldCount > 0 ->
         // Record type: look up field types from TypeDef
         match SemanticGraph.tryGetRecordFields tycon.Name graph with
         | Some fields ->
             // Map each field type to MLIR RECURSIVELY (nested records also use graph lookup)
-            TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraph graph fieldTy))
+            TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraphForArch arch graph fieldTy))
         | None ->
             // Fallback: shouldn't happen if TypeDef nodes are properly created
             failwithf "Record type '%s' not found in TypeDef nodes - FNCS must create TypeDef for records" tycon.Name
@@ -218,23 +236,28 @@ let rec mapNativeTypeWithGraph (graph: SemanticGraph) (ty: NativeType) : MLIRTyp
         match SemanticGraph.tryGetRecordFields tycon.Name graph with
         | Some fields ->
             // Found record definition - use graph lookup
-            TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraph graph fieldTy))
+            TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraphForArch arch graph fieldTy))
         | None ->
-            // Not a record - use standard mapping
-            mapNativeType ty
+            // Not a record - use standard mapping with architecture
+            mapNativeTypeForArch arch ty
     | NativeType.TTuple(elements, _) ->
         // Tuples also need recursive mapping for nested records
-        TStruct (elements |> List.map (mapNativeTypeWithGraph graph))
+        TStruct (elements |> List.map (mapNativeTypeWithGraphForArch arch graph))
     | NativeType.TAnon(fields, _) ->
         // Anonymous records need recursive mapping
-        TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraph graph fieldTy))
+        TStruct (fields |> List.map (fun (_, fieldTy) -> mapNativeTypeWithGraphForArch arch graph fieldTy))
     // PRD-14: Lazy<T> - FLAT CLOSURE, need recursive mapping in case T is a record
     | NativeType.TLazy elemTy ->
-        let elemMlir = mapNativeTypeWithGraph graph elemTy
+        let elemMlir = mapNativeTypeWithGraphForArch arch graph elemTy
         TStruct [TInt I1; elemMlir; TPtr]  // Flat: just code_ptr, captures added at witness
     | _ ->
-        // Non-record types: use standard mapping
-        mapNativeType ty
+        // Non-record types: use standard mapping with architecture
+        mapNativeTypeForArch arch ty
+
+/// BACKWARD COMPATIBLE: mapNativeTypeWithGraph without explicit architecture
+/// Defaults to X86_64 for host compilation.
+let mapNativeTypeWithGraph (graph: SemanticGraph) (ty: NativeType) : MLIRType =
+    mapNativeTypeWithGraphForArch X86_64 graph ty
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STRING-BASED TYPE MAPPING (for legacy code)

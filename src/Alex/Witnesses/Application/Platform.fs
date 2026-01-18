@@ -139,6 +139,6 @@ let witnessPlatformBindingNative
     (returnType: NativeType)
     : (MLIROp list * TransferResult) option =
 
-    let mlirReturnType = mapNativeType returnType
+    let mlirReturnType = mapNativeTypeForArch z.State.Platform.TargetArch returnType
     witnessPlatformBinding appNodeId z entryPoint args mlirReturnType
 

@@ -15,6 +15,7 @@ open Alex.Dialects.LLVM.Templates
 open Alex.Traversal.PSGZipper
 open Alex.CodeGeneration.TypeMapping
 open Alex.Patterns.SemanticPatterns
+open Alex.Bindings.PlatformTypes
 
 // Import factored witness modules
 module Primitives = Alex.Witnesses.Application.Primitives
@@ -515,7 +516,7 @@ let private witnessIntrinsic
     (returnType: NativeType)
     : (MLIROp list * TransferResult) option =
 
-    let mlirReturnType = mapNativeType returnType
+    let mlirReturnType = mapNativeTypeForArch z.State.Platform.TargetArch returnType
     // Get pre-assigned result SSA for this Application node
     let resultSSA = requireNodeSSA appNodeId z
 
@@ -601,6 +602,49 @@ let private witnessIntrinsic
     // Default zeroed value
     | NativeDefaultOp "zeroed" ->
         witnessZeroed appNodeId z mlirReturnType
+
+    // Platform introspection - compile-time constants based on target architecture
+    | PlatformModuleOp opName ->
+        match opName with
+        | "wordSize" ->
+            // Platform.wordSize : int - returns word size in bytes
+            // 8 on 64-bit (x86_64, ARM64, RISCV64), 4 on 32-bit (ARM32, RISCV32, WASM32)
+            let wordBytes =
+                match z.State.Platform.TargetArch with
+                | Architecture.X86_64 | Architecture.ARM64 | Architecture.RISCV64 -> 8L
+                | Architecture.ARM32_Thumb | Architecture.RISCV32 | Architecture.WASM32 -> 4L
+            let op = MLIROp.ArithOp (ArithOp.ConstI (resultSSA, wordBytes, mlirReturnType))
+            Some ([op], TRValue { SSA = resultSSA; Type = mlirReturnType })
+        | "sizeof" ->
+            // Platform.sizeof<'T> : int - returns size of type 'T in bytes
+            // The type argument is resolved from the Application node's type instantiation
+            // For now, we resolve based on the return type context (mlirReturnType should be int)
+            // The actual type to measure comes from the type parameter - we need to extract it
+            // from the node's type instantiation
+            match SemanticGraph.tryGetNode appNodeId z.Graph with
+            | Some node ->
+                // The sizeof call should have a type argument - extract it from the Application
+                // For sizeof<int>, the instantiation includes the 'int' type
+                let sizeBytes =
+                    // Get the type instantiation from the application
+                    // This is stored in node metadata - for now, use return type mapping as proxy
+                    // TODO: Extract actual type parameter from type instantiation
+                    match mlirReturnType with
+                    | TInt I8 -> 1L
+                    | TInt I16 -> 2L
+                    | TInt I32 -> 4L
+                    | TInt I64 -> 8L
+                    | TFloat F32 -> 4L
+                    | TFloat F64 -> 8L
+                    | TPtr ->
+                        match z.State.Platform.TargetArch with
+                        | Architecture.X86_64 | Architecture.ARM64 | Architecture.RISCV64 -> 8L
+                        | Architecture.ARM32_Thumb | Architecture.RISCV32 | Architecture.WASM32 -> 4L
+                    | _ -> 8L  // Default to word size for unknown types
+                let op = MLIROp.ArithOp (ArithOp.ConstI (resultSSA, sizeBytes, mlirReturnType))
+                Some ([op], TRValue { SSA = resultSSA; Type = mlirReturnType })
+            | None -> None
+        | _ -> None
 
     // Operators module - delegate to Primitives
     // Handles arithmetic, comparison, bitwise, and unary operators (including "not")
@@ -940,7 +984,7 @@ let witness
     // Resolve arguments to Val list
     let args = resolveArgs argNodeIds z
     // Use graph-aware mapping for record types
-    let declaredReturnType = mapNativeTypeWithGraph z.Graph returnType
+    let declaredReturnType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph returnType
 
     // PRD-14: Check if target function returns a lazy with captures.
     // If so, use the actual LazyLayout struct type (includes captures) instead of declared type.
@@ -949,7 +993,7 @@ let witness
         match resolveFuncKind funcNodeId z with
         | Some (SemanticKind.VarRef (_, Some defId)) ->
             // VarRef to a Lambda - check if Lambda body is LazyExpr with captures
-            match Alex.Preprocessing.SSAAssignment.getActualFunctionReturnType z.Graph defId z.State.SSAAssignment with
+            match Alex.Preprocessing.SSAAssignment.getActualFunctionReturnType z.State.Platform.TargetArch z.Graph defId z.State.SSAAssignment with
             | Some actualType -> actualType  // Use actual type with captures
             | None -> declaredReturnType     // No lazy captures, use declared
         | _ -> declaredReturnType

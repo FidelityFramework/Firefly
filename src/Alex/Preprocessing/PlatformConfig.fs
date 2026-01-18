@@ -51,6 +51,24 @@ type BindingResolution = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM WORD TYPE RESOLUTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Resolve platform word type for a given architecture
+/// This is the authoritative source for what PlatformWord layout means on each target.
+/// FNCS uses TypeLayout.PlatformWord; Alex resolves it here based on target.
+let platformWordType (arch: Architecture) : MLIRType =
+    match arch with
+    | X86_64 | ARM64 | RISCV64 -> TInt I64  // 64-bit platforms
+    | ARM32_Thumb | RISCV32 | WASM32 -> TInt I32  // 32-bit platforms
+
+/// Resolve platform word integer width for a given architecture
+let platformWordWidth (arch: Architecture) : IntBitWidth =
+    match arch with
+    | X86_64 | ARM64 | RISCV64 -> I64
+    | ARM32_Thumb | RISCV32 | WASM32 -> I32
+
+// ═══════════════════════════════════════════════════════════════════════════
 // PLATFORM RESOLUTION RESULT
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -62,6 +80,9 @@ type PlatformResolutionResult = {
     TargetOS: OSFamily
     /// Target architecture
     TargetArch: Architecture
+    /// Platform word type (i64 on 64-bit, i32 on 32-bit)
+    /// This is the resolved MLIRType for FNCS PlatformWord layout
+    PlatformWordType: MLIRType
     /// All resolved bindings keyed by PSG node ID
     Bindings: Map<int, BindingResolution>
     /// Whether _start wrapper is needed (freestanding mode)
@@ -139,6 +160,7 @@ let empty (mode: RuntimeMode) (os: OSFamily) (arch: Architecture) : PlatformReso
         RuntimeMode = mode
         TargetOS = os
         TargetArch = arch
+        PlatformWordType = platformWordType arch
         Bindings = Map.empty
         NeedsStartWrapper = (mode = Freestanding)
         StartWrapperOps = None

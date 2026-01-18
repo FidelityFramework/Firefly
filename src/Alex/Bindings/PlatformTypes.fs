@@ -8,6 +8,8 @@
 /// By putting OSFamily/Architecture here, all can import without cycles.
 module Alex.Bindings.PlatformTypes
 
+open Alex.Dialects.Core.Types
+
 // ===================================================================
 // Target Platform Identification
 // ===================================================================
@@ -29,6 +31,13 @@ type Architecture =
     | RISCV64
     | RISCV32
     | WASM32
+
+/// Platform word width - maps Architecture to native integer bit width
+/// This is the authoritative source for PlatformWord resolution
+let platformWordWidth (arch: Architecture) : IntBitWidth =
+    match arch with
+    | X86_64 | ARM64 | RISCV64 -> I64
+    | ARM32_Thumb | RISCV32 | WASM32 -> I32
 
 /// Complete platform identification
 type TargetPlatform = {

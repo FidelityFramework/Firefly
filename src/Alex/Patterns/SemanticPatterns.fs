@@ -207,6 +207,11 @@ let (|PlatformIntrinsic|_|) (info: IntrinsicInfo) =
     | IntrinsicCategory.Platform -> Some (info.Module, info.Operation)
     | _ -> None
 
+/// Check if intrinsic is a Platform module operation (sizeof, wordSize)
+/// These are compile-time constants resolved by Alex based on target architecture
+let (|PlatformModuleOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Platform then Some info.Operation else None
+
 /// Check if intrinsic is a NativeStr operation (using IntrinsicInfo)
 let (|NativeStrOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.NativeStr then Some info.Operation else None

@@ -67,7 +67,7 @@ let witness
         // Module-level mutable: emit LLVM global definition
         match getModuleLevelMutable name ctx with
         | Some mlm ->
-            let mlirType = mapNativeTypeWithGraph ctx.Graph node.Type
+            let mlirType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph node.Type
             let globalName = sprintf "g_%s" name
             // Global definition with zero initialization
             // (actual initialization requires an init function for non-const values)
@@ -152,7 +152,7 @@ let witnessVarRef
     // Helper: get type from definition node
     let getDefType nodeId =
         match SemanticGraph.tryGetNode nodeId ctx.Graph with
-        | Some node -> mapNativeTypeWithGraph ctx.Graph node.Type
+        | Some node -> mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph node.Type
         | None -> MLIRTypes.i32
 
     // Helper: check if defNode is a function reference (Lambda or Binding to Lambda)
@@ -312,7 +312,7 @@ let witnessVarRef
             // Map types to MLIR
             let mlirParams =
                 paramTypes
-                |> List.map (mapNativeTypeWithGraph ctx.Graph)
+                |> List.map (mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph)
                 |> List.mapi (fun i ty -> Arg (i + 1), ty) // Arg 1+ for user params
 
             // Add Env param (Arg 0)
@@ -322,10 +322,10 @@ let witnessVarRef
             let mlirRetType =
                 match defId with
                 | Some defNodeId ->
-                    match Alex.Preprocessing.SSAAssignment.getActualFunctionReturnType ctx.Graph defNodeId ctx.SSA with
+                    match Alex.Preprocessing.SSAAssignment.getActualFunctionReturnType z.State.Platform.TargetArch ctx.Graph defNodeId ctx.SSA with
                     | Some actualType -> actualType
-                    | None -> mapNativeTypeWithGraph ctx.Graph retType
-                | None -> mapNativeTypeWithGraph ctx.Graph retType
+                    | None -> mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph retType
+                | None -> mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph retType
             
             // Build body: call original function
             // Original function expects (args...) - NO env

@@ -18,8 +18,8 @@ module ClosuresSample
 let makeCounter (arena: byref<Arena<'a>>) (start: int) : (unit -> int) =
     // Allocate count in arena (not on makeCounter's stack)
     // This storage outlives makeCounter's return
-    // sizeof<int> = 4 bytes
-    let countPtr = Arena.alloc &arena 4
+    // Use Platform.wordSize() for platform-portable allocation (8 on 64-bit, 4 on 32-bit)
+    let countPtr = Arena.alloc &arena (Platform.wordSize ())
     NativePtr.write (NativePtr.ofNativeInt<int> countPtr) start
     fun () ->
         let ptr = NativePtr.ofNativeInt<int> countPtr
@@ -35,8 +35,8 @@ let makeGreeter (name: string) : (string -> string) =
 /// Create an accumulator that adds to running total
 /// Arena parameter for mutable state
 let makeAccumulator (arena: byref<Arena<'a>>) (initial: int) : (int -> int) =
-    // sizeof<int> = 4 bytes
-    let totalPtr = Arena.alloc &arena 4
+    // Use Platform.wordSize() for platform-portable allocation
+    let totalPtr = Arena.alloc &arena (Platform.wordSize ())
     NativePtr.write (NativePtr.ofNativeInt<int> totalPtr) initial
     fun n ->
         let ptr = NativePtr.ofNativeInt<int> totalPtr

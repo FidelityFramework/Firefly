@@ -64,15 +64,16 @@ let private transferGraphCore
     // COEFFECTS (computed ONCE before transfer)
     // All preprocessing passes run here - the zipper is PASSIVE (no mutation)
     // ═══════════════════════════════════════════════════════════════════════
-    let entryPointLambdaIds = MutAnalysis.findEntryPointLambdaIds graph
-    let analysisResult = MutAnalysis.analyze graph
-    let ssaAssignment = SSAAssign.assignSSA graph
-    let stringTable = StringCollect.collect graph  // Pre-collect all strings
 
-    // Platform resolution (nanopass)
+    // Platform resolution FIRST - architecture is needed by SSA assignment
     let hostPlatform = TargetPlatform.detectHost()
     let runtimeMode = if isFreestanding then Freestanding else Console
     let platformResolution = PlatformResolution.analyze graph runtimeMode hostPlatform.OS hostPlatform.Arch
+
+    let entryPointLambdaIds = MutAnalysis.findEntryPointLambdaIds graph
+    let analysisResult = MutAnalysis.analyze graph
+    let ssaAssignment = SSAAssign.assignSSA hostPlatform.Arch graph
+    let stringTable = StringCollect.collect graph  // Pre-collect all strings
 
     // Pattern binding analysis (coeffect for match case bindings)
     let patternBindingAnalysis = PatternAnalysis.analyze graph
@@ -179,7 +180,7 @@ let private transferGraphCore
                                             | Some pbNode ->
                                                 match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                                 | Some ssas when not (List.isEmpty ssas) ->
-                                                    let patternType = mapNativeTypeWithGraph graph pbNode.Type
+                                                    let patternType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph pbNode.Type
                                                     // WITNESS: Extract tuple element, then DU payload
                                                     let ops, resultVal = MemWitness.witnessTuplePatternExtract ssas scrutineeSSA scrutineeType elemIdx patternType
                                                     for op in ops do emit op z'
@@ -198,7 +199,7 @@ let private transferGraphCore
                                             | Some pbNode ->
                                                 match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                                 | Some ssas when not (List.isEmpty ssas) ->
-                                                    let patternType = mapNativeTypeWithGraph graph pbNode.Type
+                                                    let patternType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph pbNode.Type
                                                     // WITNESS: Extract tuple element directly
                                                     // We can reuse witnessTuplePatternExtract but need to know if it handles simple var?
                                                     // witnessTuplePatternExtract extracts elem, then does payload extraction.
@@ -231,7 +232,7 @@ let private transferGraphCore
                                 | SemanticKind.PatternBinding name ->
                                     match SSAAssign.lookupSSAs pbNodeId ssaAssignment with
                                     | Some ssas when not (List.isEmpty ssas) ->
-                                        let patternType = mapNativeTypeWithGraph graph pbNode.Type
+                                        let patternType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph pbNode.Type
                                         let ops, resultVal = MemWitness.witnessPayloadExtract ssas scrutineeSSA scrutineeType patternType unionCaseIndex
                                         for op in ops do emit op z'
                                         z' <- bindVarSSA name resultVal.SSA resultVal.Type z'
@@ -468,7 +469,7 @@ let private transferGraphCore
                         | Some v -> Some (name, v)
                         | None -> None)
                 // Use graph-aware type mapping for records (looks up field types from TypeDef)
-                let recordType = mapNativeTypeWithGraph z.Graph node.Type
+                let recordType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph node.Type
 
                 // Get record field definitions from graph
                 let recordFieldDefs =
@@ -670,7 +671,7 @@ let private transferGraphCore
                     | None -> None, None
 
                 let resultType =
-                    let mlirType = mapNativeTypeWithGraph graph node.Type
+                    let mlirType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type
                     if mlirType = TUnit then None else Some mlirType
 
                 let ops, result = CFWitness.witnessIfThenElse node.Id z condSSA thenOps thenResultSSA elseOps elseResultSSA resultType
@@ -754,7 +755,7 @@ let private transferGraphCore
                         (case.Pattern, guardSSA, ops, resultSSA))
 
                 let resultType =
-                    let mlirType = mapNativeTypeWithGraph graph node.Type
+                    let mlirType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type
                     if mlirType = TUnit then None else Some mlirType
 
                 let ops, result = CFWitness.witnessMatch node.Id z scrutineeSSA scrutineeType caseOps resultType
@@ -842,7 +843,7 @@ let private transferGraphCore
             | SemanticKind.TraitCall (memberName, _typeArgs, argId) ->
                 match resolveNodeToVal argId z with
                 | Some receiverVal ->
-                    let memberType = mapNativeTypeWithGraph graph node.Type
+                    let memberType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type
                     let ops, result = MemWitness.witnessTraitCall node.Id z receiverVal.SSA receiverVal.Type memberName memberType
                     emitAll ops z
                     z, result
@@ -911,7 +912,7 @@ let private transferGraphCore
                         | _, "Pointer" ->
                             MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 MLIRTypes.ptr
                         | _, "Length" ->
-                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 1 (mapNativeTypeWithGraph graph node.Type)
+                            MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 1 (mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type)
                         | _ when fieldName.Contains(".") ->
                             // Nested field access - parse path and compute indices
                             let pathParts = fieldName.Split('.') |> Array.toList
@@ -925,7 +926,7 @@ let private transferGraphCore
                                         // Last field in path - get index and final type
                                         match lookupFieldIndex currentTypeName lastField with
                                         | Some (idx, fieldTy) ->
-                                            Some (List.rev (idx :: acc), mapNativeType fieldTy)
+                                            Some (List.rev (idx :: acc), mapNativeTypeForArch z.State.Platform.TargetArch fieldTy)
                                         | None -> None
                                     | field :: rest ->
                                         // Intermediate field - get index and continue
@@ -951,12 +952,12 @@ let private transferGraphCore
                             | Some typeName ->
                                 match lookupFieldIndex typeName fieldName with
                                 | Some (idx, fieldTy) ->
-                                    MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type idx (mapNativeType fieldTy)
+                                    MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type idx (mapNativeTypeForArch z.State.Platform.TargetArch fieldTy)
                                 | None ->
                                     [], TRError (sprintf "FieldGet: field '%s' not found in record type '%s'" fieldName typeName)
                             | None ->
                                 // Not a record type - use node.Type (result type) for field type
-                                MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 (mapNativeTypeWithGraph graph node.Type)
+                                MemWitness.witnessFieldGet node.Id z exprVal.SSA exprVal.Type 0 (mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type)
                     emitAll ops z
                     z, result
                 | None ->
@@ -1036,7 +1037,7 @@ let private transferGraphCore
                     match payloadOpt with
                     | Some payloadId -> resolveNodeToVal payloadId z
                     | None -> None
-                let unionType = mapNativeTypeWithGraph graph node.Type
+                let unionType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type
                 let ops, result = MemWitness.witnessUnionCase node.Id z caseIndex payload unionType
                 emitAll ops z
                 z, result
@@ -1048,7 +1049,7 @@ let private transferGraphCore
                 // bodyId points to the thunk lambda
                 // For simple thunks (no captures), Lambda returns TRVoid, so we construct
                 // the closure struct {funcPtr, null} ourselves using the thunk's name
-                let resultType = mapNativeTypeWithGraph graph node.Type
+                let resultType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type
                 let elementType =
                     match resultType with
                     | TStruct [_; elemTy; _] -> elemTy  // {i1, T, closure} -> T
@@ -1075,7 +1076,7 @@ let private transferGraphCore
                 match resolveNodeToVal lazyValueId z with
                 | Some lazyVal ->
                     // Get element type (T) - this is the result type of force
-                    let elementType = mapNativeTypeWithGraph graph node.Type
+                    let elementType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph node.Type
                     let ops, result = LazyWitness.witnessLazyForce node.Id z lazyVal elementType
                     emitAll ops z
                     z, result
