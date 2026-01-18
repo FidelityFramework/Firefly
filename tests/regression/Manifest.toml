@@ -1,0 +1,359 @@
+# Firefly Regression Test Manifest
+# Defines all samples and their expected outputs
+
+[config]
+samples_root = "../../samples/console/FidelityHelloWorld"
+compiler = "../../src/bin/Debug/net10.0/Firefly"
+default_timeout_seconds = 30
+
+# =============================================================================
+# Sample 01: HelloWorldDirect
+# Static string output - no input, no variables
+# =============================================================================
+[[samples]]
+name = "01_HelloWorldDirect"
+project = "HelloWorld.fidproj"
+binary = "target/helloworld"
+expected_output = """
+Hello, World!
+"""
+
+# =============================================================================
+# Sample 02: HelloWorldSaturated
+# Arena-based memory, console input
+# =============================================================================
+[[samples]]
+name = "02_HelloWorldSaturated"
+project = "HelloWorld.fidproj"
+binary = "target/helloworld"
+stdin_file = "HelloWorld.stdin"
+expected_output = """
+Enter your name: Hello, Houston!
+"""
+
+# =============================================================================
+# Sample 03: HelloWorldHalfCurried
+# Pipe operators, function values
+# =============================================================================
+[[samples]]
+name = "03_HelloWorldHalfCurried"
+project = "HelloWorld.fidproj"
+binary = "target/helloworld"
+stdin_file = "HelloWorld.stdin"
+expected_output = """
+Enter your name: Hello, Houston!
+"""
+
+# =============================================================================
+# Sample 04: HelloWorldFullCurried
+# Full currying, partial application
+# =============================================================================
+[[samples]]
+name = "04_HelloWorldFullCurried"
+project = "HelloWorld.fidproj"
+binary = "target/helloworld"
+stdin_file = "HelloWorld.stdin"
+expected_output = """
+Enter your name: Hello, Houston!
+"""
+
+# =============================================================================
+# Sample 05: AddNumbers
+# Discriminated unions, pattern matching
+# =============================================================================
+[[samples]]
+name = "05_AddNumbers"
+project = "AddNumbers.fidproj"
+binary = "target/addnumbers"
+expected_output = """
+=== DU Pattern Match Test ===
+IntVal 42 -> 42
+FloatVal 3.14 -> 3.140000
+Done!
+"""
+
+# =============================================================================
+# Sample 06: AddNumbersInteractive
+# Interactive DU with parsing
+# =============================================================================
+[[samples]]
+name = "06_AddNumbersInteractive"
+project = "AddNumbersInteractive.fidproj"
+binary = "target/addnumbers_interactive"
+stdin_file = "AddNumbersInteractive.stdin"
+expected_output = """
+=== Interactive Number Addition ===
+Enter any numeric form: integers (42) or decimals (3.14)
+
+Enter first number: Enter second number: 42 + 3.140000 = 45.140000
+"""
+
+# =============================================================================
+# Sample 07: BitsTest
+# Byte order conversion, bit casting
+# =============================================================================
+[[samples]]
+name = "07_BitsTest"
+project = "BitsTest.fidproj"
+binary = "target/bitstest"
+expected_output = """
+Bits intrinsics test passed!
+"""
+
+# =============================================================================
+# Sample 08: Option
+# Option type, pattern matching
+# =============================================================================
+[[samples]]
+name = "08_Option"
+project = "Option.fidproj"
+binary = "target/option"
+expected_output = """
+=== Option Type Test ===
+Some 42: 42
+Done!
+"""
+
+# =============================================================================
+# Sample 09: Result
+# Result type, error handling
+# =============================================================================
+[[samples]]
+name = "09_Result"
+project = "Result.fidproj"
+binary = "target/result"
+expected_output = """
+=== Result Type Test ===
+Ok 42: 42
+Error case: Something went wrong
+Done!
+"""
+
+# =============================================================================
+# Sample 10: Records
+# Record types, field access, copy-update
+# =============================================================================
+[[samples]]
+name = "10_Records"
+project = "Records.fidproj"
+binary = "target/records"
+expected_output = """
+=== Records Test ===
+Hello, Alice! You are 30 years old.
+After birthday: Hello, Alice! You are 31 years old.
+Name field: Alice
+Age field: 30
+Category: Adult
+Contact: Bob, Springfield - bob@example.com
+
+=== Age Categories ===
+Age 10: Minor
+Age 35: Adult
+Age 70: Senior
+"""
+
+# =============================================================================
+# Sample 11: Closures
+# Lambdas, captured variables, arena-allocated state
+# =============================================================================
+[[samples]]
+name = "11_Closures"
+project = "Closures.fidproj"
+binary = "target/closures"
+expected_output = """
+=== Closures Test ===
+--- Counter ---
+First call: 1
+Second call: 2
+Third call: 3
+
+--- Greeter ---
+Hello, Alice!
+Goodbye, Alice!
+Welcome, Bob!
+
+--- Accumulator ---
+Add 10: 110
+Add 25: 135
+Add 5: 140
+
+--- Range Checker ---
+5 in range 10-20: false
+15 in range 10-20: true
+25 in range 10-20: false
+
+--- Independent Closures ---
+counter1: 1
+counter2: 101
+counter1: 2
+counter2: 102
+"""
+
+# =============================================================================
+# Sample 12: HigherOrderFunctions
+# Functions as values, composition
+# =============================================================================
+[[samples]]
+name = "12_HigherOrderFunctions"
+project = "HigherOrderFunctions.fidproj"
+binary = "target/hof"
+expected_output = """
+=== Higher-Order Functions Test ===
+increment twice on 5: 7
+timesTwo twice on 3: 12
+
+timesTwo both (3, 7): 6, 14
+
+chooseAndApply true timesTwo square 5: 10
+chooseAndApply false timesTwo square 5: 25
+
+add10 applied to 5: 15
+mult3 applied to 7: 21
+
+timesTwo then increment on 5: 11
+increment then timesTwo on 5: 12
+"""
+
+# =============================================================================
+# Sample 13: Recursion
+# Recursive functions, tail recursion, mutual recursion
+# =============================================================================
+[[samples]]
+name = "13_Recursion"
+project = "Recursion.fidproj"
+binary = "target/recursion"
+expected_output = """
+=== Recursion Test ===
+--- Factorial ---
+factorial 5: 120
+factorialTail 5: 120
+factorial 10: 3628800
+
+--- Fibonacci ---
+fibonacci 10: 55
+fibonacciTail 10: 55
+fibonacciTail 20: 6765
+
+--- Sum ---
+sum 1 to 10: 55
+sum 1 to 100: 5050
+
+--- Count Digits ---
+digits in 12345: 5
+digits in 7: 1
+
+--- GCD ---
+gcd 48 18: 6
+gcd 100 35: 5
+
+--- Power ---
+2^10: 1024
+3^5: 243
+
+--- Mutual Recursion (Even/Odd) ---
+isEven 10: true
+isOdd 10: false
+isEven 7: false
+isOdd 7: true
+"""
+
+# =============================================================================
+# Sample 14: Lazy
+# Lazy values with flat closure captures (PRD-14)
+# =============================================================================
+[[samples]]
+name = "14_Lazy"
+project = "Lazy.fidproj"
+binary = "target/Lazy"
+expected_output = """
+=== Lazy Values Test (PRD-14) ===
+--- No Captures (Simple) ---
+lazy 42 = 42
+--- First Force (with side effect) ---
+Computing expensive value...
+Result: 42
+--- Second Force (no memoization) ---
+Computing expensive value...
+Result: 42
+--- Local Variable Captures ---
+lazy (10 + 20) = 30
+--- Captured Multiplication ---
+lazy (7 * 6) = 42
+--- Lazy-Returning Function ---
+Adding captured values...
+lazyAdd 15 25: 40
+--- Multiple Lazy from Function ---
+Adding captured values...
+lazyAdd 3 4: 7
+Adding captured values...
+lazyAdd 5 6: 11
+"""
+
+# =============================================================================
+# Sample 15: SimpleSeq
+# Sequence expressions with yields, while loops (PRD-15)
+# =============================================================================
+[[samples]]
+name = "15_SimpleSeq"
+project = "SimpleSeq.fidproj"
+binary = "target/SimpleSeq"
+timeout_seconds = 60
+expected_output = """
+=== Sample 15: Simple Sequences ===
+
+--- Part 1: Basic Sequences ---
+threeNumbers: 1 2 3
+singleElement: 42
+emptySeq (should be empty): (done)
+
+--- Part 2: While Loop Sequences ---
+countUp 5 10: 5 6 7 8 9 10
+countDown 10 5: 10 9 8 7 6 5
+
+--- Part 3: Conditional Yields ---
+evenNumbersUpTo 10: 0 2 4 6 8 10
+oddNumbersUpTo 10: 1 3 5 7 9
+nonFizzBuzzUpTo 15: 1 2 4 7 8 11 13 14
+
+--- Part 4: Sequences with Captures ---
+multiplesOf 3 5: 3 6 9 12 15
+rangeWithStep 0 20 4: 0 4 8 12 16 20
+
+--- Part 5: Computed Sequences ---
+squares 6: 1 4 9 16 25 36
+triangularNumbers 6: 1 3 6 10 15 21
+
+--- Part 6: Classic Sequences ---
+fibonacci 10: 0 1 1 2 3 5 8 13 21 34
+powersOfTwo 8: 1 2 4 8 16 32 64 128
+
+--- Verification Summary ---
+Expected values:
+  threeNumbers: 1 2 3
+  singleElement: 42
+  emptySeq: (nothing)
+  countUp 5 10: 5 6 7 8 9 10
+  countDown 10 5: 10 9 8 7 6 5
+  evenNumbersUpTo 10: 0 2 4 6 8 10
+  oddNumbersUpTo 10: 1 3 5 7 9
+  nonFizzBuzzUpTo 15: 1 2 4 7 8 11 13 14
+  multiplesOf 3 5: 3 6 9 12 15
+  rangeWithStep 0 20 4: 0 4 8 12 16 20
+  squares 6: 1 4 9 16 25 36
+  triangularNumbers 6: 1 3 6 10 15 21
+  fibonacci 10: 0 1 1 2 3 5 8 13 21 34
+  powersOfTwo 8: 1 2 4 8 16 32 64 128
+"""
+
+# =============================================================================
+# Sample 16: SeqOperations
+# Seq.map, Seq.filter, Seq.take, Seq.fold (PRD-16)
+# =============================================================================
+[[samples]]
+name = "16_SeqOperations"
+project = "SeqOperations.fidproj"
+binary = "target/SeqOperations"
+skip = true
+skip_reason = "PRD-16 not yet implemented"
+expected_output = """
+"""
