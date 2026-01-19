@@ -10,8 +10,8 @@ open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Dialects.LLVM.Templates
 open Alex.CodeGeneration.TypeMapping
-open Alex.Preprocessing.SSAAssignment
-open Alex.Preprocessing.MutabilityAnalysis
+open PSGElaboration.SSAAssignment
+open PSGElaboration.MutabilityAnalysis
 open Alex.Traversal.PSGZipper
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -157,7 +157,7 @@ let witnessVarRef
 
     // Helper: check if defNode is a function reference (Lambda or Binding to Lambda)
     let isFunctionRef nodeId =
-        match Alex.Preprocessing.SSAAssignment.lookupLambdaName nodeId ctx.SSA with
+        match PSGElaboration.SSAAssignment.lookupLambdaName nodeId ctx.SSA with
         | Some _ -> true
         | None -> false
 
@@ -244,7 +244,7 @@ let witnessVarRef
     // 7. Function reference (Simple Lambda used as value): Emit Thunk
     // Simple Lambdas expect (args...), but HOFs call (env, args...).
     // We generate a Thunk: (env, args...) -> original(args...)
-    match Alex.Preprocessing.SSAAssignment.lookupLambdaName nodeId ctx.SSA with
+    match PSGElaboration.SSAAssignment.lookupLambdaName nodeId ctx.SSA with
     | Some funcName ->
         // Check if we already emitted a thunk for this function
         let thunkName = sprintf "thunk_%s" funcName
@@ -322,7 +322,7 @@ let witnessVarRef
             let mlirRetType =
                 match defId with
                 | Some defNodeId ->
-                    match Alex.Preprocessing.SSAAssignment.getActualFunctionReturnType z.State.Platform.TargetArch ctx.Graph defNodeId ctx.SSA with
+                    match PSGElaboration.SSAAssignment.getActualFunctionReturnType z.State.Platform.TargetArch ctx.Graph defNodeId ctx.SSA with
                     | Some actualType -> actualType
                     | None -> mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph retType
                 | None -> mapNativeTypeWithGraphForArch z.State.Platform.TargetArch ctx.Graph retType

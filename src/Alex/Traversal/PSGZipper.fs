@@ -20,11 +20,11 @@ module Alex.Traversal.PSGZipper
 open FSharp.Native.Compiler.PSG.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
-open Alex.Preprocessing.SSAAssignment
-open Alex.Preprocessing.MutabilityAnalysis
-open Alex.Preprocessing.StringCollection
-open Alex.Preprocessing.PlatformConfig
-open Alex.Preprocessing.PatternBindingAnalysis
+open PSGElaboration.SSAAssignment
+open PSGElaboration.MutabilityAnalysis
+open PSGElaboration.StringCollection
+open PSGElaboration.PlatformConfig
+open PSGElaboration.PatternBindingAnalysis
 
 // ═══════════════════════════════════════════════════════════════════════════
 // ZIPPER PATH (Breadcrumbs)

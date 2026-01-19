@@ -14,7 +14,7 @@
 ///
 /// Witnesses use `deriveGlobalRef` (pure derivation), not "lookup".
 /// The zipper is PASSIVE - it observes and produces, never mutates.
-module Alex.Preprocessing.StringCollection
+module PSGElaboration.StringCollection
 
 open FSharp.Native.Compiler.PSG.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes

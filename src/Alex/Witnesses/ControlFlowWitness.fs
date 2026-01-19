@@ -19,7 +19,7 @@ open Alex.Traversal.PSGZipper
 open Alex.CodeGeneration.TypeMapping
 
 module SCF = Alex.Dialects.SCF.Templates
-module MutAnalysis = Alex.Preprocessing.MutabilityAnalysis
+module MutAnalysis = PSGElaboration.MutabilityAnalysis
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE HELPERS

@@ -255,7 +255,7 @@ let witnessSeqCreateFull
 // MOVENEXT STATE MACHINE GENERATION
 // ═══════════════════════════════════════════════════════════════════════════
 
-open Alex.Preprocessing.YieldStateIndices
+open PSGElaboration.YieldStateIndices
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 
 /// What value to yield at a state point

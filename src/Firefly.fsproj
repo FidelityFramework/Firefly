@@ -60,16 +60,16 @@
       <!-- Alex CodeGeneration - TypeMapping first (no deps, used by SSAAssignment) -->
       <Compile Include="Alex/CodeGeneration/TypeMapping.fs" />
 
-      <!-- Alex Preprocessing - coeffects before PSGZipper -->
-      <Compile Include="Alex/Preprocessing/SSAAssignment.fs" />
-      <Compile Include="Alex/Preprocessing/YieldStateIndices.fs" />
-      <Compile Include="Alex/Preprocessing/MutabilityAnalysis.fs" />
-      <Compile Include="Alex/Preprocessing/StringCollection.fs" />
+      <!-- PSGElaboration - MLIR-aware coeffects (peer to Alex) -->
+      <Compile Include="PSGElaboration/SSAAssignment.fs" />
+      <Compile Include="PSGElaboration/YieldStateIndices.fs" />
+      <Compile Include="PSGElaboration/MutabilityAnalysis.fs" />
+      <Compile Include="PSGElaboration/StringCollection.fs" />
       <!-- Platform Config (depends on PlatformTypes) -->
-      <Compile Include="Alex/Preprocessing/PlatformConfig.fs" />
-      <Compile Include="Alex/Preprocessing/PlatformBindingResolution.fs" />
-      <Compile Include="Alex/Preprocessing/PatternBindingAnalysis.fs" />
-      <Compile Include="Alex/Preprocessing/PreprocessingSerializer.fs" />
+      <Compile Include="PSGElaboration/PlatformConfig.fs" />
+      <Compile Include="PSGElaboration/PlatformBindingResolution.fs" />
+      <Compile Include="PSGElaboration/PatternBindingAnalysis.fs" />
+      <Compile Include="PSGElaboration/PreprocessingSerializer.fs" />
 
       <!-- Alex Traversal - PSGZipper: Huet zipper with emission state -->
       <Compile Include="Alex/Traversal/PSGZipper.fs" />

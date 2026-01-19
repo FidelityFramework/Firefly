@@ -1,4 +1,4 @@
-/// Preprocessing Serializer - Serialize Alex preprocessing results to intermediates
+/// Preprocessing Serializer - Serialize PSGElaboration results to intermediates
 ///
 /// This module serializes preprocessing results (SSA assignment, Lambda names,
 /// entry points, etc.) to JSON for inspection. Following the FNCS phase emission
@@ -11,12 +11,12 @@
 /// CRITICAL: This serializer provides FULL visibility into SSA assignments.
 /// When debugging "wrong SSA" issues, the alex_coeffects.json file shows
 /// exactly what SSA was assigned to each node and WHY.
-module Alex.Preprocessing.PreprocessingSerializer
+module PSGElaboration.PreprocessingSerializer
 
 open System.IO
 open System.Text.Json
 open FSharp.Native.Compiler.PSG.SemanticGraph
-open Alex.Preprocessing.SSAAssignment
+open PSGElaboration.SSAAssignment
 open Alex.Dialects.Core.Types
 
 /// Detailed lambda information for debugging
@@ -188,7 +188,7 @@ let serialize
     
     let data = {|
         version = "1.0"
-        description = "Alex preprocessing coeffects"
+        description = "PSGElaboration coeffects"
         ssaAssignment = serializeSSAAssignment ssaAssignment graph
         entryPointLambdaIds = entryPointLambdaIds |> Set.toList
     |}

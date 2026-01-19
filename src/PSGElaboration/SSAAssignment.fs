@@ -1,7 +1,7 @@
-/// SSA Assignment Pass - Alex preprocessing for MLIR emission
+/// SSA Assignment Pass - PSGElaboration for MLIR emission
 ///
 /// This pass assigns SSA values to PSG nodes BEFORE MLIR emission.
-/// SSA is an MLIR/LLVM concern, not F# semantics, so it lives in Alex.
+/// SSA is an MLIR/LLVM concern, not F# semantics, so it lives in PSGElaboration.
 ///
 /// Key design:
 /// - SSA counter resets at each Lambda boundary (per-function scoping)
@@ -9,7 +9,7 @@
 /// - Returns Map<NodeId, NodeSSAAllocation> that witnesses read (coeffect lookup, no generation during emission)
 /// - Uses structured SSA type (V of int | Arg of int), not strings
 /// - Knows MLIR expansion costs: one PSG node may need multiple SSAs
-module Alex.Preprocessing.SSAAssignment
+module PSGElaboration.SSAAssignment
 
 open FSharp.Native.Compiler.PSG.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes

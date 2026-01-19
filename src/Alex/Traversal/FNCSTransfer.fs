@@ -19,12 +19,12 @@ open Alex.Bindings.BindingTypes
 open Alex.Bindings.PlatformTypes
 open Alex.CodeGeneration.TypeMapping
 open Alex.Patterns.SemanticPatterns
-open Alex.Preprocessing.PlatformConfig
+open PSGElaboration.PlatformConfig
 open Core.FNCS.Integration
 
 // Witness modules
 module LitWitness = Alex.Witnesses.LiteralWitness
-module PreprocessingSerializer = Alex.Preprocessing.PreprocessingSerializer
+module PreprocessingSerializer = PSGElaboration.PreprocessingSerializer
 module BindWitness = Alex.Witnesses.BindingWitness
 module AppWitness = Alex.Witnesses.Application.Witness
 module CFWitness = Alex.Witnesses.ControlFlowWitness
@@ -34,12 +34,12 @@ module LazyWitness = Alex.Witnesses.LazyWitness
 module SeqWitness = Alex.Witnesses.SeqWitness
 
 // Preprocessing modules (coeffects)
-module MutAnalysis = Alex.Preprocessing.MutabilityAnalysis
-module SSAAssign = Alex.Preprocessing.SSAAssignment
-module StringCollect = Alex.Preprocessing.StringCollection
-module PlatformResolution = Alex.Preprocessing.PlatformBindingResolution
-module PatternAnalysis = Alex.Preprocessing.PatternBindingAnalysis
-module YieldStateIndices = Alex.Preprocessing.YieldStateIndices
+module MutAnalysis = PSGElaboration.MutabilityAnalysis
+module SSAAssign = PSGElaboration.SSAAssignment
+module StringCollect = PSGElaboration.StringCollection
+module PlatformResolution = PSGElaboration.PlatformBindingResolution
+module PatternAnalysis = PSGElaboration.PatternBindingAnalysis
+module YieldStateIndices = PSGElaboration.YieldStateIndices
 
 
 

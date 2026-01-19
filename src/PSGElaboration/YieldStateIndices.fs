@@ -23,7 +23,7 @@
 ///    - State 0: Initialize internal state, jump to check
 ///    - State 1: Execute post-yield code, jump to check
 ///    - Shared blocks: check, yield, done
-module Alex.Preprocessing.YieldStateIndices
+module PSGElaboration.YieldStateIndices
 
 open FSharp.Native.Compiler.PSG.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes

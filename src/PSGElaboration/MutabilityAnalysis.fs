@@ -8,7 +8,7 @@
 ///
 /// This eliminates on-demand tree traversal during transfer, adhering to
 /// the photographer principle: observe the structure, don't compute during transfer.
-module Alex.Preprocessing.MutabilityAnalysis
+module PSGElaboration.MutabilityAnalysis
 
 open FSharp.Native.Compiler.PSG.SemanticGraph
 
@@ -28,7 +28,7 @@ type ModuleLevelMutable = {
 
 /// Result of mutability analysis for a semantic graph
 type MutabilityAnalysisResult = {
-    /// Set of NodeId values for mutable bindings whose address is taken (&& operator)
+    /// Set of NodeId values for mutable bindings whose address is taken (&amp;&amp; operator)
     /// These need alloca instead of pure SSA
     AddressedMutableBindings: Set<int>
     
@@ -45,7 +45,7 @@ type MutabilityAnalysisResult = {
 // Addressed Mutable Analysis
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Find all mutable bindings whose address is taken (&& operator)
+/// Find all mutable bindings whose address is taken (&amp;&amp; operator)
 /// These need alloca instead of pure SSA
 /// Returns a set of NodeIds of the mutable Binding nodes
 let findAddressedMutableBindings (graph: SemanticGraph) : Set<int> =

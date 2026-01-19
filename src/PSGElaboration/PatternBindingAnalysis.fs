@@ -13,7 +13,7 @@
 /// - This is ANALYSIS (read-only observation of PSG structure)
 /// - Runs BEFORE transfer begins
 /// - Produces coeffects that witnesses PULL during emission
-module Alex.Preprocessing.PatternBindingAnalysis
+module PSGElaboration.PatternBindingAnalysis
 
 open FSharp.Native.Compiler.PSG.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes

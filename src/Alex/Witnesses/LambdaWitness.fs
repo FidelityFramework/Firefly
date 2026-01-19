@@ -29,7 +29,7 @@ open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.CodeGeneration.TypeMapping
-open Alex.Preprocessing.SSAAssignment
+open PSGElaboration.SSAAssignment
 
 
 
@@ -522,7 +522,7 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
         // ARCHITECTURAL FIX: Use SSAAssignment coeffect for lambda names
         // This respects binding names when Lambda is bound via `let name = ...`
         let lambdaName =
-            match Alex.Preprocessing.SSAAssignment.lookupLambdaName node.Id z.State.SSAAssignment with
+            match PSGElaboration.SSAAssignment.lookupLambdaName node.Id z.State.SSAAssignment with
             | Some name -> name
             | None -> yieldLambdaNameForNode nodeIdVal z  // fallback for anonymous
 

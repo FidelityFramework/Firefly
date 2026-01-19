@@ -40,7 +40,7 @@ module CF = Alex.Dialects.CF.Templates
 
 /// Get pre-assigned SSAs for a node from the SSAAssignment coeffect
 let private requireNodeSSAs nodeId (z: PSGZipper) =
-    match Alex.Preprocessing.SSAAssignment.lookupSSAs nodeId z.State.SSAAssignment with
+    match PSGElaboration.SSAAssignment.lookupSSAs nodeId z.State.SSAAssignment with
     | Some ssas -> ssas
     | None -> failwithf "SeqOpWitness: No SSAs pre-assigned for node %d" (NodeId.value nodeId)
 

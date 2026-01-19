@@ -41,7 +41,7 @@ module Format = Alex.Witnesses.Application.Format
 module Platform = Alex.Witnesses.Application.Platform
 module ArenaTemplates = Alex.Dialects.LLVM.Templates
 module SCF = Alex.Dialects.SCF.Templates
-module SSAAssignment = Alex.Preprocessing.SSAAssignment
+module SSAAssignment = PSGElaboration.SSAAssignment
 module LazyWitness = Alex.Witnesses.LazyWitness
 module SeqOpWitness = Alex.Witnesses.SeqOpWitness
 
@@ -1070,7 +1070,7 @@ let witness
         match resolveFuncKind funcNodeId z with
         | Some (SemanticKind.VarRef (_, Some defId)) ->
             // VarRef to a Lambda - check if Lambda body is LazyExpr with captures
-            match Alex.Preprocessing.SSAAssignment.getActualFunctionReturnType z.State.Platform.TargetArch z.Graph defId z.State.SSAAssignment with
+            match PSGElaboration.SSAAssignment.getActualFunctionReturnType z.State.Platform.TargetArch z.Graph defId z.State.SSAAssignment with
             | Some actualType -> actualType  // Use actual type with captures
             | None -> declaredReturnType     // No lazy captures, use declared
         | _ -> declaredReturnType
@@ -1105,7 +1105,7 @@ let witness
             let funcName =
                 match defIdOpt with
                 | Some defId ->
-                    match Alex.Preprocessing.SSAAssignment.lookupLambdaName defId z.State.SSAAssignment with
+                    match PSGElaboration.SSAAssignment.lookupLambdaName defId z.State.SSAAssignment with
                     | Some lambdaName -> lambdaName
                     | None -> name
                 | None -> name  // No definition, use VarRef name

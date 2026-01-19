@@ -7,7 +7,7 @@
 ///
 /// PSG should be complete before witnessing. Platform decisions
 /// (freestanding vs console, syscall vs libc) are resolved here.
-module Alex.Preprocessing.PlatformConfig
+module PSGElaboration.PlatformConfig
 
 open Alex.Bindings.PlatformTypes
 open Alex.Dialects.Core.Types

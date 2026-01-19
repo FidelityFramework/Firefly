@@ -6,10 +6,10 @@
 ///
 /// PSG should be complete before witnessing. Platform decisions
 /// (freestanding vs console, syscall vs libc) are resolved here.
-module Alex.Preprocessing.PlatformBindingResolution
+module PSGElaboration.PlatformBindingResolution
 
 open FSharp.Native.Compiler.PSG.SemanticGraph
-open Alex.Preprocessing.PlatformConfig
+open PSGElaboration.PlatformConfig
 open Alex.Bindings.PlatformTypes
 open Alex.Dialects.Core.Types
 
