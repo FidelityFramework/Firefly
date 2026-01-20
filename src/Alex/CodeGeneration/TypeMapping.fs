@@ -3,12 +3,13 @@
 /// Maps FNCS native types to their MLIR representations.
 /// Uses structured MLIRType from Alex.Dialects.Core.Types.
 ///
-/// FNCS-native: Uses NativeType from FSharp.Native.Compiler.Checking.Native
+/// FNCS-native: Uses NativeType from FSharp.Native.Compiler.NativeTypedTree
 module Alex.CodeGeneration.TypeMapping
 
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
-open FSharp.Native.Compiler.Checking.Native.UnionFind
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.NativeTypedTree.UnionFind
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Bindings.PlatformTypes
 
@@ -18,6 +19,53 @@ open Alex.Bindings.PlatformTypes
 
 /// Native string type: fat pointer = {ptr, len: i64}
 let NativeStrType = TStruct [TPtr; TInt I64]
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NTUKind DIRECT MAPPING (for literals)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Map NTUKind directly to MLIRType with architecture awareness.
+/// Used for NativeLiteral where we have the kind without a full NativeType.
+///
+/// PRINCIPLED DESIGN (January 2026):
+/// The NTUKind in a literal IS the type. Platform-dependent kinds
+/// (NTUnativeint, NTUint, etc.) resolve based on target architecture.
+let mapNTUKindToMLIRType (arch: Architecture) (kind: NTUKind) : MLIRType =
+    let wordWidth = platformWordWidth arch
+    match kind with
+    // Fixed-width signed integers
+    | NTUKind.NTUint8 -> TInt I8
+    | NTUKind.NTUint16 -> TInt I16
+    | NTUKind.NTUint32 -> TInt I32
+    | NTUKind.NTUint64 -> TInt I64
+    // Fixed-width unsigned integers (same MLIR type, signedness is in ops)
+    | NTUKind.NTUuint8 -> TInt I8
+    | NTUKind.NTUuint16 -> TInt I16
+    | NTUKind.NTUuint32 -> TInt I32
+    | NTUKind.NTUuint64 -> TInt I64
+    // Platform-word integers - size depends on architecture
+    | NTUKind.NTUint      // F# int (platform word)
+    | NTUKind.NTUuint     // F# uint (platform word)
+    | NTUKind.NTUnint     // nativeint
+    | NTUKind.NTUunint    // unativeint
+    | NTUKind.NTUsize     // size_t
+    | NTUKind.NTUdiff     // ptrdiff_t
+        -> TInt wordWidth
+    // Floating point
+    | NTUKind.NTUfloat32 -> TFloat F32
+    | NTUKind.NTUfloat64 -> TFloat F64
+    // Boolean
+    | NTUKind.NTUbool -> TInt I1
+    // Character (Unicode codepoint = i32)
+    | NTUKind.NTUchar -> TInt I32
+    // Unit
+    | NTUKind.NTUunit -> TInt I32  // Unit represented as i32 0
+    // Pointers
+    | NTUKind.NTUptr | NTUKind.NTUfnptr -> TPtr
+    // String (fat pointer)
+    | NTUKind.NTUstring -> NativeStrType
+    // Composite/complex types - representation comes from platform tier, not here
+    | kind -> failwithf "NTUKind %A requires platform-tier resolution, not scalar mapping" kind
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MAIN TYPE MAPPING

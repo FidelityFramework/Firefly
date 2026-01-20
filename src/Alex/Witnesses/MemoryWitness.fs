@@ -13,8 +13,9 @@
 /// - SRTP trait calls
 module Alex.Witnesses.MemoryWitness
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.CodeGeneration.TypeMapping
@@ -241,7 +242,7 @@ let witnessRecordCopyUpdate
     (nodeId: NodeId)
     (z: PSGZipper)
     (origVal: Val)
-    (fieldDefs: (string * FSharp.Native.Compiler.Checking.Native.NativeTypes.NativeType) list)
+    (fieldDefs: (string * FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NativeType) list)
     (updatedFields: (string * Val) list)
     (recordType: MLIRType)
     : MLIROp list * TransferResult =

@@ -5,7 +5,7 @@
 name = "HelloWorldSaturated"
 version = "0.1.0"
 description = "HelloWorld with saturated function calls"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

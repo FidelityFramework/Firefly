@@ -38,7 +38,9 @@
 /// - witnessForEach: Emit iteration loop calling MoveNext
 module Alex.Witnesses.SeqWitness
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 
@@ -76,6 +78,99 @@ let seqStructType (elementType: MLIRType) (captureTypes: MLIRType list) : MLIRTy
 let seqStructTypeNoCaptures (elementType: MLIRType) : MLIRType =
     // {i32, T, ptr}
     TStruct [TInt I32; elementType; TPtr]
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRUCT-BASED VARIABLE ACCESS (January 2026 - Extracted from FNCSTransfer)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Context for struct-based variable access in Seq MoveNext
+///
+/// PRD-15: Variables in Seq expressions live in a struct (captures + internal state),
+/// not on the stack like regular variables. MoveNext accesses them via GEP + Load/Store.
+///
+/// This context holds the information needed for struct field access:
+/// - VarNameToIndex: Maps variable names to struct field indices
+/// - StructType: The seq struct type for GEP
+/// - StructPtrSSA: The pointer to the struct (%0 in MoveNext)
+type SeqVarAccessContext = {
+    /// Map from variable name to struct field index
+    VarNameToIndex: Map<string, int>
+    /// The seq struct type
+    StructType: MLIRType
+    /// The seq pointer SSA (%0 in MoveNext)
+    StructPtrSSA: SSA
+}
+
+/// Load a variable from the seq struct
+///
+/// PRD-15: Variables in Seq live in a struct, accessed via GEP + Load.
+/// This is the Seq-specific pattern for variable access inside MoveNext.
+///
+/// SSAs are pre-assigned from coeffect - NO mutable counters.
+///
+/// SSA cost: 2 (ptr GEP + value load)
+///
+/// Example MLIR output:
+/// ```mlir
+/// %ptr = llvm.getelementptr %seq_ptr[0, fieldIdx] : !llvm.struct<...>
+/// %val = llvm.load %ptr : varType
+/// ```
+let loadStructVar
+    (ctx: SeqVarAccessContext)
+    (varName: string)
+    (varType: MLIRType)
+    (ptrSSA: SSA)      // Pre-assigned from coeffect
+    (valSSA: SSA)      // Pre-assigned from coeffect
+    : MLIROp list * Val =
+    match Map.tryFind varName ctx.VarNameToIndex with
+    | Some fieldIdx ->
+        let ops = [
+            MLIROp.LLVMOp (LLVMOp.StructGEP (ptrSSA, ctx.StructPtrSSA, fieldIdx, ctx.StructType))
+            MLIROp.LLVMOp (LLVMOp.Load (valSSA, ptrSSA, varType, AtomicOrdering.NotAtomic))
+        ]
+        (ops, { SSA = valSSA; Type = varType })
+    | None ->
+        // Variable not in struct - this is a coeffect error (should have been caught earlier)
+        failwithf "loadStructVar: Variable '%s' not found in struct field map. Available: %A"
+            varName (ctx.VarNameToIndex |> Map.toList |> List.map fst)
+
+/// Store a value to a variable in the seq struct
+///
+/// PRD-15: Variables in Seq live in a struct, accessed via GEP + Store.
+/// This is the Seq-specific pattern for variable mutation inside MoveNext.
+///
+/// SSAs are pre-assigned from coeffect - NO mutable counters.
+///
+/// SSA cost: 1 (ptr GEP only - store doesn't produce an SSA)
+///
+/// Example MLIR output:
+/// ```mlir
+/// %ptr = llvm.getelementptr %seq_ptr[0, fieldIdx] : !llvm.struct<...>
+/// llvm.store %value, %ptr : varType
+/// ```
+let storeStructVar
+    (ctx: SeqVarAccessContext)
+    (varName: string)
+    (valueSSA: SSA)
+    (varType: MLIRType)
+    (ptrSSA: SSA)      // Pre-assigned from coeffect
+    : MLIROp list =
+    match Map.tryFind varName ctx.VarNameToIndex with
+    | Some fieldIdx ->
+        [
+            MLIROp.LLVMOp (LLVMOp.StructGEP (ptrSSA, ctx.StructPtrSSA, fieldIdx, ctx.StructType))
+            MLIROp.LLVMOp (LLVMOp.Store (valueSSA, ptrSSA, varType, AtomicOrdering.NotAtomic))
+        ]
+    | None ->
+        // Variable not in struct - fail loudly
+        failwithf "storeStructVar: Variable '%s' not found in struct field map. Available: %A"
+            varName (ctx.VarNameToIndex |> Map.toList |> List.map fst)
+
+/// SSA cost for loadStructVar (GEP + Load = 2 SSAs)
+let loadStructVarSSACost : int = 2
+
+/// SSA cost for storeStructVar (GEP only = 1 SSA, store produces no SSA)
+let storeStructVarSSACost : int = 1
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SEQ.CREATE - Build sequence expression (FLAT CLOSURE)
@@ -256,7 +351,7 @@ let witnessSeqCreateFull
 // ═══════════════════════════════════════════════════════════════════════════
 
 open PSGElaboration.YieldStateIndices
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 
 /// What value to yield at a state point
 /// PRD-15 SimpleSeq: supports literals and computed expressions
@@ -825,6 +920,63 @@ let witnessForEach
 
     // ForEach returns unit (TRVoid)
     (setupOps @ [MLIROp.SCFOp whileOp], TRVoid)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLACEHOLDER MOVENEXT (January 2026 - XParsec Integration Pending)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Placeholder MoveNext for while-based sequences
+///
+/// TEMPORARY (January 2026):
+/// This generates a MoveNext that immediately returns false (empty sequence).
+/// Used during FNCSTransfer strip-mining while XParsec integration is in progress.
+///
+/// The callback-based witnessMoveNextWhileBased was deleted because:
+/// - Callbacks inject "build" logic where witnessing should happen
+/// - NO dispatch - only witness. NO push - only pull.
+/// - Zipper = attention, XParsec = pull
+///
+/// Proper implementation will use:
+/// - Zipper navigation to MoveNext body nodes
+/// - XParsec combinators to witness expressions
+/// - Coeffect lookup for pre-computed SSAs
+///
+/// Samples 01-13 (non-Seq) should still work.
+/// Samples 14-16 (Seq) will produce empty sequences.
+let witnessMoveNextPlaceholder
+    (moveNextName: string)
+    (seqStructType: MLIRType)
+    (elementType: MLIRType)
+    : MLIROp =
+
+    // Minimal MoveNext: load state, return false (always done)
+    let seqPtrSSA = V 0
+    let falseLitSSA = V 1
+
+    let entryOps = [
+        // Return false immediately - sequence is "empty"
+        MLIROp.ArithOp (ArithOp.ConstI (falseLitSSA, 0L, MLIRTypes.i1))
+        MLIROp.LLVMOp (LLVMOp.Return (Some falseLitSSA, Some MLIRTypes.i1))
+    ]
+
+    let entryBlock: Block = {
+        Label = BlockRef "entry"
+        Args = []
+        Ops = entryOps
+    }
+
+    let bodyRegion: Region = {
+        Blocks = [entryBlock]
+    }
+
+    // FLAT CLOSURE PATTERN: llvm.func for addressof compatibility
+    MLIROp.LLVMOp (LLVMOp.LLVMFuncDef (
+        moveNextName,
+        [(seqPtrSSA, TPtr)],
+        MLIRTypes.i1,
+        bodyRegion,
+        LLVMPrivate
+    ))
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SSA COST FUNCTIONS

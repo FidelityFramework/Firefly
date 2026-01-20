@@ -16,8 +16,9 @@
 /// The zipper is PASSIVE - it observes and produces, never mutates.
 module PSGElaboration.StringCollection
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STRING TABLE TYPE
@@ -81,7 +82,7 @@ let private addString (s: string) (table: StringTable) : StringTable =
 /// Collect strings from a single node
 let private collectFromNode (node: SemanticNode) (table: StringTable) : StringTable =
     match node.Kind with
-    | SemanticKind.Literal (LiteralValue.String s) ->
+    | SemanticKind.Literal (NativeLiteral.String s) ->
         addString s table
     
     | SemanticKind.InterpolatedString parts ->

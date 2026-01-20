@@ -24,8 +24,9 @@
 /// Serena memory `mlir_dialect_architecture` for the full specification.
 module Alex.Witnesses.Application.Witness
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 // NOTE: LLVM.Templates imported for struct ops (extractvalue, etc.) and indirect calls.
 // Do NOT use `callFunc` for direct calls - use FuncOp.FuncCall instead.

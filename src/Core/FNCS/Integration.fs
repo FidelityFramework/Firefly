@@ -14,10 +14,13 @@
 module Core.FNCS.Integration
 
 // Re-export FNCS types for use throughout Firefly
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Traversal
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Diagnostics
 open FSharp.Native.Compiler.NativeService
-// Baker - Post-construction semantic enrichment (peer to Checking.Native)
+// Baker - Post-construction semantic enrichment (peer to NativeTypedTree)
 // ModuleClassifications now computed lazily on SemanticGraph itself
 module BakerPipeline = FSharp.Native.Compiler.Baker.Pipeline
 
@@ -27,7 +30,7 @@ type FNCSGraph = SemanticGraph
 type FNCSType = NativeType
 type FNCSKind = SemanticKind
 type FNCSNodeId = NodeId
-type FNCSLiteralValue = LiteralValue
+type FNCSLiteralValue = NativeLiteral
 
 /// Check result from FNCS
 type FNCSCheckResult = CheckResult
@@ -62,20 +65,20 @@ let getNodeExn (id: NodeId) (graph: FNCSGraph) : FNCSNode =
     SemanticGraph.getNode id graph
 
 /// Fold over graph in post-order (children before parents - required for SSA emission)
-let foldPostOrder (folder: 'State -> FNCSNode -> 'State) (state: 'State) (graph: FNCSGraph) : 'State =
-    Traversal.foldPostOrder folder state graph
+let foldPostOrderGraph (folder: 'State -> FNCSNode -> 'State) (state: 'State) (graph: FNCSGraph) : 'State =
+    foldPostOrder folder state graph
 
 /// Fold over graph in pre-order
-let foldPreOrder (folder: 'State -> FNCSNode -> 'State) (state: 'State) (graph: FNCSGraph) : 'State =
-    Traversal.foldPreOrder folder state graph
+let foldPreOrderGraph (folder: 'State -> FNCSNode -> 'State) (state: 'State) (graph: FNCSGraph) : 'State =
+    foldPreOrder folder state graph
 
 /// Map over all nodes in the graph
 let mapNodes (f: FNCSNode -> FNCSNode) (graph: FNCSGraph) : FNCSGraph =
-    Traversal.map f graph
+    map f graph
 
 /// Filter nodes in the graph
 let filterNodes (predicate: FNCSNode -> bool) (graph: FNCSGraph) : FNCSGraph =
-    Traversal.filter predicate graph
+    filter predicate graph
 
 /// Get all binding nodes
 let bindings (graph: FNCSGraph) : FNCSNode list =
@@ -134,7 +137,7 @@ let isLiteral (node: FNCSNode) : bool =
     | _ -> false
 
 /// Get literal value if present
-let literalValue (node: FNCSNode) : LiteralValue option =
+let literalValue (node: FNCSNode) : NativeLiteral option =
     match node.Kind with
     | SemanticKind.Literal v -> Some v
     | _ -> None

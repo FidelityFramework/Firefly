@@ -2,7 +2,7 @@
 name = "RecursionSimple"
 version = "0.1.0"
 description = "Demonstrates simple recursive functions (no mutual recursion)"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

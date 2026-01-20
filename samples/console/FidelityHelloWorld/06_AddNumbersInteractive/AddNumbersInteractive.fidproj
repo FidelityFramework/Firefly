@@ -2,7 +2,7 @@
 name = "AddNumbers"
 version = "0.1.0"
 description = "Interactive discriminated unions with user input and parsing"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

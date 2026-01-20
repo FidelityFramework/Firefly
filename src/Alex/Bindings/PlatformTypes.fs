@@ -8,6 +8,7 @@
 /// By putting OSFamily/Architecture here, all can import without cycles.
 module Alex.Bindings.PlatformTypes
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 
 // ===================================================================

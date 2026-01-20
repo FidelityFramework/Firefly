@@ -11,8 +11,13 @@
 /// - Curried applications: f a b c
 module Alex.XParsec.PSGCombinators
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Traversal.PSGZipper
+open Alex.Bindings.PlatformTypes
+open Alex.Dialects.Core.Types
+open PSGElaboration.PlatformConfig
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CORE TYPES
@@ -24,12 +29,62 @@ type PSGMatchResult<'T> =
     | NoMatch of reason: string
 
 /// Parser state threaded through pattern matching
+///
+/// PLATFORM-AWARE (January 2026):
+/// Platform info flows through parser state, enabling type resolution
+/// without hard-coded values in witnesses. Use `platformWordType` and
+/// `platformWordBits` for architecture-appropriate types.
+///
+/// The `Platform` field contains `PlatformResolutionResult` which has:
+/// - TargetArch: Architecture (X86_64, ARM64, etc.)
+/// - PlatformWordType: MLIRType (already resolved!)
+/// - TargetOS: OSFamily
+/// - RuntimeMode: Freestanding or Console
 type PSGParserState = {
     Graph: SemanticGraph
     Zipper: PSGZipper
     /// Currently focused node
     Current: SemanticNode
+    /// Platform resolution result (architecture, OS, word type, bindings)
+    /// This is a coeffect - already computed, just look it up
+    Platform: PlatformResolutionResult
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM-AWARE TYPE RESOLUTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Get the word-sized integer type for the target platform
+/// Already resolved in PlatformResolutionResult - just look it up
+let platformWordType (state: PSGParserState) : MLIRType =
+    state.Platform.PlatformWordType
+
+/// Get the word width in bits for the target platform
+let platformWordBits (state: PSGParserState) : int =
+    match platformWordWidth state.Platform.TargetArch with
+    | I64 -> 64
+    | I32 -> 32
+    | I16 -> 16
+    | I8 -> 8
+    | I1 -> 1
+
+/// Get the target architecture
+let targetArch (state: PSGParserState) : Architecture =
+    state.Platform.TargetArch
+
+/// Get the appropriate return type for main function
+/// This uses platform word size, NOT hard-coded i32
+let mainReturnType (state: PSGParserState) : MLIRType =
+    state.Platform.PlatformWordType
+
+/// Get the appropriate type for nativeint/unativeint
+let nativeIntType (state: PSGParserState) : MLIRType =
+    state.Platform.PlatformWordType
+
+/// Map NTUKind to MLIRType with platform awareness
+/// Delegates to TypeMapping but provides platform context from state
+let mapNTUKindForPlatform (state: PSGParserState) (kind: NTUKind) : MLIRType =
+    Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType state.Platform.TargetArch kind
 
 /// A PSG parser that attempts to match a pattern and produce a result
 type PSGParser<'T> = PSGParserState -> PSGMatchResult<'T> * PSGParserState
@@ -59,7 +114,7 @@ let pAny : PSGParser<SemanticNode> =
     fun state -> Matched state.Current, state
 
 /// Match a Literal node
-let pLiteral : PSGParser<LiteralValue> =
+let pLiteral : PSGParser<NativeLiteral> =
     fun state ->
         match state.Current.Kind with
         | SemanticKind.Literal lit -> Matched lit, state
@@ -102,7 +157,7 @@ let pBinding : PSGParser<string * bool * bool * bool> =
         | _ -> NoMatch "Expected Binding", state
 
 /// Match a Lambda node (params are name*type*nodeId tuples for SSA assignment)
-let pLambda : PSGParser<(string * FSharp.Native.Compiler.Checking.Native.NativeTypes.NativeType * NodeId) list * NodeId> =
+let pLambda : PSGParser<(string * FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NativeType * NodeId) list * NodeId> =
     fun state ->
         match state.Current.Kind with
         | SemanticKind.Lambda (params', bodyId, _captures, _, _) -> Matched (params', bodyId), state
@@ -338,13 +393,31 @@ let psg = PSGParserBuilder()
 // RUNNER
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Run a parser on a node
-let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) =
-    let state = { Graph = graph; Zipper = zipper; Current = node }
+/// Run a parser on a node with platform context
+/// Platform info flows through state for type resolution
+let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
+    let state = { Graph = graph; Zipper = zipper; Current = node; Platform = platform }
     parser state
 
 /// Try to match a pattern, returning option
-let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) =
-    match runParser parser graph node zipper with
+/// Platform info flows through state for type resolution
+let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
+    match runParser parser graph node zipper platform with
     | Matched v, state' -> Some (v, state'.Zipper)
     | NoMatch _, _ -> None
+
+/// Create initial parser state from zipper (convenience)
+/// Extracts platform from zipper state - this is the common pattern
+let stateFromZipper (zipper: PSGZipper) (node: SemanticNode) : PSGParserState =
+    {
+        Graph = zipper.Graph
+        Zipper = zipper
+        Current = node
+        Platform = zipper.State.Platform
+    }
+
+/// Run a parser using zipper (most common usage)
+/// Platform is extracted from zipper.State.Platform
+let runParserWithZipper (parser: PSGParser<'T>) (zipper: PSGZipper) (node: SemanticNode) =
+    let state = stateFromZipper zipper node
+    parser state

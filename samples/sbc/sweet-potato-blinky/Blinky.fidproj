@@ -5,7 +5,7 @@
 name = "SweetPotato-Blinky"
 version = "0.1.0"
 description = "LED blink demo for Libre Sweet Potato (Allwinner H6)"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

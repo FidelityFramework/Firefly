@@ -5,7 +5,7 @@
 name = "STM32L5-UART-Echo"
 version = "0.1.0"
 description = "UART echo demo for NUCLEO-L552ZE-Q"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

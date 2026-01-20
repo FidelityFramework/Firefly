@@ -5,7 +5,9 @@
 /// Witnesses dispatch through PlatformDispatch; bindings generate MLIR.
 module Alex.Bindings.SyscallBindings
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.Bindings.PlatformTypes

@@ -11,9 +11,10 @@
 /// - Knows MLIR expansion costs: one PSG node may need multiple SSAs
 module PSGElaboration.SSAAssignment
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
-open FSharp.Native.Compiler.Checking.Native.UnionFind
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.NativeTypedTree.UnionFind
 open Alex.Dialects.Core.Types
 open Alex.Bindings.PlatformTypes
 open PSGElaboration.Coeffects
@@ -29,17 +30,19 @@ open PSGElaboration.Coeffects
 // Key insight: SSA count is a deterministic function of instance structure.
 
 /// Get the number of SSAs needed for a literal value
-let private literalExpansionCost (lit: LiteralValue) : int =
+let private literalExpansionCost (lit: NativeLiteral) : int =
     match lit with
-    | LiteralValue.String _ -> 5  // addressof, constI(len), undef, insertvalue(ptr), insertvalue(len)
-    | LiteralValue.Unit -> 1     // constI
-    | LiteralValue.Bool _ -> 1   // constI
-    | LiteralValue.Int8 _ | LiteralValue.Int16 _ | LiteralValue.Int32 _ | LiteralValue.Int64 _ -> 1
-    | LiteralValue.UInt8 _ | LiteralValue.UInt16 _ | LiteralValue.UInt32 _ | LiteralValue.UInt64 _ -> 1
-    | LiteralValue.NativeInt _ | LiteralValue.UNativeInt _ -> 1
-    | LiteralValue.Char _ -> 1
-    | LiteralValue.Float32 _ | LiteralValue.Float64 _ -> 1
-    | _ -> 1  // Default
+    | NativeLiteral.String _ -> 5  // addressof, constI(len), undef, insertvalue(ptr), insertvalue(len)
+    | NativeLiteral.Unit -> 1     // constI
+    | NativeLiteral.Bool _ -> 1   // constI
+    | NativeLiteral.Int _ -> 1    // All integer types (int8..int64, uint8..uint64, nativeint)
+    | NativeLiteral.UInt _ -> 1   // Unsigned integers > int64.MaxValue
+    | NativeLiteral.Char _ -> 1
+    | NativeLiteral.Float _ -> 1  // float32 and float64
+    | NativeLiteral.Decimal _ -> 1
+    | NativeLiteral.ByteArray _ -> 1
+    | NativeLiteral.UInt16Array _ -> 1
+    | NativeLiteral.BigInt _ -> 1
 
 /// Compute exact SSA count for Lambda based on captures list
 /// This is DETERMINISTIC - derived directly from PSG structure (captures list from FNCS)
@@ -988,6 +991,18 @@ let assignSSA (arch: Architecture) (graph: SemanticGraph) : SSAAssignment =
             // If this lambda is a top-level binding value, it might be visited in Pass 1?
             // Or if it's main, it's never "visited" as a child?
             // Main doesn't have captures, so no layout needed.
+
+        // PRD-15 FIX (January 2026): SeqExpr MoveNext bodies need their own SSA scope
+        // MoveNext is a separate function with seqPtr as %arg0, body SSAs start at 1
+        | SemanticKind.SeqExpr (bodyId, _captures) ->
+            // MoveNext function: %arg0 = seqPtr, body SSAs start at v1
+            let initialScope = { FunctionScope.empty with Counter = 1 }
+            let bodyScope = assignFunctionBody arch graph mutableClosureLayouts initialScope bodyId
+
+            // Merge SeqExpr body assignments
+            for kvp in bodyScope.Assignments do
+                allAssignments <- Map.add kvp.Key kvp.Value allAssignments
+
         | _ -> ()
 
     // Convert mutable dictionary to immutable map

@@ -187,6 +187,24 @@ type AttrValue =
 /// A block argument is a typed SSA value
 type BlockArg = Val
 
+/// Region kind discriminator for SCF region collection
+type RegionKind =
+    | GuardRegion
+    | BodyRegion
+    | ThenRegion
+    | ElseRegion
+    | StartExprRegion
+    | EndExprRegion
+    | LambdaBodyRegion
+    | MatchCaseRegion of idx: int
+
+/// Hooks for SCF region emission (before/after region ops)
+/// Generic over the zipper/state type 'Z
+type SCFRegionHook<'Z> = {
+    BeforeRegion: 'Z -> FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NodeId -> RegionKind -> 'Z
+    AfterRegion: 'Z -> FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NodeId -> RegionKind -> 'Z
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // OPENVELOPE - THE SUPER-STRUCTURE
 // ═══════════════════════════════════════════════════════════════════════════

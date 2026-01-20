@@ -2,7 +2,7 @@
 name = "HigherOrderFunctions"
 version = "0.1.0"
 description = "Demonstrates higher-order functions and function composition"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

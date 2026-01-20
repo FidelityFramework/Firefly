@@ -8,6 +8,7 @@
 /// The StringBuilder accumulates the MLIR text output.
 module Alex.Dialects.Core.Serialize
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open System.Text
 open Alex.Dialects.Core.Types
 

@@ -9,6 +9,7 @@ module CLI.Program
 
 open System
 open System.IO
+open System.Reflection
 open Argu
 open Alex.Pipeline.CompilationOrchestrator
 open CLI.Commands.VerifyCommand
@@ -83,10 +84,16 @@ let private executeCompile (args: ParseResults<CompileArgs>) : int =
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Display version information
+/// Version is read from assembly (set in Firefly.fsproj <Version>)
 let private showVersion() =
-    let version = "0.4.164"
+    let assembly = Assembly.GetExecutingAssembly()
+    let version =
+        assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+        |> Option.ofObj
+        |> Option.map (fun a -> a.InformationalVersion)
+        |> Option.defaultValue (assembly.GetName().Version.ToString())
     printfn "Firefly %s - F# to Native Compiler with Deterministic Memory Management" version
-    printfn "Copyright (c) 2025 SpeakEZ LLC"
+    printfn "Copyright (c) 2025-2026 SpeakEZ Technologies, Inc."
     0
 
 /// Display usage information

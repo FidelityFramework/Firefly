@@ -2,7 +2,7 @@
 name = "AddNumbers"
 version = "0.1.0"
 description = "Demonstrates discriminated unions, pattern matching, and SRTP arithmetic"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

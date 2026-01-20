@@ -24,8 +24,9 @@
 /// Witnesses OBSERVE and RETURN. They do NOT emit directly.
 module Alex.Witnesses.LambdaWitness
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.CodeGeneration.TypeMapping
@@ -517,13 +518,17 @@ let preBindParams (z: PSGZipper) (node: SemanticNode) : PSGZipper =
         let mapTypeWithGraph = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch z.Graph
 
         // Return type
+        // PLATFORM-AWARE (January 2026): Use actual F# type for ALL functions including main.
+        // F#'s `int` is NTUint (platform word), NOT fixed i32.
+        // The _start wrapper handles conversion to exit syscall requirements.
+        // See: zipper_state_pollution_remediation memory, PlatformBindingResolution.fs
         let returnType =
-            if isMain then TInt I32
-            else
-                // If unit param, count is 1 (the unit arg) for return type peeling
-                let paramCount = if List.isEmpty params' && (match node.Type with NativeType.TFun(d, _) -> isUnitType d | _ -> false) then 1 else List.length params'
-                let finalRetTy = extractFinalReturnType node.Type paramCount
-                mapTypeWithGraph finalRetTy
+            let paramCount =
+                if List.isEmpty params' && (match node.Type with NativeType.TFun(d, _) -> isUnitType d | _ -> false)
+                then 1
+                else List.length params'
+            let finalRetTy = extractFinalReturnType node.Type paramCount
+            mapTypeWithGraph finalRetTy
 
         // Determine visibility
         let visibility = if isMain then FuncVisibility.Public else FuncVisibility.Private

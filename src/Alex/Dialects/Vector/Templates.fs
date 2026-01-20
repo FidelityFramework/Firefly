@@ -9,6 +9,7 @@
 /// Source: /usr/include/mlir/Dialect/Vector/IR/VectorOps.td
 module Alex.Dialects.Vector.Templates
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════════════════════

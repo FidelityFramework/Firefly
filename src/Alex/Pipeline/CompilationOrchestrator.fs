@@ -8,8 +8,10 @@
 ///   5. Link LLVM → Native (Toolchain)
 module Alex.Pipeline.CompilationOrchestrator
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open System
 open System.IO
+open System.Reflection
 open Core.CompilerConfig
 open Core.Toolchain
 open Alex.Traversal.PSGZipper
@@ -24,11 +26,24 @@ open Alex.Traversal.FNCSTransfer
 open FSharp.Native.Compiler.Project
 
 // FNCS Phase emission configuration
-module FNCSPhaseConfig = FSharp.Native.Compiler.Checking.Native.Infrastructure.PhaseConfig
+module FNCSPhaseConfig = FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig
 
 // Import specific types to avoid shadowing Result.Error
-type FNCSDiagnosticSeverity = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.NativeDiagnosticSeverity
-module FNCSSemanticGraph = FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+type FNCSDiagnosticSeverity = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Diagnostics.NativeDiagnosticSeverity
+module FNCSSemanticGraph = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Version (from assembly - set in Firefly.fsproj <Version>)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Get compiler version from assembly attributes
+/// This reads from <Version> in Firefly.fsproj - NO hard-coded values
+let private getCompilerVersion () =
+    let assembly = Assembly.GetExecutingAssembly()
+    assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+    |> Option.ofObj
+    |> Option.map (fun a -> a.InformationalVersion)
+    |> Option.defaultValue (assembly.GetName().Version.ToString())
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -180,7 +195,8 @@ let compileProject (options: CompilationOptions) : int =
     if options.Verbose then
         enableVerboseMode()
 
-    printfn "Firefly Compiler v0.5.0 (FNCS)"
+    let version = getCompilerVersion()
+    printfn "Firefly Compiler v%s (FNCS)" version
     printfn "=============================="
     printfn ""
 

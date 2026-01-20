@@ -5,7 +5,7 @@
 name = "TimeLoop"
 version = "0.1.0"
 description = "Time operations with high-resolution timing and sleep"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

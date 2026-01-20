@@ -2,7 +2,7 @@
 name = "Option"
 version = "0.1.0"
 description = "Demonstrates Option type and pattern matching"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

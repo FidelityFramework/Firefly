@@ -149,7 +149,9 @@ let (|UnaryOp|_|) (opName: string) =
 // NativePtr Operations
 // ═══════════════════════════════════════════════════════════════════════════
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 
 /// NativePtr operation kinds (type-safe dispatch)
 type NativePtrOpKind =

@@ -2,7 +2,7 @@
 name = "Result"
 version = "0.1.0"
 description = "Demonstrates Result type and error handling patterns"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

@@ -5,7 +5,7 @@
 name = "HelloWorldHalfCurried"
 version = "0.1.0"
 description = "HelloWorld with pipe operators and partial application"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

@@ -5,7 +5,7 @@
 name = "STM32L5-Blinky"
 version = "0.1.0"
 description = "LED blink demo for NUCLEO-L552ZE-Q board"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

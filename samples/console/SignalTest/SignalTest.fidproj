@@ -2,7 +2,7 @@
 name = "SignalTest"
 version = "0.1.0"
 description = "Test sample for Fidelity.Signal reactive primitives"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

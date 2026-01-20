@@ -9,6 +9,7 @@
 /// Source: /usr/include/mlir/Dialect/ControlFlow/IR/ControlFlowOps.td
 module Alex.Dialects.CF.Templates
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════════════════════

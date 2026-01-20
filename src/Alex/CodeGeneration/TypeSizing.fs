@@ -16,6 +16,7 @@
 /// - Structs: sum of field sizes (no padding in MLIR packed structs)
 module Alex.CodeGeneration.TypeSizing
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open System
 
 /// Platform word size in bytes (x86_64 = 8)

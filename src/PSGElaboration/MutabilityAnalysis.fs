@@ -10,7 +10,9 @@
 /// the photographer principle: observe the structure, don't compute during transfer.
 module PSGElaboration.MutabilityAnalysis
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types

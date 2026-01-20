@@ -10,8 +10,10 @@
 module Alex.Traversal.FNCSTransfer
 
 open System.Collections.Generic
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+module Reachability = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Reachability
 open Alex.Dialects.Core.Types
 open Alex.Dialects.Core.Serialize
 open Alex.Traversal.PSGZipper
@@ -54,6 +56,20 @@ let private regionKindToInt (kind: RegionKind) : int =
     | RegionKind.EndExprRegion -> 5
     | RegionKind.LambdaBodyRegion -> 6
     | RegionKind.MatchCaseRegion idx -> 100 + idx
+
+/// Extract int64 value and MLIR type from NativeLiteral with architecture awareness
+let private literalToInt64WithType (arch: Architecture) (lit: NativeLiteral) : int64 * MLIRType =
+    match lit with
+    | NativeLiteral.Int (v, kind) -> (v, mapNTUKindToMLIRType arch kind)
+    | NativeLiteral.UInt (v, kind) -> (int64 v, mapNTUKindToMLIRType arch kind)
+    | _ -> (0L, TInt I64)  // fallback for non-integer literals
+
+/// Extract int64 value from NativeLiteral (type from context)
+let private literalToInt64 (lit: NativeLiteral) : int64 =
+    match lit with
+    | NativeLiteral.Int (v, _) -> v
+    | NativeLiteral.UInt (v, _) -> int64 v
+    | _ -> 0L
 
 /// Core transfer implementation
 let private transferGraphCore
@@ -1192,14 +1208,8 @@ let private transferGraphCore
                                                 // Convert literal to int64 for IntLiteral
                                                 let intValue =
                                                     match lit with
-                                                    | LiteralValue.Int32 v -> int64 v
-                                                    | LiteralValue.Int64 v -> v
-                                                    | LiteralValue.UInt32 v -> int64 v
-                                                    | LiteralValue.UInt64 v -> int64 v
-                                                    | LiteralValue.UInt8 v -> int64 v
-                                                    | LiteralValue.Int8 v -> int64 v
-                                                    | LiteralValue.Int16 v -> int64 v
-                                                    | LiteralValue.UInt16 v -> int64 v
+                                                    | NativeLiteral.Int (v, _) -> v
+                                                    | NativeLiteral.UInt (v, _) -> int64 v
                                                     | _ -> 0L  // Non-integer literals not supported in PRD-15 SimpleSeq
                                                 Some ({
                                                     SeqWitness.StateIndex = yieldInfo.StateIndex
@@ -1261,6 +1271,17 @@ let private transferGraphCore
                         let varNameToIndex =
                             Map.fold (fun acc k v -> Map.add k v acc) captureNameToIndex internalStateNameToIndex
 
+                        // The seqPtr in MoveNext is %0 (first function arg)
+                        let seqPtrSSA = V 0
+
+                        // Create SeqVarAccessContext for struct-based variable access
+                        // (January 2026 - using extracted templates from SeqWitness)
+                        let varAccessCtx: SeqWitness.SeqVarAccessContext = {
+                            VarNameToIndex = varNameToIndex
+                            StructType = seqStructTy
+                            StructPtrSSA = seqPtrSSA
+                        }
+
                         // Build WhileBasedMoveNextInfo
                         let whileBasedInfo: SeqWitness.WhileBasedMoveNextInfo = {
                             MoveNextName = moveNextName
@@ -1272,624 +1293,11 @@ let private transferGraphCore
                             CaptureTypes = captures |> List.map (fun c -> c.Type)
                         }
 
-                        // Generate MoveNext using while-based generator
-                        // For now, we use a simplified approach that generates ops directly
-                        // based on the PSG structure analysis
-
-                        // SSA counter for MoveNext function-local SSAs (starting after entry block SSAs)
-                        let mutable moveNextSSA = 10  // Start after entry block SSAs
-
-                        // Helper: emit ops to load a variable from struct
-                        let loadVar (varName: string) (seqPtrSSA: SSA) (varType: MLIRType) : (MLIROp list * SSA) =
-                            match Map.tryFind varName varNameToIndex with
-                            | Some fieldIdx ->
-                                let ptrSSA = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                let valSSA = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                let ops = [
-                                    MLIROp.LLVMOp (LLVMOp.StructGEP (ptrSSA, seqPtrSSA, fieldIdx, seqStructTy))
-                                    MLIROp.LLVMOp (LLVMOp.Load (valSSA, ptrSSA, varType, AtomicOrdering.NotAtomic))
-                                ]
-                                (ops, valSSA)
-                            | None ->
-                                // Variable not found - emit error-like placeholder
-                                let valSSA = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                ([MLIROp.ArithOp (ArithOp.ConstI (valSSA, 0L, varType))], valSSA)
-
-                        // Helper: emit ops to store a value to a variable in struct
-                        let storeVar (varName: string) (seqPtrSSA: SSA) (valueSSA: SSA) (varType: MLIRType) : MLIROp list =
-                            match Map.tryFind varName varNameToIndex with
-                            | Some fieldIdx ->
-                                let ptrSSA = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                [
-                                    MLIROp.LLVMOp (LLVMOp.StructGEP (ptrSSA, seqPtrSSA, fieldIdx, seqStructTy))
-                                    MLIROp.LLVMOp (LLVMOp.Store (valueSSA, ptrSSA, varType, AtomicOrdering.NotAtomic))
-                                ]
-                            | None -> []
-
-                        // The seqPtr in MoveNext is %0 (first function arg)
-                        let seqPtrSSA = V 0
-
-                        // EMIT FUNCTIONS for the while-based state machine
-
-                        // emitInit: Initialize internal state fields
-                        // For each internal state field, store its initial value
-                        // Initial values come from either captures or constants
-                        let emitInit () =
-                            seqYieldInfo.InternalState
-                            |> List.collect (fun field ->
-                                // Find the initialization expression for this field
-                                // In `let mutable i = start`, the init value is `start`
-                                match SemanticGraph.tryGetNode field.BindingId graph with
-                                | Some bindingNode ->
-                                    match bindingNode.Children with
-                                    | [valueId] ->
-                                        match SemanticGraph.tryGetNode valueId graph with
-                                        | Some valueNode ->
-                                            match valueNode.Kind with
-                                            | SemanticKind.VarRef (refName, _) ->
-                                                // Init from a capture
-                                                let fieldType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph field.Type
-                                                let (loadOps, loadedSSA) = loadVar refName seqPtrSSA fieldType
-                                                let storeOps = storeVar field.Name seqPtrSSA loadedSSA fieldType
-                                                loadOps @ storeOps
-                                            | SemanticKind.Literal lit ->
-                                                // Init from a constant
-                                                let fieldType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph field.Type
-                                                let constSSA = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                let intValue =
-                                                    match lit with
-                                                    | LiteralValue.Int32 v -> int64 v
-                                                    | LiteralValue.Int64 v -> v
-                                                    | _ -> 0L
-                                                let constOp = MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, fieldType))
-                                                let storeOps = storeVar field.Name seqPtrSSA constSSA fieldType
-                                                [constOp] @ storeOps
-                                            | _ -> []
-                                        | None -> []
-                                    | _ -> []
-                                | None -> [])
-
-                        // emitCondition: Evaluate while condition
-                        // The condition is typically a comparison like `i <= stop`
-                        let emitCondition () =
-                            match SemanticGraph.tryGetNode whileInfo.ConditionId graph with
-                            | Some condNode ->
-                                match condNode.Kind with
-                                | SemanticKind.Application (funcId, [leftId; rightId]) ->
-                                    // Binary operation like <= or >=
-                                    match SemanticGraph.tryGetNode funcId graph with
-                                    | Some funcNode ->
-                                        match funcNode.Kind with
-                                        | SemanticKind.Intrinsic intrinsicInfo ->
-                                            // Get left operand - carry type through for proper NTU mapping
-                                            let (leftOps, leftSSA, leftType) =
-                                                match SemanticGraph.tryGetNode leftId graph with
-                                                | Some leftNode ->
-                                                    let mappedType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph leftNode.Type
-                                                    match leftNode.Kind with
-                                                    | SemanticKind.VarRef (varName, _) ->
-                                                        let (ops, ssa) = loadVar varName seqPtrSSA mappedType
-                                                        (ops, ssa, mappedType)
-                                                    | SemanticKind.Literal lit ->
-                                                        let constSSA = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        let intValue = match lit with | LiteralValue.Int32 v -> int64 v | LiteralValue.Int64 v -> v | _ -> 0L
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, mappedType))], constSSA, mappedType)
-                                                    | _ ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, mappedType))], ssaPlaceholder, mappedType)
-                                                | None ->
-                                                    let ssaPlaceholder = V moveNextSSA
-                                                    moveNextSSA <- moveNextSSA + 1
-                                                    // Fallback to platform word type from Fidelity.Platform
-                                                    let fallbackType = platformWordType z.State.Platform.TargetArch
-                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, fallbackType))], ssaPlaceholder, fallbackType)
-
-                                            // Get right operand - use left operand's type for consistency
-                                            let (rightOps, rightSSA) =
-                                                match SemanticGraph.tryGetNode rightId graph with
-                                                | Some rightNode ->
-                                                    let mappedType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph rightNode.Type
-                                                    match rightNode.Kind with
-                                                    | SemanticKind.VarRef (varName, _) ->
-                                                        loadVar varName seqPtrSSA mappedType
-                                                    | SemanticKind.Literal lit ->
-                                                        let constSSA = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        let intValue = match lit with | LiteralValue.Int32 v -> int64 v | LiteralValue.Int64 v -> v | _ -> 0L
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, mappedType))], constSSA)
-                                                    | _ ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, leftType))], ssaPlaceholder)
-                                                | None ->
-                                                    let ssaPlaceholder = V moveNextSSA
-                                                    moveNextSSA <- moveNextSSA + 1
-                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, leftType))], ssaPlaceholder)
-
-                                            // Generate comparison using the operand type (from NTU mapping)
-                                            let cmpSSA = V moveNextSSA
-                                            moveNextSSA <- moveNextSSA + 1
-                                            // Map IntrinsicInfo.Operation to ICmpPred
-                                            let cmpPred =
-                                                match intrinsicInfo.Operation with
-                                                | "op_LessThanOrEqual" -> ICmpPred.Sle
-                                                | "op_GreaterThanOrEqual" -> ICmpPred.Sge
-                                                | "op_LessThan" -> ICmpPred.Slt
-                                                | "op_GreaterThan" -> ICmpPred.Sgt
-                                                | "op_Equality" -> ICmpPred.Eq
-                                                | "op_Inequality" -> ICmpPred.Ne
-                                                | _ -> ICmpPred.Sle  // Default
-
-                                            // Use leftType for comparison - properly mapped through NTU
-                                            let cmpOp = MLIROp.ArithOp (ArithOp.CmpI (cmpSSA, cmpPred, leftSSA, rightSSA, leftType))
-                                            (leftOps @ rightOps @ [cmpOp], cmpSSA)
-                                        | _ ->
-                                            // Not an intrinsic - return placeholder
-                                            let ssaPlaceholder = V moveNextSSA
-                                            moveNextSSA <- moveNextSSA + 1
-                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-                                    | None ->
-                                        let ssaPlaceholder = V moveNextSSA
-                                        moveNextSSA <- moveNextSSA + 1
-                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-                                | _ ->
-                                    let ssaPlaceholder = V moveNextSSA
-                                    moveNextSSA <- moveNextSSA + 1
-                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-                            | None ->
-                                let ssaPlaceholder = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-
-                        // emitYieldValue: Compute yield value
-                        let emitYieldValue () =
-                            match SemanticGraph.tryGetNode whileInfo.YieldValueId graph with
-                            | Some valueNode ->
-                                match valueNode.Kind with
-                                | SemanticKind.VarRef (varName, _) ->
-                                    // Simple yield of a variable
-                                    let varType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph valueNode.Type
-                                    loadVar varName seqPtrSSA varType
-                                | SemanticKind.Literal lit ->
-                                    // Yield of a constant
-                                    let constSSA = V moveNextSSA
-                                    moveNextSSA <- moveNextSSA + 1
-                                    let intValue =
-                                        match lit with
-                                        | LiteralValue.Int32 v -> int64 v
-                                        | LiteralValue.Int64 v -> v
-                                        | _ -> 0L
-                                    ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, elementType))], constSSA)
-                                | SemanticKind.Application (funcId, argIds) ->
-                                    // Computed yield (e.g., i * factor)
-                                    match SemanticGraph.tryGetNode funcId graph with
-                                    | Some funcNode ->
-                                        match funcNode.Kind with
-                                        | SemanticKind.Intrinsic intrinsicInfo ->
-                                            match argIds with
-                                            | [leftId; rightId] ->
-                                                // Binary operation
-                                                let (leftOps, leftSSA) =
-                                                    match SemanticGraph.tryGetNode leftId graph with
-                                                    | Some leftNode ->
-                                                        match leftNode.Kind with
-                                                        | SemanticKind.VarRef (varName, _) ->
-                                                            let varType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph leftNode.Type
-                                                            loadVar varName seqPtrSSA varType
-                                                        | SemanticKind.Literal lit ->
-                                                            let constSSA = V moveNextSSA
-                                                            moveNextSSA <- moveNextSSA + 1
-                                                            let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                                            ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, elementType))], constSSA)
-                                                        | _ ->
-                                                            let ssaPlaceholder = V moveNextSSA
-                                                            moveNextSSA <- moveNextSSA + 1
-                                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-                                                    | None ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-
-                                                let (rightOps, rightSSA) =
-                                                    match SemanticGraph.tryGetNode rightId graph with
-                                                    | Some rightNode ->
-                                                        match rightNode.Kind with
-                                                        | SemanticKind.VarRef (varName, _) ->
-                                                            let varType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph rightNode.Type
-                                                            loadVar varName seqPtrSSA varType
-                                                        | SemanticKind.Literal lit ->
-                                                            let constSSA = V moveNextSSA
-                                                            moveNextSSA <- moveNextSSA + 1
-                                                            let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                                            ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, elementType))], constSSA)
-                                                        | _ ->
-                                                            let ssaPlaceholder = V moveNextSSA
-                                                            moveNextSSA <- moveNextSSA + 1
-                                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-                                                    | None ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-
-                                                // Generate arithmetic operation based on IntrinsicInfo.Operation
-                                                let resultSSA = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                let arithOp =
-                                                    match intrinsicInfo.Operation with
-                                                    | "op_Addition" ->
-                                                        MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, elementType))
-                                                    | "op_Subtraction" ->
-                                                        MLIROp.ArithOp (ArithOp.SubI (resultSSA, leftSSA, rightSSA, elementType))
-                                                    | "op_Multiply" ->
-                                                        MLIROp.ArithOp (ArithOp.MulI (resultSSA, leftSSA, rightSSA, elementType))
-                                                    | _ ->
-                                                        MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, elementType))
-                                                (leftOps @ rightOps @ [arithOp], resultSSA)
-                                            | _ ->
-                                                let ssaPlaceholder = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-                                        | _ ->
-                                            let ssaPlaceholder = V moveNextSSA
-                                            moveNextSSA <- moveNextSSA + 1
-                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-                                    | None ->
-                                        let ssaPlaceholder = V moveNextSSA
-                                        moveNextSSA <- moveNextSSA + 1
-                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-                                | _ ->
-                                    let ssaPlaceholder = V moveNextSSA
-                                    moveNextSSA <- moveNextSSA + 1
-                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-                            | None ->
-                                let ssaPlaceholder = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, elementType))], ssaPlaceholder)
-
-                        // emitPostYield: Execute post-yield code (e.g., i <- i + 1)
-                        // Supports LetBinding for local immutable bindings (e.g., let temp = a + b)
-                        let emitPostYield () =
-                            // Track local immutable bindings (not in struct, computed locally)
-                            let mutable localBindings: Map<string, SSA> = Map.empty
-                            
-                            // Helper to load a variable - checks local bindings first, then struct
-                            let loadVarOrLocal (name: string) (varType: MLIRType) =
-                                match Map.tryFind name localBindings with
-                                | Some ssa -> ([], ssa)  // Local binding - no ops needed, already have SSA
-                                | None -> loadVar name seqPtrSSA varType  // Struct field - emit load ops
-                            
-                            // Helper to evaluate a value expression
-                            let rec emitValueExpr (valueId: NodeId) (resultType: MLIRType) : (MLIROp list * SSA) =
-                                match SemanticGraph.tryGetNode valueId graph with
-                                | Some valueNode ->
-                                    match valueNode.Kind with
-                                    | SemanticKind.Application (funcId, [leftId; rightId]) ->
-                                        // Binary operation like a + b
-                                        let leftType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph valueNode.Type
-                                        let (leftOps, leftSSA) = emitOperand leftId leftType
-                                        let (rightOps, rightSSA) = emitOperand rightId leftType
-                                        
-                                        match SemanticGraph.tryGetNode funcId graph with
-                                        | Some funcNode ->
-                                            match funcNode.Kind with
-                                            | SemanticKind.Intrinsic intrinsicInfo ->
-                                                let resultSSA = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                let arithOp =
-                                                    match intrinsicInfo.Operation with
-                                                    | "op_Addition" -> MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, leftType))
-                                                    | "op_Subtraction" -> MLIROp.ArithOp (ArithOp.SubI (resultSSA, leftSSA, rightSSA, leftType))
-                                                    | "op_Multiply" -> MLIROp.ArithOp (ArithOp.MulI (resultSSA, leftSSA, rightSSA, leftType))
-                                                    | _ -> MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, leftType))
-                                                (leftOps @ rightOps @ [arithOp], resultSSA)
-                                            | _ -> emitDefault resultType
-                                        | None -> emitDefault resultType
-                                    | SemanticKind.VarRef (vName, _) ->
-                                        loadVarOrLocal vName resultType
-                                    | SemanticKind.Literal lit ->
-                                        let constSSA = V moveNextSSA
-                                        moveNextSSA <- moveNextSSA + 1
-                                        let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                        ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, resultType))], constSSA)
-                                    | _ -> emitDefault resultType
-                                | None -> emitDefault resultType
-                            
-                            and emitOperand (nodeId: NodeId) (opType: MLIRType) : (MLIROp list * SSA) =
-                                match SemanticGraph.tryGetNode nodeId graph with
-                                | Some node ->
-                                    match node.Kind with
-                                    | SemanticKind.VarRef (vName, _) -> loadVarOrLocal vName opType
-                                    | SemanticKind.Literal lit ->
-                                        let constSSA = V moveNextSSA
-                                        moveNextSSA <- moveNextSSA + 1
-                                        let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                        ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, opType))], constSSA)
-                                    | _ -> emitDefault opType
-                                | None -> emitDefault opType
-                            
-                            and emitDefault (ty: MLIRType) =
-                                let ssa = V moveNextSSA
-                                moveNextSSA <- moveNextSSA + 1
-                                ([MLIROp.ArithOp (ArithOp.ConstI (ssa, 0L, ty))], ssa)
-                            
-                            // Process each post-yield expression in order
-                            whileInfo.PostYieldExprs
-                            |> List.collect (fun exprId ->
-                                match SemanticGraph.tryGetNode exprId graph with
-                                | Some exprNode ->
-                                    match exprNode.Kind with
-                                    | SemanticKind.Binding (name, isMutable, _, _) when not isMutable ->
-                                        // Immutable let binding like: let temp = a + b
-                                        // The value expression is in Children[0]
-                                        // Compute value and store in local bindings map (not in struct)
-                                        match exprNode.Children with
-                                        | valueId :: _ ->
-                                            let bindingType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph exprNode.Type
-                                            let (valueOps, valueSSA) = emitValueExpr valueId bindingType
-                                            localBindings <- Map.add name valueSSA localBindings
-                                            valueOps  // Emit the computation ops, no store
-                                        | [] -> []
-                                    | SemanticKind.Set (targetId, valueId) ->
-                                        // Mutable assignment like: i <- i + 1 or b <- temp
-                                        match SemanticGraph.tryGetNode targetId graph with
-                                        | Some targetNode ->
-                                            match targetNode.Kind with
-                                            | SemanticKind.VarRef (varName, _) ->
-                                                let varType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph targetNode.Type
-                                                let (valueOps, valueSSA) = emitValueExpr valueId varType
-                                                valueOps @ storeVar varName seqPtrSSA valueSSA varType
-                                            | _ -> []
-                                        | None -> []
-                                    | _ -> []
-                                | None -> [])
-
-                        // emitPreYield: Execute pre-yield code (e.g., sum <- sum + i)
-                        // PRD-15: Pre-yield expressions execute BEFORE yielding the value
-                        // This is critical for computed sequences like triangularNumbers
-                        let emitPreYield () =
-                            whileInfo.PreYieldExprs
-                            |> List.collect (fun exprId ->
-                                match SemanticGraph.tryGetNode exprId graph with
-                                | Some exprNode ->
-                                    match exprNode.Kind with
-                                    | SemanticKind.Set (targetId, valueId) ->
-                                        // Assignment like sum <- sum + i
-                                        match SemanticGraph.tryGetNode targetId graph with
-                                        | Some targetNode ->
-                                            match targetNode.Kind with
-                                            | SemanticKind.VarRef (varName, _) ->
-                                                let varType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph targetNode.Type
-                                                // Evaluate the value expression
-                                                let (valueOps, valueSSA) =
-                                                    match SemanticGraph.tryGetNode valueId graph with
-                                                    | Some valueNode ->
-                                                        match valueNode.Kind with
-                                                        | SemanticKind.Application (funcId, [leftId; rightId]) ->
-                                                            // Binary operation like sum + i
-                                                            let (leftOps, leftSSA) =
-                                                                match SemanticGraph.tryGetNode leftId graph with
-                                                                | Some leftNode ->
-                                                                    match leftNode.Kind with
-                                                                    | SemanticKind.VarRef (vName, _) ->
-                                                                        loadVar vName seqPtrSSA varType
-                                                                    | SemanticKind.Literal lit ->
-                                                                        let constSSA = V moveNextSSA
-                                                                        moveNextSSA <- moveNextSSA + 1
-                                                                        let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                                                        ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, varType))], constSSA)
-                                                                    | _ ->
-                                                                        let ssaPlaceholder = V moveNextSSA
-                                                                        moveNextSSA <- moveNextSSA + 1
-                                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-                                                                | None ->
-                                                                    let ssaPlaceholder = V moveNextSSA
-                                                                    moveNextSSA <- moveNextSSA + 1
-                                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-
-                                                            let (rightOps, rightSSA) =
-                                                                match SemanticGraph.tryGetNode rightId graph with
-                                                                | Some rightNode ->
-                                                                    match rightNode.Kind with
-                                                                    | SemanticKind.VarRef (vName, _) ->
-                                                                        loadVar vName seqPtrSSA varType
-                                                                    | SemanticKind.Literal lit ->
-                                                                        let constSSA = V moveNextSSA
-                                                                        moveNextSSA <- moveNextSSA + 1
-                                                                        let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                                                        ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, varType))], constSSA)
-                                                                    | _ ->
-                                                                        let ssaPlaceholder = V moveNextSSA
-                                                                        moveNextSSA <- moveNextSSA + 1
-                                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-                                                                | None ->
-                                                                    let ssaPlaceholder = V moveNextSSA
-                                                                    moveNextSSA <- moveNextSSA + 1
-                                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-
-                                                            // Determine operation from intrinsic
-                                                            match SemanticGraph.tryGetNode funcId graph with
-                                                            | Some funcNode ->
-                                                                match funcNode.Kind with
-                                                                | SemanticKind.Intrinsic intrinsicInfo ->
-                                                                    let resultSSA = V moveNextSSA
-                                                                    moveNextSSA <- moveNextSSA + 1
-                                                                    let arithOp =
-                                                                        match intrinsicInfo.Operation with
-                                                                        | "op_Addition" ->
-                                                                            MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, varType))
-                                                                        | "op_Subtraction" ->
-                                                                            MLIROp.ArithOp (ArithOp.SubI (resultSSA, leftSSA, rightSSA, varType))
-                                                                        | _ ->
-                                                                            MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, varType))
-                                                                    (leftOps @ rightOps @ [arithOp], resultSSA)
-                                                                | _ ->
-                                                                    let ssaPlaceholder = V moveNextSSA
-                                                                    moveNextSSA <- moveNextSSA + 1
-                                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-                                                            | None ->
-                                                                let ssaPlaceholder = V moveNextSSA
-                                                                moveNextSSA <- moveNextSSA + 1
-                                                                ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-                                                        | SemanticKind.VarRef (vName, _) ->
-                                                            loadVar vName seqPtrSSA varType
-                                                        | SemanticKind.Literal lit ->
-                                                            let constSSA = V moveNextSSA
-                                                            moveNextSSA <- moveNextSSA + 1
-                                                            let intValue = match lit with | LiteralValue.Int32 v -> int64 v | _ -> 0L
-                                                            ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, varType))], constSSA)
-                                                        | _ ->
-                                                            let ssaPlaceholder = V moveNextSSA
-                                                            moveNextSSA <- moveNextSSA + 1
-                                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-                                                    | None ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, varType))], ssaPlaceholder)
-                                                // Store the result
-                                                valueOps @ storeVar varName seqPtrSSA valueSSA varType
-                                            | _ -> []
-                                        | None -> []
-                                    | _ -> []
-                                | None -> [])
-
-                        // emitYieldCondition: Evaluate if-condition(s) for conditional yield
-                        // For nested ifs: `if A then if B then yield x` → evaluate A && B
-                        let emitYieldCondition =
-                            match whileInfo.ConditionalYield with
-                            | Some condYieldInfo when not (List.isEmpty condYieldInfo.ConditionIds) ->
-                                Some (fun () ->
-                                    // Helper to evaluate operands (VarRef, Literal, nested Application)
-                                    let rec evalOperand (nodeId: NodeId) : (MLIROp list * SSA * MLIRType) =
-                                        match SemanticGraph.tryGetNode nodeId graph with
-                                        | Some opNode ->
-                                            let mappedType = mapNativeTypeWithGraphForArch z.State.Platform.TargetArch graph opNode.Type
-                                            match opNode.Kind with
-                                            | SemanticKind.VarRef (varName, _) ->
-                                                let (ops, ssa) = loadVar varName seqPtrSSA mappedType
-                                                (ops, ssa, mappedType)
-                                            | SemanticKind.Literal lit ->
-                                                let constSSA = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                let intValue = match lit with | LiteralValue.Int32 v -> int64 v | LiteralValue.Int64 v -> v | _ -> 0L
-                                                ([MLIROp.ArithOp (ArithOp.ConstI (constSSA, intValue, mappedType))], constSSA, mappedType)
-                                            | SemanticKind.Application (innerFuncId, [innerLeftId; innerRightId]) ->
-                                                // Nested operation like n % 2
-                                                match SemanticGraph.tryGetNode innerFuncId graph with
-                                                | Some innerFuncNode ->
-                                                    match innerFuncNode.Kind with
-                                                    | SemanticKind.Intrinsic innerIntrinsicInfo ->
-                                                        let (leftOps, leftSSA, leftType) = evalOperand innerLeftId
-                                                        let (rightOps, rightSSA, _) = evalOperand innerRightId
-                                                        let resultSSA = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        let arithOp =
-                                                            match innerIntrinsicInfo.Operation with
-                                                            | "op_Modulus" ->
-                                                                MLIROp.ArithOp (ArithOp.RemSI (resultSSA, leftSSA, rightSSA, leftType))
-                                                            | "op_Addition" ->
-                                                                MLIROp.ArithOp (ArithOp.AddI (resultSSA, leftSSA, rightSSA, leftType))
-                                                            | "op_Subtraction" ->
-                                                                MLIROp.ArithOp (ArithOp.SubI (resultSSA, leftSSA, rightSSA, leftType))
-                                                            | "op_Multiply" ->
-                                                                MLIROp.ArithOp (ArithOp.MulI (resultSSA, leftSSA, rightSSA, leftType))
-                                                            | _ ->
-                                                                MLIROp.ArithOp (ArithOp.RemSI (resultSSA, leftSSA, rightSSA, leftType))
-                                                        (leftOps @ rightOps @ [arithOp], resultSSA, leftType)
-                                                    | _ ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, mappedType))], ssaPlaceholder, mappedType)
-                                                | None ->
-                                                    let ssaPlaceholder = V moveNextSSA
-                                                    moveNextSSA <- moveNextSSA + 1
-                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, mappedType))], ssaPlaceholder, mappedType)
-                                            | _ ->
-                                                let ssaPlaceholder = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, mappedType))], ssaPlaceholder, mappedType)
-                                        | None ->
-                                            let fallbackType = platformWordType z.State.Platform.TargetArch
-                                            let ssaPlaceholder = V moveNextSSA
-                                            moveNextSSA <- moveNextSSA + 1
-                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 0L, fallbackType))], ssaPlaceholder, fallbackType)
-
-                                    // Helper to evaluate a single boolean condition
-                                    let evalSingleCondition (condId: NodeId) : (MLIROp list * SSA) =
-                                        match SemanticGraph.tryGetNode condId graph with
-                                        | Some condNode ->
-                                            match condNode.Kind with
-                                            | SemanticKind.Application (funcId, [leftId; rightId]) ->
-                                                match SemanticGraph.tryGetNode funcId graph with
-                                                | Some funcNode ->
-                                                    match funcNode.Kind with
-                                                    | SemanticKind.Intrinsic intrinsicInfo ->
-                                                        let (leftOps, leftSSA, leftType) = evalOperand leftId
-                                                        let (rightOps, rightSSA, _) = evalOperand rightId
-                                                        let cmpSSA = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        let cmpPred =
-                                                            match intrinsicInfo.Operation with
-                                                            | "op_Equality" -> ICmpPred.Eq
-                                                            | "op_Inequality" -> ICmpPred.Ne
-                                                            | "op_LessThan" -> ICmpPred.Slt
-                                                            | "op_LessThanOrEqual" -> ICmpPred.Sle
-                                                            | "op_GreaterThan" -> ICmpPred.Sgt
-                                                            | "op_GreaterThanOrEqual" -> ICmpPred.Sge
-                                                            | _ -> ICmpPred.Eq
-                                                        let cmpOp = MLIROp.ArithOp (ArithOp.CmpI (cmpSSA, cmpPred, leftSSA, rightSSA, leftType))
-                                                        (leftOps @ rightOps @ [cmpOp], cmpSSA)
-                                                    | _ ->
-                                                        let ssaPlaceholder = V moveNextSSA
-                                                        moveNextSSA <- moveNextSSA + 1
-                                                        ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-                                                | None ->
-                                                    let ssaPlaceholder = V moveNextSSA
-                                                    moveNextSSA <- moveNextSSA + 1
-                                                    ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-                                            | _ ->
-                                                let ssaPlaceholder = V moveNextSSA
-                                                moveNextSSA <- moveNextSSA + 1
-                                                ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-                                        | None ->
-                                            let ssaPlaceholder = V moveNextSSA
-                                            moveNextSSA <- moveNextSSA + 1
-                                            ([MLIROp.ArithOp (ArithOp.ConstI (ssaPlaceholder, 1L, MLIRTypes.i1))], ssaPlaceholder)
-
-                                    // Evaluate all conditions and AND them together
-                                    let mutable allOps = []
-                                    let mutable resultSSA = V 0  // Will be set below
-
-                                    for i, condId in List.indexed condYieldInfo.ConditionIds do
-                                        let (condOps, condSSA) = evalSingleCondition condId
-                                        allOps <- allOps @ condOps
-                                        if i = 0 then
-                                            resultSSA <- condSSA
-                                        else
-                                            // AND with previous result
-                                            let andSSA = V moveNextSSA
-                                            moveNextSSA <- moveNextSSA + 1
-                                            allOps <- allOps @ [MLIROp.ArithOp (ArithOp.AndI (andSSA, resultSSA, condSSA, MLIRTypes.i1))]
-                                            resultSSA <- andSSA
-
-                                    (allOps, resultSSA))
-                            | _ -> None
-
-                        // Generate MoveNext function using while-based generator
-                        let moveNextFuncOp = SeqWitness.witnessMoveNextWhileBased
-                                                whileBasedInfo
-                                                emitCondition
-                                                emitYieldValue
-                                                emitPostYield
-                                                emitPreYield
-                                                emitInit
-                                                emitYieldCondition
+                        // TODO: XParsec integration (January 2026)
+                        // Seq MoveNext witnessing should use zipper navigation + XParsec pull pattern
+                        // NOT callback-based emit functions
+                        // For now, generate placeholder that fails at runtime for Seq samples
+                        let moveNextFuncOp = SeqWitness.witnessMoveNextPlaceholder whileBasedInfo.MoveNextName whileBasedInfo.SeqStructType elementType
 
                         // Add MoveNext to top-level
                         if not (emittedFunctions.Contains(moveNextName)) then

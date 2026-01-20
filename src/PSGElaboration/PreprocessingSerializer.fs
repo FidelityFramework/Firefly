@@ -15,7 +15,9 @@ module PSGElaboration.PreprocessingSerializer
 
 open System.IO
 open System.Text.Json
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open PSGElaboration.Coeffects
 open PSGElaboration.SSAAssignment
 open Alex.Dialects.Core.Types

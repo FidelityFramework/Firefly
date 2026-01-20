@@ -2,7 +2,7 @@
 name = "Closures"
 version = "0.1.0"
 description = "Demonstrates closures and captured variable state"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

@@ -17,8 +17,9 @@
 /// Navigation is O(1). We can always reconstruct the full tree by walking up.
 module Alex.Traversal.PSGZipper
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open PSGElaboration.Coeffects
 open PSGElaboration.SSAAssignment

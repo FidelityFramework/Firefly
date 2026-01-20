@@ -7,6 +7,7 @@
 /// NO sprintf. NO string formatting. Just data construction.
 module Alex.Dialects.Func.Templates
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════════════════════

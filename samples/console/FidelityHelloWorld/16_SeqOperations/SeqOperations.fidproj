@@ -2,7 +2,7 @@
 name = "SeqOperations"
 version = "0.1.0"
 description = "Sample 16: Sequence Operations (PRD-16)"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

@@ -10,12 +10,13 @@
 /// NO sprintf. NO platform-specific logic. Just dispatch coordination.
 module Alex.Witnesses.Application.Platform
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.Bindings.BindingTypes
 open Alex.CodeGeneration.TypeMapping
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RESULT CONVERSION

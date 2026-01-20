@@ -2,7 +2,7 @@
 name = "Records"
 version = "0.1.0"
 description = "Demonstrates record types, field access, and copy-update syntax"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

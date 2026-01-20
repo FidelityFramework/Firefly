@@ -2,7 +2,7 @@
 name = "Recursion"
 version = "0.1.0"
 description = "Demonstrates recursive functions and tail recursion"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

@@ -8,7 +8,9 @@
 /// Migrated from ApplicationWitness.fs emitIntToString, emitFloatToString, emitStringToInt
 module Alex.Witnesses.Application.Format
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Dialects.SCF.Templates
 open Alex.Traversal.PSGZipper

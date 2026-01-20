@@ -5,6 +5,7 @@
 /// The fold accumulates what bindings return via withOps.
 module Alex.Bindings.BindingTypes
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.Bindings.PlatformTypes
@@ -53,7 +54,7 @@ type ExternalDeclaration = {
 
 /// A binding takes nodeId (for pre-assigned SSAs), zipper, and primitive, RETURNS ops
 /// SSAs are pre-allocated during SSAAssignment pass (coeffects pattern)
-type Binding = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.NodeId -> PSGZipper -> PlatformPrimitive -> BindingResult
+type Binding = NodeId -> PSGZipper -> PlatformPrimitive -> BindingResult
 
 // ===================================================================
 // Platform Dispatch Registry
@@ -79,7 +80,7 @@ module PlatformDispatch =
 
     /// Dispatch: Returns BindingResult (ops + result or NotSupported)
     /// nodeId is used to get pre-assigned SSAs from coeffects
-    let dispatch (nodeId: FSharp.Native.Compiler.PSGSaturation.SemanticGraph.NodeId) (zipper: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
+    let dispatch (nodeId: NodeId) (zipper: PSGZipper) (prim: PlatformPrimitive) : BindingResult =
         let platform = getTargetPlatform()
         let key = (platform.OS, platform.Arch, prim.EntryPoint)
         match Map.tryFind key bindings with

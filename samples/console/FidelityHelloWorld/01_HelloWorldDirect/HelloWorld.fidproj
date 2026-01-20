@@ -2,7 +2,7 @@
 name = "HelloWorldDirect"
 version = "0.1.0"
 description = "HelloWorld with direct module calls"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

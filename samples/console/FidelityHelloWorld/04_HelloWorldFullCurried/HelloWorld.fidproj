@@ -5,7 +5,7 @@
 name = "HelloWorldFullCurried"
 version = "0.1.0"
 description = "HelloWorld with full currying, lambdas, and higher-order functions"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

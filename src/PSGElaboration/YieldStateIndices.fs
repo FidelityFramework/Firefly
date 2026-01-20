@@ -25,8 +25,9 @@
 ///    - Shared blocks: check, yield, done
 module PSGElaboration.YieldStateIndices
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
-open FSharp.Native.Compiler.Checking.Native.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INTERNAL STATE TRACKING
@@ -132,7 +133,7 @@ let private isLiteralBool (graph: SemanticGraph) (nodeId: NodeId) : bool option 
     match SemanticGraph.tryGetNode nodeId graph with
     | Some node ->
         match node.Kind with
-        | SemanticKind.Literal (LiteralValue.Bool b) -> Some b
+        | SemanticKind.Literal (NativeLiteral.Bool b) -> Some b
         | _ -> None
     | None -> None
 

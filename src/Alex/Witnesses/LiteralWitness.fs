@@ -6,7 +6,9 @@
 /// SSAs come from pre-computed SSAAssignment coeffect, NOT freshSynthSSA.
 module Alex.Witnesses.LiteralWitness
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Dialects.Arith.Templates
 open Alex.Dialects.LLVM.Templates
@@ -48,98 +50,55 @@ let private getStringSSAs (nodeId: NodeId) (z: PSGZipper) : SSA * SSA * SSA * SS
 /// SSAs are looked up from pre-computed SSAAssignment coeffect.
 /// nodeId: The ID of the literal node being witnessed (passed from traversal)
 /// Returns: (operations generated, result info)
-let witness (z: PSGZipper) (nodeId: NodeId) (lit: LiteralValue) : MLIROp list * TransferResult =
-    // The TYPE of a literal comes from FNCS via node.Type, not from the literal representation.
-    // LiteralValue.Int32 means "value fits in 32 bits", NOT "type is i32".
-    // Example: `let x : int = 10` has type `int` (PlatformWord → i64), stored as Int32.
-    let literalType =
-        match SemanticGraph.tryGetNode nodeId z.Graph with
-        | Some node -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch z.State.Platform.TargetArch node.Type
-        | None -> failwithf "Literal node %A not found in graph - pipeline bug" nodeId
+///
+/// PRINCIPLED DESIGN (January 2026):
+/// The NTUKind in the literal IS the type. We use mapNTUKindToMLIRType to get
+/// the correct MLIR type with architecture awareness (e.g., nativeint → i32 or i64).
+let witness (z: PSGZipper) (nodeId: NodeId) (lit: NativeLiteral) : MLIROp list * TransferResult =
+    let arch = z.State.Platform.TargetArch
 
     match lit with
-    | LiteralValue.Unit ->
-        // Unit is represented as i32 0 (consistent with C ABI)
+    | NativeLiteral.Unit ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, 0L, MLIRTypes.i32))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i32 }
+        let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUunit
+        let op = MLIROp.ArithOp (ConstI (ssaName, 0L, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
-    | LiteralValue.Bool b ->
+    | NativeLiteral.Bool b ->
         let value = if b then 1L else 0L
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, value, MLIRTypes.i1))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i1 }
+        let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUbool
+        let op = MLIROp.ArithOp (ConstI (ssaName, value, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
-    | LiteralValue.Int8 n ->
+    // Integer literals: NTUKind IS the type, resolved per architecture
+    | NativeLiteral.Int (n, kind) ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
+        let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
+        let op = MLIROp.ArithOp (ConstI (ssaName, n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
-    // Integer literals: literalType is THE type, period.
-    // The literal representation (Int16, Int32, Int64) is value storage, not type.
-    
-    | LiteralValue.Int16 n ->
+    // Unsigned integers where value > int64.MaxValue
+    | NativeLiteral.UInt (n, kind) ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
+        let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
-    | LiteralValue.Int32 n ->
+    | NativeLiteral.Char c ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
+        let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUchar
+        let op = MLIROp.ArithOp (ConstI (ssaName, int64 c, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
-    | LiteralValue.Int64 n ->
+    // Float literals: NTUKind determines f32 vs f64
+    | NativeLiteral.Float (f, kind) ->
         let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
+        let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
+        let op = MLIROp.ArithOp (ConstF (ssaName, f, ty))
+        [op], TRValue { SSA = ssaName; Type = ty }
 
-    | LiteralValue.UInt8 n ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
-
-    | LiteralValue.UInt16 n ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
-
-    | LiteralValue.UInt32 n ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
-
-    | LiteralValue.UInt64 n ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
-
-    | LiteralValue.NativeInt n ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
-
-    | LiteralValue.UNativeInt n ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 n, literalType))
-        [op], TRValue { SSA = ssaName; Type = literalType }
-
-    | LiteralValue.Char c ->
-        // Char is i32 (Unicode codepoint)
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstI (ssaName, int64 c, MLIRTypes.i32))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.i32 }
-
-    | LiteralValue.Float32 f ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstF (ssaName, float f, MLIRTypes.f32))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.f32 }
-
-    | LiteralValue.Float64 f ->
-        let ssaName = getSingleSSA nodeId z
-        let op = MLIROp.ArithOp (ConstF (ssaName, f, MLIRTypes.f64))
-        [op], TRValue { SSA = ssaName; Type = MLIRTypes.f64 }
-
-    | LiteralValue.String s ->
+    | NativeLiteral.String s ->
         // Native string: fat pointer struct { ptr: !llvm.ptr, len: i64 }
         // Get pre-assigned SSAs for all 5 operations
         let (ptrSSA, lenSSA, undefSSA, withPtrSSA, fatPtrSSA) = getStringSSAs nodeId z

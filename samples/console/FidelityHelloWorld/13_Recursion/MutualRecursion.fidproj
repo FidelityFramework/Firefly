@@ -2,7 +2,7 @@
 name = "MutualRecursion"
 version = "0.1.0"
 description = "Minimal mutual recursion test"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]

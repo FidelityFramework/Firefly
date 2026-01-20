@@ -2,7 +2,7 @@
 name = "BitsTest"
 version = "0.1.0"
 description = "Test Bits intrinsics (byte order, bit casting)"
-authors = ["SpeakEZ LLC"]
+authors = ["SpeakEZ Technologies, Inc."]
 license = "MIT"
 
 [compilation]
