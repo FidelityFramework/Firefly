@@ -11,112 +11,12 @@
 /// - Knows MLIR expansion costs: one PSG node may need multiple SSAs
 module PSGElaboration.SSAAssignment
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open FSharp.Native.Compiler.Checking.Native.UnionFind
 open Alex.Dialects.Core.Types
 open Alex.Bindings.PlatformTypes
-
-// ═══════════════════════════════════════════════════════════════════════════
-// SSA ALLOCATION FOR NODES
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// SSA allocation for a node - supports multi-SSA expansion
-/// SSAs are in emission order; Result is the final SSA (what gets returned/used)
-type NodeSSAAllocation = {
-    /// All SSAs for this node in emission order
-    SSAs: SSA list
-    /// The result SSA (always the last one)
-    Result: SSA
-}
-
-module NodeSSAAllocation =
-    let single (ssa: SSA) = { SSAs = [ssa]; Result = ssa }
-    let multi (ssas: SSA list) =
-        match ssas with
-        | [] -> failwith "NodeSSAAllocation requires at least one SSA"
-        | _ -> { SSAs = ssas; Result = List.last ssas }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// CLOSURE LAYOUT (Coeffect for Closing Lambdas)
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// For Lambdas with captures, we pre-compute the complete closure layout.
-// This is deterministic - derived from CaptureInfo list in PSG.
-// Witnesses observe this coeffect; they do NOT compute layout during emission.
-
-/// How a variable is captured in a closure
-type CaptureMode =
-    | ByValue  // Immutable variable: copy value into env struct
-    | ByRef    // Mutable variable: store pointer to alloca in env struct
-
-/// Layout information for a single captured variable
-type CaptureSlot = {
-    /// Name of the captured variable
-    Name: string
-    /// Index in the environment struct (0, 1, 2, ...)
-    SlotIndex: int
-    /// MLIR type of the slot (value type for ByValue, ptr for ByRef)
-    SlotType: MLIRType
-    /// Source NodeId of the captured binding (for SSA lookup)
-    SourceNodeId: NodeId option
-    /// How the variable is captured
-    Mode: CaptureMode
-}
-
-/// Complete closure layout for a Lambda with captures
-/// This is the coeffect that LambdaWitness observes
-type ClosureLayout = {
-    /// The Lambda node this layout is for
-    LambdaNodeId: NodeId
-    /// Ordered list of capture slots (matches env struct field order)
-    Captures: CaptureSlot list
-    /// SSA for addressof code_ptr
-    CodeAddrSSA: SSA
-    /// SSA for undef closure struct
-    ClosureUndefSSA: SSA
-    /// SSA for insertvalue of code_ptr at [0]
-    ClosureWithCodeSSA: SSA
-    /// SSAs for insertvalue of each capture at [1..N] (one per capture)
-    CaptureInsertSSAs: SSA list
-    /// SSA for final closure result (last insertvalue)
-    ClosureResultSSA: SSA
-    /// MLIR type of the environment struct (kept for compatibility)
-    EnvStructType: MLIRType
-    /// MLIR type of the closure struct: {ptr, T0, T1, ...} = {code_ptr, captures...}
-    ClosureStructType: MLIRType
-    /// Lambda context: determines extraction base index and load struct type
-    /// RegularClosure: captures at [1..N], load ClosureStructType
-    /// LazyThunk: captures at [3..N+2], load lazy struct type
-    Context: LambdaContext
-    /// For LazyThunk: the full lazy struct type {i1, T, ptr, cap0, cap1, ...}
-    /// PRD-14 Option B: thunk receives pointer to this struct and extracts captures at indices 3+
-    LazyStructType: MLIRType option
-}
-
-/// Get the struct type to load when extracting captures from this closure
-/// For regular closures: the closure struct {code_ptr, cap0, cap1, ...}
-/// For lazy thunks: the lazy struct {computed, value, code_ptr, cap0, cap1, ...}
-/// PRD-14 Option B: thunk receives pointer to FULL lazy struct
-let closureLoadStructType (layout: ClosureLayout) : MLIRType =
-    match layout.Context with
-    | LambdaContext.RegularClosure -> layout.ClosureStructType
-    | LambdaContext.LazyThunk ->
-        // PRD-14 Option B: thunk receives pointer to the FULL lazy struct
-        // {computed: i1, value: T, code_ptr: ptr, cap0, cap1, ...}
-        match layout.LazyStructType with
-        | Some lazyType -> lazyType
-        | None -> failwith "LazyThunk context requires LazyStructType to be set"
-    | LambdaContext.SeqGenerator -> layout.ClosureStructType  // Future
-
-/// Get the base index for capture extraction based on context
-/// Regular closure: captures at indices 1, 2, ... (after code_ptr at [0])
-/// Lazy thunk: captures at indices 3, 4, ... (after computed[0], value[1], code_ptr[2])
-let closureExtractionBaseIndex (layout: ClosureLayout) : int =
-    match layout.Context with
-    | LambdaContext.RegularClosure -> 1  // Captures start at index 1
-    | LambdaContext.LazyThunk -> 3       // Captures start at index 3 (after computed, value, code_ptr)
-    | LambdaContext.SeqGenerator -> 3    // Future: similar to lazy
+open PSGElaboration.Coeffects
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STRUCTURAL SSA DERIVATION
@@ -144,24 +44,27 @@ let private literalExpansionCost (lit: LiteralValue) : int =
 /// Compute exact SSA count for Lambda based on captures list
 /// This is DETERMINISTIC - derived directly from PSG structure (captures list from FNCS)
 ///
-/// TRUE FLAT CLOSURE: For a Lambda with N captures, emission requires:
+/// CLOSURE CONSTRUCTION with heap allocation:
 /// - Simple Lambda (0 captures): 0 SSAs (emits func.func, no local value needed)
 /// - Closing Lambda (N captures):
-///   - 1 SSA: addressof for code pointer
-///   - N SSAs: (reserved for extractvalue in callee, reused as intermediate insertvalue results)
-///   - 1 SSA: undef for closure struct
-///   - 1 SSA: insertvalue for code_ptr at [0]
-///   - N SSAs: insertvalue for each capture at [1..N] (LAST one is final result)
-///   Total: 2N + 3 SSAs
-///
-/// Additionally, for mutable captures (ByRef), we need the address of the captured variable.
-/// This is handled by the captured variable's binding (alloca), not here.
+///   Flat struct construction (N + 3):
+///     - 1 SSA: addressof for code pointer
+///     - 1 SSA: undef for flat closure struct
+///     - 1 SSA: insertvalue for code_ptr at [0]
+///     - N SSAs: insertvalue for each capture at [1..N]
+///   Heap allocation (5):
+///     - 5 SSAs: posPtrSSA, posSSA, heapBaseSSA, resultPtrSSA, newPosSSA
+///   Size computation (4):
+///     - 4 SSAs: nullPtrSSA, gepSSA, sizeSSA, oneSSA
+///   Uniform pair construction (3):
+///     - 3 SSAs: pairUndefSSA, pairWithCodeSSA, closureResultSSA
+///   Total: N + 15 SSAs
 let private computeLambdaSSACost (captures: CaptureInfo list) : int =
     let n = List.length captures
     if n = 0 then
         0  // Simple function - no closure struct needed
     else
-        n + 3  // addressof + undef + insertvalue(code_ptr) + N insertvalues(captures)
+        n + 15  // flat struct (n+3) + heap (5) + size (4) + pair (3)
 
 /// Minimal NativeType to MLIRType mapping for capture slots
 /// This is a subset of TypeMapping.mapNativeType, inlined here to avoid
@@ -274,14 +177,30 @@ let private buildClosureLayout
 
     let n = List.length captures
 
-    // Extract SSAs by position for closure CONSTRUCTION (parent scope)
+    // Extract SSAs by position for closure CONSTRUCTION
+    // Flat struct construction (0 to N+2)
     let codeAddrSSA = ssas.[0]
     let undefSSA = ssas.[1]
     let withCodeSSA = ssas.[2]
-    // InsertValue SSAs for captures: ssas[3], ssas[4], ..., ssas[N+2]
     let captureInsertSSAs = ssas.[3..(n + 2)]
-    // The final result is the last insertvalue SSA
-    let resultSSA = ssas.[n + 2]
+
+    // Heap allocation (N+3 to N+7)
+    let heapPosPtrSSA = ssas.[n + 3]
+    let heapPosSSA = ssas.[n + 4]
+    let heapBaseSSA = ssas.[n + 5]
+    let heapResultPtrSSA = ssas.[n + 6]
+    let heapNewPosSSA = ssas.[n + 7]
+
+    // Size computation (N+8 to N+11)
+    let sizeNullPtrSSA = ssas.[n + 8]
+    let sizeGepSSA = ssas.[n + 9]
+    let sizeSSA = ssas.[n + 10]
+    let sizeOneSSA = ssas.[n + 11]
+
+    // Uniform pair construction (N+12 to N+14)
+    let pairUndefSSA = ssas.[n + 12]
+    let pairWithCodeSSA = ssas.[n + 13]
+    let closureResultSSA = ssas.[n + 14]
 
     // Build capture slots (structural info only - no SSAs for extraction)
     // Extraction SSAs are derived at emission time from SlotIndex
@@ -321,6 +240,10 @@ let private buildClosureLayout
                 failwithf "LazyThunk Lambda body node %d not found" (NodeId.value bodyNodeId)
         | _ -> None
 
+    // StructLoadSSA is for the CALLEE (inner function) - not from parent scope's ssas
+    // It's V(captureCount) because extraction SSAs are v0..v(N-1), body starts at v(N+1)
+    let structLoadSSA = V n
+
     {
         LambdaNodeId = lambdaNodeId
         Captures = captureSlots
@@ -328,7 +251,19 @@ let private buildClosureLayout
         ClosureUndefSSA = undefSSA
         ClosureWithCodeSSA = withCodeSSA
         CaptureInsertSSAs = captureInsertSSAs
-        ClosureResultSSA = resultSSA
+        HeapPosPtrSSA = heapPosPtrSSA
+        HeapPosSSA = heapPosSSA
+        HeapBaseSSA = heapBaseSSA
+        HeapResultPtrSSA = heapResultPtrSSA
+        HeapNewPosSSA = heapNewPosSSA
+        SizeNullPtrSSA = sizeNullPtrSSA
+        SizeGepSSA = sizeGepSSA
+        SizeSSA = sizeSSA
+        SizeOneSSA = sizeOneSSA
+        PairUndefSSA = pairUndefSSA
+        PairWithCodeSSA = pairWithCodeSSA
+        ClosureResultSSA = closureResultSSA
+        StructLoadSSA = structLoadSSA
         EnvStructType = envStructType
         ClosureStructType = closureStructType
         Context = context
@@ -717,14 +652,16 @@ let rec private assignFunctionBody
         match node.Kind with
         | SemanticKind.Lambda(_params, bodyId, captures, enclosingFuncOpt, context) ->
             // Process Lambda body in a NEW scope.
-            // Architectural fix (January 2026): Start SSA counter AFTER capture extraction SSAs.
+            // Architectural fix (January 2026): Start SSA counter AFTER capture extraction SSAs + StructLoad.
             // The body's EmissionStrategy.SeparateFunction carries the captureCount.
-            // Capture extraction emits v0, v1, ..., v(captureCount-1), so body starts at v(captureCount).
+            // SSA layout in inner function: v0..v(N-1) = extraction, vN = struct load, v(N+1)+ = body
+            // So body starts at captureCount + 1 (when there are captures) or 0 (no captures).
             let startCounter =
                 match Map.tryFind bodyId graph.Nodes with
                 | Some bodyNode ->
                     match bodyNode.EmissionStrategy with
-                    | EmissionStrategy.SeparateFunction captureCount -> captureCount
+                    | EmissionStrategy.SeparateFunction captureCount ->
+                        if captureCount > 0 then captureCount + 1 else 0
                     | _ -> 0  // Shouldn't happen - Lambda bodies are marked SeparateFunction
                 | None -> 0
             let innerStartScope = { FunctionScope.empty with Counter = startCounter }

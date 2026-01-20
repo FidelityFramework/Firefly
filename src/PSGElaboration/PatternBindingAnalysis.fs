@@ -15,7 +15,7 @@
 /// - Produces coeffects that witnesses PULL during emission
 module PSGElaboration.PatternBindingAnalysis
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 
 // ═══════════════════════════════════════════════════════════════════════════

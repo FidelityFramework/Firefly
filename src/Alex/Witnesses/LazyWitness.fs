@@ -41,7 +41,7 @@
 /// - witnessLazyForce: Uniform force - passes pointer to thunk
 module Alex.Witnesses.LazyWitness
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 

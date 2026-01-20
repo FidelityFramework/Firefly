@@ -15,7 +15,7 @@ module Core.FNCS.Integration
 
 // Re-export FNCS types for use throughout Firefly
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.NativeService
 // Baker - Post-construction semantic enrichment (peer to Checking.Native)
 // ModuleClassifications now computed lazily on SemanticGraph itself

@@ -10,7 +10,7 @@
 module Alex.Traversal.FNCSTransfer
 
 open System.Collections.Generic
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Dialects.Core.Serialize
@@ -404,6 +404,10 @@ let private transferGraphCore
                         // Default children traversal walks nothing (SeqExpr has Lambda as child, not body directly).
                         // The SeqWitness handles MoveNext generation during witnessNode.
 
+                        // Sequential: Walk children explicitly (stored in nodeIds, not node.Children)
+                        | SemanticKind.Sequential nodeIds ->
+                            nodeIds |> List.fold walk state
+
                         | _ ->
                             let semanticRefs = Reachability.getSemanticReferences node
                             let state = semanticRefs |> List.fold walk state
@@ -652,27 +656,14 @@ let private transferGraphCore
             // TypeAnnotation's node.Type IS the annotated type - provided by FNCS
             // ─────────────────────────────────────────────────────────────────
             | SemanticKind.TypeAnnotation (exprId, _) ->
-                // Check if this TypeAnnotation is unit-typed using the node's own Type
-                // FNCS sets node.Type = annotatedType during construction
-                let isUnit =
-                    match node.Type with
-                    | NativeType.TApp(tc, []) ->
-                        match tc.NTUKind with
-                        | Some NTUKind.NTUunit -> true
-                        | _ -> false
-                    | _ -> false
-                if isUnit then
-                    // Unit-typed annotation - no value to pass through
+                // TypeAnnotation is semantically transparent - pass through inner expression's result
+                // Unit IS a real type with a value (i32 0 per TypeMapping), not void
+                // If inner is a marker (Intrinsic, PlatformBinding), it has no result - that's OK
+                match recallNodeResult (NodeId.value exprId) z with
+                | Some (ssa, ty) ->
+                    z, TRValue { SSA = ssa; Type = ty }
+                | None ->
                     z, TRVoid
-                else
-                    // Non-unit annotation - pass through the inner expression's result
-                    // If inner is a marker (Intrinsic, PlatformBinding), it has no result - that's OK
-                    match recallNodeResult (NodeId.value exprId) z with
-                    | Some (ssa, ty) ->
-                        z, TRValue { SSA = ssa; Type = ty }
-                    | None ->
-                        // Inner is a marker - TypeAnnotation is also transparent
-                        z, TRVoid
 
             // ─────────────────────────────────────────────────────────────────
             // Mutable set - dispatch to witness

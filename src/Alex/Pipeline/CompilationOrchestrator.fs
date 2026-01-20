@@ -27,8 +27,8 @@ open FSharp.Native.Compiler.Project
 module FNCSPhaseConfig = FSharp.Native.Compiler.Checking.Native.Infrastructure.PhaseConfig
 
 // Import specific types to avoid shadowing Result.Error
-type FNCSDiagnosticSeverity = FSharp.Native.Compiler.PSG.SemanticGraph.NativeDiagnosticSeverity
-module FNCSSemanticGraph = FSharp.Native.Compiler.PSG.SemanticGraph
+type FNCSDiagnosticSeverity = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.NativeDiagnosticSeverity
+module FNCSSemanticGraph = FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types

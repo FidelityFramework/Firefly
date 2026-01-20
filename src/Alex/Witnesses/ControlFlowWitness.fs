@@ -12,7 +12,7 @@
 /// - LLVMTemplates for LLVM operations
 module Alex.Witnesses.ControlFlowWitness
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper

@@ -26,7 +26,7 @@
 /// 3. Call code_ptr(inner_seq_ptr) - indirect call
 module Alex.Witnesses.SeqOpWitness
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 open Alex.Witnesses.SeqWitness

@@ -38,7 +38,7 @@
 /// - witnessForEach: Emit iteration loop calling MoveNext
 module Alex.Witnesses.SeqWitness
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Traversal.PSGZipper
 

@@ -61,6 +61,7 @@
       <Compile Include="Alex/CodeGeneration/TypeMapping.fs" />
 
       <!-- PSGElaboration - MLIR-aware coeffects (peer to Alex) -->
+      <Compile Include="PSGElaboration/Coeffects.fs" />
       <Compile Include="PSGElaboration/SSAAssignment.fs" />
       <Compile Include="PSGElaboration/YieldStateIndices.fs" />
       <Compile Include="PSGElaboration/MutabilityAnalysis.fs" />

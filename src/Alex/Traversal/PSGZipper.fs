@@ -17,9 +17,10 @@
 /// Navigation is O(1). We can always reconstruct the full tree by walking up.
 module Alex.Traversal.PSGZipper
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
+open PSGElaboration.Coeffects
 open PSGElaboration.SSAAssignment
 open PSGElaboration.MutabilityAnalysis
 open PSGElaboration.StringCollection
@@ -78,10 +79,6 @@ type EmissionState = {
     // ─────────────────────────────────────────────────────────────────────────
     /// Counter for lambda names
     mutable NextLambdaId: int
-
-    /// Counter for synthetic SSAs (used for closure construction, etc.)
-    /// Starts at 10000 to avoid conflicts with pre-assigned SSAs
-    mutable NextSynthSSAId: int
 
     // ─────────────────────────────────────────────────────────────────────────
     // ACCUMULATED OUTPUT
@@ -219,7 +216,6 @@ module EmissionState =
             Platform = platform
             PatternBindings = patternBindings
             NextLambdaId = maxLambdaId + 1
-            NextSynthSSAId = 10000  // Start at 10000 to avoid conflicts with pre-assigned SSAs
             CurrentOps = []
             TopLevel = []
             Strings = stringTable  // Pre-collected, immutable coeffect
@@ -800,13 +796,6 @@ let yieldLambdaName (z: PSGZipper) : string =
     let id = z.State.NextLambdaId
     z.State.NextLambdaId <- id + 1
     sprintf "lambda_%d" id
-
-/// Generate a fresh synthetic SSA (for closure construction and other synthesized code)
-/// These SSAs start at 10000 to avoid conflicts with pre-assigned node SSAs
-let freshSynthSSA (z: PSGZipper) : SSA =
-    let id = z.State.NextSynthSSAId
-    z.State.NextSynthSSAId <- id + 1
-    V id
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SCOPE ACCESSORS

@@ -8,7 +8,7 @@
 /// (freestanding vs console, syscall vs libc) are resolved here.
 module PSGElaboration.PlatformBindingResolution
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open PSGElaboration.PlatformConfig
 open Alex.Bindings.PlatformTypes
 open Alex.Dialects.Core.Types

@@ -24,7 +24,7 @@
 /// Serena memory `mlir_dialect_architecture` for the full specification.
 module Alex.Witnesses.Application.Witness
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open FSharp.Native.Compiler.Checking.Native.NativeTypes
 open Alex.Dialects.Core.Types
 // NOTE: LLVM.Templates imported for struct ops (extractvalue, etc.) and indirect calls.
@@ -104,42 +104,24 @@ and private tryGetClosureFromBody (nodeId: NodeId) (z: PSGZipper) : MLIRType opt
     | None -> None
 
 // ═══════════════════════════════════════════════════════════════════════════
-// UNIT TYPE DETECTION
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Check if a NativeType is the unit type (void semantics)
-let private isUnitType (ty: NativeType) : bool =
-    match ty with
-    | NativeType.TApp(tycon, _) when tycon.Name = "unit" -> true
-    | _ -> false
-
-// ═══════════════════════════════════════════════════════════════════════════
 // ARGUMENT RESOLUTION
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Resolve argument node IDs to Val (SSA + type)
-/// CRITICAL: Use recallNodeResult to get ACTUAL emitted SSAs from NodeBindings,
-/// not lookupNodeSSA which only gets pre-assigned SSAs from SSAAssignment.
-/// For nested Applications, child results are in NodeBindings.
 let private resolveArgs (argNodeIds: NodeId list) (z: PSGZipper) : Val list =
     argNodeIds
     |> List.choose (fun nodeId ->
-        // Check if the argument node has Unit type - if so, drop it from the call
-        // This aligns with FNCS behavior where unit parameters are omitted from Lambda definitions
         let isUnitArg =
             match SemanticGraph.tryGetNode nodeId z.Graph with
-            | Some node -> isUnitType node.Type
+            | Some node ->
+                match node.Type with
+                | NativeType.TApp(tc, _) when tc.Name = "unit" -> true
+                | _ -> false
             | None -> false
-
         if isUnitArg then None
         else
-            // Get ACTUAL emitted SSA from NodeBindings (post-order traversal result)
-            // NO FALLBACK: Either it's there or we fail - no silent wrong SSA
             match recallNodeResult (NodeId.value nodeId) z with
-            | Some (ssa, ty) ->
-                Some { SSA = ssa; Type = ty }
-            | None ->
-                failwithf "resolveArgs: No result in NodeBindings for arg node %d. Child must be processed in post-order before parent." (NodeId.value nodeId))
+            | Some (ssa, ty) -> Some { SSA = ssa; Type = ty }
+            | None -> failwithf "No result for arg %d" (NodeId.value nodeId))
 
 /// Resolve function node to its SemanticKind
 /// Looks through TypeAnnotation nodes to find the underlying function
@@ -1167,18 +1149,12 @@ let witness
                             | Some (ops, result) ->
                                 ops, result
                             | None ->
-                                // Regular function call - emit func.call
-                                if isUnitType returnType then
-                                    let callOp = MLIROp.FuncOp (FuncOp.FuncCall (None, funcName, args, mlirReturnType))
-                                    [callOp], TRVoid
-                                else
-                                    match lookupNodeSSA appNodeId z with
-                                    | Some resultSSA ->
-                                        let effectiveRetType = mlirReturnType
-                                        let callOp = MLIROp.FuncOp (FuncOp.FuncCall (Some resultSSA, funcName, args, effectiveRetType))
-                                        [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
-                                    | None ->
-                                        [], TRError (sprintf "No SSA assigned for function call result: %s" funcName)
+                                match lookupNodeSSA appNodeId z with
+                                | Some resultSSA ->
+                                    let callOp = MLIROp.FuncOp (FuncOp.FuncCall (Some resultSSA, funcName, args, mlirReturnType))
+                                    [callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
+                                | None ->
+                                    [], TRError (sprintf "No SSA for call: %s" funcName)
                 | None ->
                     [], TRError (sprintf "No SSA assigned for application result: %s" funcName)
             else
@@ -1248,25 +1224,21 @@ let witness
                                     | None -> None
                             match closureSSAOpt with
                             | Some (closureSSA, closureType) ->
-                                let codePtrSSA = freshSynthSSA z
-                                let envPtrSSA = freshSynthSSA z
+                                // Closure call extraction requires 2 SSAs: code_ptr and env_ptr
+                                let ssas = requireNodeSSAs appNodeId z
+                                let codePtrSSA = ssas.[0]
+                                let envPtrSSA = ssas.[1]
                                 let extractCodeOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (codePtrSSA, closureSSA, [0], closureType))
                                 let extractEnvOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (envPtrSSA, closureSSA, [1], closureType))
                                 
-                                // Pass ONLY the environment pointer (Arg 0)
                                 let envArg = { SSA = envPtrSSA; Type = MLIRTypes.ptr }
                                 let callArgs = envArg :: args
-                                
-                                if isUnitType returnType then
-                                    let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (None, codePtrSSA, callArgs, mlirReturnType))
-                                    [extractCodeOp; extractEnvOp; callOp], TRVoid
-                                else
-                                    match lookupNodeSSA appNodeId z with
-                                    | Some resultSSA ->
-                                        let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (Some resultSSA, codePtrSSA, callArgs, mlirReturnType))
-                                        [extractCodeOp; extractEnvOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
-                                    | None ->
-                                        [], TRError (sprintf "No SSA assigned for closure call result: %s" name)
+                                match lookupNodeSSA appNodeId z with
+                                | Some resultSSA ->
+                                    let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (Some resultSSA, codePtrSSA, callArgs, mlirReturnType))
+                                    [extractCodeOp; extractEnvOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
+                                | None ->
+                                    [], TRError (sprintf "No SSA for closure call: %s" name)
                             | None ->
                                 [], TRError (sprintf "Closure '%s' not bound in scope" name)
                         else
@@ -1299,21 +1271,12 @@ let witness
                                 [], TRError (String.concat "; " captureErrors)
                             else
                                 let allArgs = captureArgs @ args
-                                // DIALECT BOUNDARY: Direct calls by name use func.call (portable)
-                                // Only indirect calls through pointers use llvm.call
-                                if isUnitType returnType then
-                                    // Void function - direct call by name
-                                    let callOp = MLIROp.FuncOp (FuncOp.FuncCall (None, funcName, allArgs, mlirReturnType))
-                                    [callOp], TRVoid
-                                else
-                                    match lookupNodeSSA appNodeId z with
-                                    | Some resultSSA ->
-                                        let effectiveRetType = mlirReturnType
-                                        // Direct call by name - use func.call (not llvm.call)
-                                        let callOp = MLIROp.FuncOp (FuncOp.FuncCall (Some resultSSA, funcName, allArgs, effectiveRetType))
-                                        [callOp], TRValue { SSA = resultSSA; Type = effectiveRetType }
-                                    | None ->
-                                        [], TRError (sprintf "No SSA assigned for function call result: %s" funcName)
+                                match lookupNodeSSA appNodeId z with
+                                | Some resultSSA ->
+                                    let callOp = MLIROp.FuncOp (FuncOp.FuncCall (Some resultSSA, funcName, allArgs, mlirReturnType))
+                                    [callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
+                                | None ->
+                                    [], TRError (sprintf "No SSA for call: %s" funcName)
 
         // Nested Application - the function is itself an Application result (closure)
         // This happens with curried functions: App(App(makeCounter, [0]), [_eta0])
@@ -1326,28 +1289,21 @@ let witness
             | Some (closureSSA, closureType) ->
                 // The result is a closure pair {code_ptr, env_ptr}
                 // Do an indirect call through code_ptr, passing env_ptr as first arg
-                let codePtrSSA = freshSynthSSA z
-                let envPtrSSA = freshSynthSSA z
+                // Nested closure call extraction requires 2 SSAs: code_ptr and env_ptr
+                let ssas = requireNodeSSAs appNodeId z
+                let codePtrSSA = ssas.[0]
+                let envPtrSSA = ssas.[1]
 
-                // Extract code_ptr (index 0) and env_ptr (index 1)
                 let extractCodeOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (codePtrSSA, closureSSA, [0], closureType))
                 let extractEnvOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (envPtrSSA, closureSSA, [1], closureType))
-
-                // Pass ONLY the environment pointer (Arg 0)
                 let envArg = { SSA = envPtrSSA; Type = MLIRTypes.ptr }
                 let callArgs = envArg :: args
-
-                // Indirect call through code_ptr
-                if isUnitType returnType then
-                    let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (None, codePtrSSA, callArgs, mlirReturnType))
-                    [extractCodeOp; extractEnvOp; callOp], TRVoid
-                else
-                    match lookupNodeSSA appNodeId z with
-                    | Some resultSSA ->
-                        let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (Some resultSSA, codePtrSSA, callArgs, mlirReturnType))
-                        [extractCodeOp; extractEnvOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
-                    | None ->
-                        [], TRError (sprintf "No SSA assigned for nested closure call result")
+                match lookupNodeSSA appNodeId z with
+                | Some resultSSA ->
+                    let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (Some resultSSA, codePtrSSA, callArgs, mlirReturnType))
+                    [extractCodeOp; extractEnvOp; callOp], TRValue { SSA = resultSSA; Type = mlirReturnType }
+                | None ->
+                    [], TRError "No SSA for nested closure call"
             | None ->
                 [], TRError (sprintf "Nested Application result not found in NodeBindings: %d" (NodeId.value funcNodeId))
 

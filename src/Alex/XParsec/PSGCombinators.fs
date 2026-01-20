@@ -11,7 +11,7 @@
 /// - Curried applications: f a b c
 module Alex.XParsec.PSGCombinators
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open Alex.Traversal.PSGZipper
 
 // ═══════════════════════════════════════════════════════════════════════════

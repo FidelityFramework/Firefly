@@ -6,7 +6,7 @@
 /// SSAs come from pre-computed SSAAssignment coeffect, NOT freshSynthSSA.
 module Alex.Witnesses.LiteralWitness
 
-open FSharp.Native.Compiler.PSG.SemanticGraph
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph
 open Alex.Dialects.Core.Types
 open Alex.Dialects.Arith.Templates
 open Alex.Dialects.LLVM.Templates
