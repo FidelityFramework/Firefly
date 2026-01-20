@@ -311,10 +311,19 @@ The wrapper struct creation performs **value copies**:
 
 ### 4.1 Seq Module Intrinsics
 
-**File**: `~/repos/fsnative/src/Compiler/Checking.Native/CheckExpressions.fs`
+**File**: `~/repos/fsnative/src/Compiler/NativeTypedTree/Expressions/Intrinsics.fs`
+
+> **Note (January 2026)**: `Seq.empty` was added early to FNCS to unblock BAREWire dependency resolution.
+> This is a foundational sequence producer that belongs conceptually between PRD-15 (seq expressions)
+> and PRD-16 (seq operations). Added here for convenience given shared PRD boundaries.
 
 ```fsharp
 // Seq intrinsic module
+| "Seq.empty" ->
+    // seq<'T> - Returns an empty sequence (polymorphic value)
+    let ty = NativeType.TForall([tyParamSpecT], seqT)
+    Resolved (mkIntrinsic IntrinsicModule.Seq op IntrinsicCategory.Pure fullName, ty)
+
 | "Seq.map" ->
     // ('a -> 'b) -> seq<'a> -> seq<'b>
     let aVar = freshTypeVar ()

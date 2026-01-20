@@ -28,13 +28,16 @@ All PRDs assume familiarity with:
 
 ## PRD Index
 
-### Phase A: Foundation (Samples 11-13)
+### Phase A: Foundation (Samples 11-13a)
 
 | PRD | Feature | Sample | Status |
 |-----|---------|--------|--------|
 | [PRD-11](./PRD-11-Closures.md) | MLKit-Style Flat Closures | 11_Closures | In Progress |
 | [PRD-12](./PRD-12-HigherOrderFunctions.md) | Higher-Order Functions | 12_HigherOrderFunctions | Planned |
 | [PRD-13](./PRD-13-Recursion.md) | Recursive Bindings | 13_Recursion | Planned |
+| [PRD-13a](./PRD-13a-CoreCollections.md) | **Core Collections + Range Expressions** | 13a_Collections | **Planned - Priority** |
+
+> **Note**: PRD-13a fills critical gaps - eager collection types (List/Map/Set) and idiomatic range expressions (`[1..10]`, `[|1..2..10|]`) that virtually every F# program uses. It unblocks BAREWire and establishes foundations before lazy sequences.
 
 ### Phase B: Lazy Stack (Samples 14-16)
 
@@ -133,6 +136,9 @@ Sample 11 (Closures)
     │                              ▲
     │                              │
 Sample 13 (Recursion)              │
+    │                              │
+    ▼                              │
+Sample 13a (Collections) ──────────┤   ← PRIORITY: List/Map/Set (BAREWire unblock)
     │                              │
     ▼                              │
 Sample 14 (Lazy) ──────────────────┤   ← Foundation: single deferred value
