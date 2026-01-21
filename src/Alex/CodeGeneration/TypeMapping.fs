@@ -237,6 +237,12 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
         let elemMlir = mapNativeTypeForArch arch elemTy
         TStruct [TInt I32; elemMlir; TPtr]  // Flat: state, current, moveNext_ptr
 
+    // PRD-15/16: SeqEnumerator<T> - mutable iteration state over a seq
+    // { seq_ptr: ptr, state: i32, current: T, hasValue: i1 }
+    | NativeType.TSeqEnumerator elemTy ->
+        let elemMlir = mapNativeTypeForArch arch elemTy
+        TStruct [TPtr; TInt I32; elemMlir; TInt I1]  // seq_ptr, state, current, hasValue
+
     // PRD-13a: Immutable collection types - all are reference types (pointer to nodes)
     | NativeType.TList _ -> TPtr  // Pointer to cons cell
     | NativeType.TMap _ -> TPtr   // Pointer to tree root
