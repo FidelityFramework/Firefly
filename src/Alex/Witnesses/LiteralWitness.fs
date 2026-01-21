@@ -36,11 +36,11 @@ let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA li
     | Some ssas -> ssas
     | None -> failwithf "No SSAs for node %A" nodeId
 
-/// Get single SSA (for simple literals that expand to 1 op)
+/// Get result SSA for a node (the final SSA from its allocation)
 let private getSingleSSA (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA =
-    match requireSSAs nodeId ssa with
-    | [s] -> s
-    | ssas -> failwithf "Expected 1 SSA for simple literal, got %d" (List.length ssas)
+    match SSAAssign.lookupSSA nodeId ssa with
+    | Some s -> s
+    | None -> failwithf "No result SSA for node %A" nodeId
 
 /// Get 5 SSAs for string literal expansion
 let private getStringSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA * SSA * SSA * SSA * SSA =

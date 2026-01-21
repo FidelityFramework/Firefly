@@ -108,8 +108,11 @@ let private buildClosureConstruction
                         | None ->
                             match lookupSSA srcId ctx.Coeffects.SSA with
                             | Some s -> s
-                            | None -> V 0
-                    | None -> V 0
+                            | None ->
+                                failwithf "LambdaWitness: No SSA for captured variable '%s' (sourceNodeId %d)"
+                                    slot.Name (NodeId.value srcId)
+                    | None ->
+                        failwithf "LambdaWitness: No source node for captured variable '%s'" slot.Name
 
             // Use pre-computed SSA from CaptureInsertSSAs
             let nextSSA = layout.CaptureInsertSSAs.[i]

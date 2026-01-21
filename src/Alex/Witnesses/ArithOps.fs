@@ -22,11 +22,11 @@ let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA li
     | Some ssas -> ssas
     | None -> failwithf "No SSAs for node %A" nodeId
 
-/// Get single SSA for a node
+/// Get result SSA for a node (the final SSA from its allocation)
 let private requireSSA (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA =
-    match requireSSAs nodeId ssa with
-    | [s] -> s
-    | ssas -> failwithf "Expected 1 SSA for node %A, got %d" nodeId (List.length ssas)
+    match SSAAssign.lookupSSA nodeId ssa with
+    | Some s -> s
+    | None -> failwithf "No result SSA for node %A" nodeId
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE HELPERS

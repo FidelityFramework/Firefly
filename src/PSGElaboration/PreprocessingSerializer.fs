@@ -1,16 +1,17 @@
 /// Preprocessing Serializer - Serialize PSGElaboration results to intermediates
 ///
-/// This module serializes preprocessing results (SSA assignment, Lambda names,
-/// entry points, etc.) to JSON for inspection. Following the FNCS phase emission
-/// pattern, this enables architectural debugging through intermediates rather than
-/// console output.
+/// This module serializes ALL preprocessing coeffects to JSON for inspection.
+/// Following the FNCS phase emission pattern, this enables architectural
+/// debugging through intermediates rather than console output.
 ///
-/// Note: These results are "coeffects" in the sense that they are pre-computed
-/// requirements that the traversal reads from (not writes to).
+/// "Pierce the Veil" Infrastructure (January 2026):
+/// - SSA assignments: Which SSA was assigned to each node and WHY
+/// - Mutability analysis: Which bindings need alloca, which vars are modified in loops
+/// - Yield state indices: Seq state machine structure (critical for seq debugging)
+/// - Pattern bindings: What variables emerge from each pattern match
+/// - String table: All string literals and their global names
 ///
-/// CRITICAL: This serializer provides FULL visibility into SSA assignments.
-/// When debugging "wrong SSA" issues, the alex_coeffects.json file shows
-/// exactly what SSA was assigned to each node and WHY.
+/// All coeffects are serialized to alex_coeffects.json when -k flag is used.
 module PSGElaboration.PreprocessingSerializer
 
 open System.IO
@@ -20,6 +21,10 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open PSGElaboration.Coeffects
 open PSGElaboration.SSAAssignment
+open PSGElaboration.MutabilityAnalysis
+open PSGElaboration.YieldStateIndices
+open PSGElaboration.PatternBindingAnalysis
+open PSGElaboration.StringCollection
 open Alex.Dialects.Core.Types
 
 /// Detailed lambda information for debugging
@@ -65,6 +70,104 @@ type SSAAssignmentJson = {
     NodeSSAAssignments: NodeSSAAllocationJson list
     /// Closure layouts for lambdas with captures
     ClosureLayouts: ClosureLayoutJson list
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MUTABILITY ANALYSIS JSON TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serializable module-level mutable binding
+type ModuleLevelMutableJson = {
+    BindingId: int
+    Name: string
+    InitialValueId: int
+}
+
+/// Serializable mutability analysis result
+type MutabilityAnalysisJson = {
+    /// Mutable bindings whose address is taken (need alloca)
+    AddressedMutableBindings: int list
+    /// Map from loop body NodeId to modified variable names
+    ModifiedVarsInLoopBodies: (int * string list) list
+    /// Module-level mutable bindings (need LLVM globals)
+    ModuleLevelMutableBindings: ModuleLevelMutableJson list
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// YIELD STATE INDICES JSON TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serializable yield info
+type YieldInfoJson = {
+    YieldId: int
+    StateIndex: int
+    ValueId: int
+}
+
+/// Serializable internal state field
+type InternalStateFieldJson = {
+    Name: string
+    Type: string
+    BindingId: int
+    StructIndex: int
+}
+
+/// Serializable while body info
+type WhileBodyInfoJson = {
+    InitExprs: int list
+    WhileNodeId: int
+    ConditionId: int
+    PreYieldExprs: int list
+    YieldNodeId: int
+    YieldValueId: int
+    PostYieldExprs: int list
+    HasConditionalYield: bool
+    ConditionalConditionIds: int list
+}
+
+/// Serializable seq yield info
+type SeqYieldInfoJson = {
+    SeqExprId: int
+    Yields: YieldInfoJson list
+    NumYields: int
+    BodyKind: string  // "Sequential" or "WhileBased"
+    WhileBodyInfo: WhileBodyInfoJson option
+    InternalState: InternalStateFieldJson list
+}
+
+/// Serializable yield state coeffect
+type YieldStateCoeffectJson = {
+    SeqYields: SeqYieldInfoJson list
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PATTERN BINDING ANALYSIS JSON TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serializable pattern binding
+type PatternBindingJson = {
+    Name: string
+    Type: string
+}
+
+/// Serializable pattern binding analysis
+type PatternBindingAnalysisJson = {
+    /// Map from case body NodeId to bindings
+    CasePatternBindings: (int * PatternBindingJson list) list
+    /// Map from Lambda NodeId to entry bindings
+    EntryPatternBindings: (int * PatternBindingJson list) list
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING TABLE JSON TYPES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serializable string entry
+type StringEntryJson = {
+    Hash: uint32
+    GlobalName: string
+    Content: string
+    ByteLength: int
 }
 
 /// Convert SSA to JSON representation
@@ -179,7 +282,117 @@ let serializeSSAAssignment (ssa: SSAAssignment) (graph: SemanticGraph) : SSAAssi
         ClosureLayouts = closureLayouts
     }
 
-/// Serialize preprocessing results to intermediates directory
+// ═══════════════════════════════════════════════════════════════════════════
+// MUTABILITY ANALYSIS SERIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serialize mutability analysis to JSON-friendly structure
+let serializeMutabilityAnalysis (mutability: MutabilityAnalysisResult) : MutabilityAnalysisJson =
+    {
+        AddressedMutableBindings = mutability.AddressedMutableBindings |> Set.toList
+        ModifiedVarsInLoopBodies = mutability.ModifiedVarsInLoopBodies |> Map.toList
+        ModuleLevelMutableBindings =
+            mutability.ModuleLevelMutableBindings
+            |> List.map (fun m -> {
+                BindingId = m.BindingId
+                Name = m.Name
+                InitialValueId = m.InitialValueId
+            })
+    }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// YIELD STATE INDICES SERIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serialize yield state coeffect to JSON-friendly structure
+let serializeYieldStateCoeffect (yieldState: YieldStateCoeffect) : YieldStateCoeffectJson =
+    let seqYields =
+        yieldState.SeqYields
+        |> Map.toList
+        |> List.map (fun (_, seqInfo) ->
+            let bodyKind, whileInfo =
+                match seqInfo.BodyKind with
+                | SeqBodyKind.Sequential -> "Sequential", None
+                | SeqBodyKind.WhileBased info ->
+                    let whileJson = {
+                        InitExprs = info.InitExprs |> List.map NodeId.value
+                        WhileNodeId = NodeId.value info.WhileNodeId
+                        ConditionId = NodeId.value info.ConditionId
+                        PreYieldExprs = info.PreYieldExprs |> List.map NodeId.value
+                        YieldNodeId = NodeId.value info.YieldNodeId
+                        YieldValueId = NodeId.value info.YieldValueId
+                        PostYieldExprs = info.PostYieldExprs |> List.map NodeId.value
+                        HasConditionalYield = Option.isSome info.ConditionalYield
+                        ConditionalConditionIds =
+                            info.ConditionalYield
+                            |> Option.map (fun c -> c.ConditionIds |> List.map NodeId.value)
+                            |> Option.defaultValue []
+                    }
+                    "WhileBased", Some whileJson
+
+            {
+                SeqExprId = NodeId.value seqInfo.SeqExprId
+                Yields =
+                    seqInfo.Yields
+                    |> List.map (fun yi -> {
+                        YieldId = NodeId.value yi.YieldId
+                        StateIndex = yi.StateIndex
+                        ValueId = NodeId.value yi.ValueId
+                    })
+                NumYields = seqInfo.NumYields
+                BodyKind = bodyKind
+                WhileBodyInfo = whileInfo
+                InternalState =
+                    seqInfo.InternalState
+                    |> List.map (fun field -> {
+                        Name = field.Name
+                        Type = sprintf "%A" field.Type
+                        BindingId = NodeId.value field.BindingId
+                        StructIndex = field.StructIndex
+                    })
+            })
+    { SeqYields = seqYields }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PATTERN BINDING ANALYSIS SERIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serialize pattern binding analysis to JSON-friendly structure
+let serializePatternBindingAnalysis (patternBindings: PatternBindingAnalysisResult) : PatternBindingAnalysisJson =
+    let serializeBindings (bindings: PatternBindingAnalysis.PatternBinding list) =
+        bindings |> List.map (fun b -> { Name = b.Name; Type = sprintf "%A" b.Type })
+    {
+        CasePatternBindings =
+            patternBindings.CasePatternBindings
+            |> Map.toList
+            |> List.map (fun (nodeId, bindings) -> (nodeId, serializeBindings bindings))
+        EntryPatternBindings =
+            patternBindings.EntryPatternBindings
+            |> Map.toList
+            |> List.map (fun (nodeId, bindings) -> (nodeId, serializeBindings bindings))
+    }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// STRING TABLE SERIALIZATION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serialize string table to JSON-friendly structure
+let serializeStringTable (strings: StringTable) : StringEntryJson list =
+    strings
+    |> Map.toList
+    |> List.map (fun (hash, entry) -> {
+        Hash = hash
+        GlobalName = entry.GlobalName
+        Content = entry.Content
+        ByteLength = entry.ByteLength
+    })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MAIN SERIALIZATION ENTRY POINT
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Serialize ALL preprocessing coeffects to intermediates directory
+/// This is the "pierce the veil" infrastructure for debugging the nanopass pipeline
 let serialize
     (intermediatesDir: string)
     (ssaAssignment: SSAAssignment)
@@ -189,11 +402,53 @@ let serialize
     
     let coeffectsPath = Path.Combine(intermediatesDir, "alex_coeffects.json")
     
+    // Note: Full coeffects are passed via the new serializeAll function
+    // This legacy signature is maintained for backward compatibility
     let data = {|
         version = "1.0"
-        description = "PSGElaboration coeffects"
+        description = "PSGElaboration coeffects (legacy - use serializeAll for full coeffects)"
         ssaAssignment = serializeSSAAssignment ssaAssignment graph
         entryPointLambdaIds = entryPointLambdaIds |> Set.toList
+    |}
+    
+    let options = JsonSerializerOptions(WriteIndented = true)
+    let json = JsonSerializer.Serialize(data, options)
+    File.WriteAllText(coeffectsPath, json)
+
+/// Serialize ALL preprocessing coeffects to intermediates directory
+/// "Pierce the Veil" - complete visibility into nanopass infrastructure
+let serializeAll
+    (intermediatesDir: string)
+    (ssaAssignment: SSAAssignment)
+    (mutability: MutabilityAnalysisResult)
+    (yieldStates: YieldStateCoeffect)
+    (patternBindings: PatternBindingAnalysisResult)
+    (strings: StringTable)
+    (entryPointLambdaIds: Set<int>)
+    (graph: SemanticGraph)
+    : unit =
+    
+    let coeffectsPath = Path.Combine(intermediatesDir, "alex_coeffects.json")
+    
+    let data = {|
+        version = "2.0"
+        description = "PSGElaboration coeffects - complete nanopass visibility"
+        
+        // SSA Assignment (existing)
+        ssaAssignment = serializeSSAAssignment ssaAssignment graph
+        entryPointLambdaIds = entryPointLambdaIds |> Set.toList
+        
+        // Mutability Analysis (new)
+        mutability = serializeMutabilityAnalysis mutability
+        
+        // Yield State Indices (new - critical for seq debugging)
+        yieldStates = serializeYieldStateCoeffect yieldStates
+        
+        // Pattern Binding Analysis (new)
+        patternBindings = serializePatternBindingAnalysis patternBindings
+        
+        // String Table (new)
+        strings = serializeStringTable strings
     |}
     
     let options = JsonSerializerOptions(WriteIndented = true)

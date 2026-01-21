@@ -61,11 +61,12 @@ let private requireNodeSSAs (nodeId: NodeId) (ctx: WitnessContext) : SSA list =
     | Some ssas -> ssas
     | None -> failwithf "No SSAs for node %A" nodeId
 
-/// Get single SSA for a node
+/// Get result SSA for a node (the final SSA from its allocation)
+/// Nodes may have multiple SSAs for intermediate values; this returns the Result
 let private requireNodeSSA (nodeId: NodeId) (ctx: WitnessContext) : SSA =
-    match requireNodeSSAs nodeId ctx with
-    | [s] -> s
-    | ssas -> failwithf "Expected 1 SSA for node %A, got %d" nodeId (List.length ssas)
+    match SSAAssignment.lookupSSA nodeId ctx.Coeffects.SSA with
+    | Some ssa -> ssa
+    | None -> failwithf "No result SSA for node %A" nodeId
 
 /// Recall the result (SSA, type) for a previously-processed node
 let private recallNodeResult (nodeId: NodeId) (ctx: WitnessContext) : (SSA * MLIRType) option =

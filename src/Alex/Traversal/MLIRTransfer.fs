@@ -381,11 +381,41 @@ and private classifyAndWitness
         // Pre-bind parameters (pushes scope, returns MLIR params)
         let funcParams = Alex.Witnesses.LambdaWitness.preBindParams ctx node
 
+        // For entry point lambdas, emit ModuleInit bindings first (MainPrologue strategy)
+        // Per fsnative-spec/program-structure-and-execution.md: "static initializers...
+        // are executed in compilation order before the entry point function is called"
+        let moduleInitOutput =
+            if ctx.Coeffects.EntryPointLambdaIds.Contains (NodeId.value node.Id) then
+                // This Lambda is an entry point. Find its parent Binding.
+                match node.Parent with
+                | Some parentBindingId ->
+                    // Find the module whose EntryPoint matches this Binding
+                    let moduleOpt =
+                        ctx.Graph.ModuleClassifications.Value
+                        |> Map.tryPick (fun _moduleId mc ->
+                            match mc.EntryPoint with
+                            | Some epId when epId = parentBindingId -> Some mc
+                            | _ -> None)
+
+                    match moduleOpt with
+                    | Some mc ->
+                        // Only emit THIS module's ModuleInit bindings
+                        let outputs = mc.ModuleInit |> List.map (visitNode ctx z)
+                        WitnessOutput.combineAll outputs
+                    | None ->
+                        WitnessOutput.empty
+                | None ->
+                    WitnessOutput.empty
+            else
+                WitnessOutput.empty
+
         // Visit body
         let bodyOutput = visitNode ctx z bodyId
 
         // Create the body callback for witness (pull model)
-        let witnessBody = fun (_ctx: WitnessContext) -> (bodyOutput.InlineOps, bodyOutput.Result)
+        // Include moduleInit ops BEFORE body ops (static initialization order)
+        let combinedBodyOps = moduleInitOutput.InlineOps @ bodyOutput.InlineOps
+        let witnessBody = fun (_ctx: WitnessContext) -> (combinedBodyOps, bodyOutput.Result)
 
         // Witness the lambda - returns (funcDefOpt, closureOps, result)
         let funcDefOpt, closureOps, result =
@@ -394,8 +424,8 @@ and private classifyAndWitness
         // Function definition goes to TopLevelOps (returned, not mutated)
         let topLevelOps =
             match funcDefOpt with
-            | Some funcDef -> funcDef :: bodyOutput.TopLevelOps
-            | None -> bodyOutput.TopLevelOps
+            | Some funcDef -> funcDef :: (moduleInitOutput.TopLevelOps @ bodyOutput.TopLevelOps)
+            | None -> moduleInitOutput.TopLevelOps @ bodyOutput.TopLevelOps
 
         { InlineOps = closureOps
           TopLevelOps = topLevelOps
@@ -468,11 +498,159 @@ and private classifyAndWitness
         WitnessOutput.empty
 
     // ─────────────────────────────────────────────────────────────────────
-    // UNHANDLED
+    // FIELD GET - struct.field or record.field access
     // ─────────────────────────────────────────────────────────────────────
-    | _ ->
-        let msg = sprintf "MLIRTransfer: Unhandled node kind %A at node %d" node.Kind (NodeId.value node.Id)
-        WitnessOutput.error msg
+    | SemanticKind.FieldGet (structId, fieldName) ->
+        let structOutput = visitNode ctx z structId
+        match structOutput.Result with
+        | TRValue v ->
+            // Get the struct type to find field index
+            match SemanticGraph.tryGetNode structId ctx.Graph with
+            | Some structNode ->
+                let structNativeType = structNode.Type
+                let structMlirType = mapNativeType structNativeType
+                let fieldMlirType = mapNativeType node.Type
+
+                // Find field index from struct type
+                let fieldIndex =
+                    match structNativeType with
+                    | NativeType.TApp (tc, _) ->
+                        // Look up field index from type constructor's field list
+                        match tc.Name with
+                        | "string" ->
+                            // String has Pointer at 0, Length at 1
+                            if fieldName = "Pointer" then 0 elif fieldName = "Length" then 1 else 0
+                        | _ ->
+                            // TODO: Look up from type definition
+                            0
+                    | _ -> 0
+
+                let fieldOps, fieldResult =
+                    Alex.Witnesses.MemoryWitness.witnessFieldGet node.Id ctx v.SSA structMlirType fieldIndex fieldMlirType
+
+                // Record the result for later recall
+                match fieldResult with
+                | TRValue fv -> MLIRAccumulator.bindNode (NodeId.value node.Id) fv.SSA fv.Type acc
+                | _ -> ()
+
+                { InlineOps = structOutput.InlineOps @ fieldOps
+                  TopLevelOps = structOutput.TopLevelOps
+                  Result = fieldResult }
+            | None ->
+                WitnessOutput.error (sprintf "FieldGet: struct node %d not found" (NodeId.value structId))
+        | TRError msg ->
+            { structOutput with Result = TRError msg }
+        | _ ->
+            WitnessOutput.error (sprintf "FieldGet: struct expression has no value")
+
+    // ─────────────────────────────────────────────────────────────────────
+    // EXPLICIT NOT-YET-IMPLEMENTED CASES
+    // Each semantic kind must be explicitly listed for proper diagnostics
+    // ─────────────────────────────────────────────────────────────────────
+    | SemanticKind.Match _ ->
+        WitnessOutput.error (sprintf "Match expressions not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.ForLoop _ ->
+        WitnessOutput.error (sprintf "ForLoop not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.ForEach _ ->
+        WitnessOutput.error (sprintf "ForEach not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TryWith _ ->
+        WitnessOutput.error (sprintf "TryWith not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TryFinally _ ->
+        WitnessOutput.error (sprintf "TryFinally not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.RecordExpr _ ->
+        WitnessOutput.error (sprintf "RecordExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.UnionCase _ ->
+        WitnessOutput.error (sprintf "UnionCase not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TupleExpr _ ->
+        WitnessOutput.error (sprintf "TupleExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.ArrayExpr _ ->
+        WitnessOutput.error (sprintf "ArrayExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.ListExpr _ ->
+        WitnessOutput.error (sprintf "ListExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.FieldSet _ ->
+        WitnessOutput.error (sprintf "FieldSet not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.IndexGet _ ->
+        WitnessOutput.error (sprintf "IndexGet not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.IndexSet _ ->
+        WitnessOutput.error (sprintf "IndexSet not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.NamedIndexedPropertySet _ ->
+        WitnessOutput.error (sprintf "NamedIndexedPropertySet not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.Upcast _ ->
+        WitnessOutput.error (sprintf "Upcast not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.Downcast _ ->
+        WitnessOutput.error (sprintf "Downcast not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TypeTest _ ->
+        WitnessOutput.error (sprintf "TypeTest not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.AddressOf (targetId, _isByref) ->
+        // AddressOf takes the address of a variable/expression
+        // For mutable locals, this returns the alloca pointer
+        // For immutable locals, this might require creating a temp alloca
+        match SemanticGraph.tryGetNode targetId ctx.Graph with
+        | Some targetNode ->
+            match targetNode.Kind with
+            | SemanticKind.VarRef (name, defIdOpt) ->
+                // Check if this is a mutable variable with an alloca
+                match MLIRAccumulator.recallVar name acc with
+                | Some (ssa, ty) ->
+                    // The SSA might be the value or the alloca pointer
+                    // For mutable variables, the accumulator stores the alloca pointer
+                    // Return it directly as the address
+                    WitnessOutput.value { SSA = ssa; Type = MLIRTypes.ptr }
+                | None ->
+                    // Try looking up by defId
+                    match defIdOpt with
+                    | Some defId ->
+                        match MLIRAccumulator.recallNode (NodeId.value defId) acc with
+                        | Some (ssa, _ty) ->
+                            // Return the binding's SSA as the address
+                            WitnessOutput.value { SSA = ssa; Type = MLIRTypes.ptr }
+                        | None ->
+                            WitnessOutput.error (sprintf "AddressOf: variable '%s' not found in scope (node %d)" name (NodeId.value node.Id))
+                    | None ->
+                        WitnessOutput.error (sprintf "AddressOf: variable '%s' has no definition (node %d)" name (NodeId.value node.Id))
+            | _ ->
+                // Taking address of a non-VarRef expression
+                // This might require visiting the child first to compute the value
+                let childOutput = visitChildren ctx z targetNode.Children
+                match childOutput.Result with
+                | TRValue v ->
+                    // For a computed value, we'd need to alloca and store
+                    // For now, assume it's already a pointer
+                    WitnessOutput.value { SSA = v.SSA; Type = MLIRTypes.ptr }
+                | TRVoid ->
+                    WitnessOutput.error (sprintf "AddressOf: target expression has no value (node %d)" (NodeId.value node.Id))
+                | TRError msg ->
+                    WitnessOutput.error (sprintf "AddressOf: target error: %s (node %d)" msg (NodeId.value node.Id))
+        | None ->
+            WitnessOutput.error (sprintf "AddressOf: target node %d not found (node %d)" (NodeId.value targetId) (NodeId.value node.Id))
+    | SemanticKind.Deref _ ->
+        WitnessOutput.error (sprintf "Deref not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TraitCall _ ->
+        WitnessOutput.error (sprintf "TraitCall not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.Quote _ ->
+        WitnessOutput.error (sprintf "Quote not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.ObjectExpr _ ->
+        WitnessOutput.error (sprintf "ObjectExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TypeDef _ ->
+        WitnessOutput.error (sprintf "TypeDef not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.MemberDef _ ->
+        WitnessOutput.error (sprintf "MemberDef not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.InterpolatedString _ ->
+        WitnessOutput.error (sprintf "InterpolatedString not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.LazyExpr _ ->
+        WitnessOutput.error (sprintf "LazyExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.LazyForce _ ->
+        WitnessOutput.error (sprintf "LazyForce not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.SeqExpr _ ->
+        WitnessOutput.error (sprintf "SeqExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.Yield _ ->
+        WitnessOutput.error (sprintf "Yield not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.YieldBang _ ->
+        WitnessOutput.error (sprintf "YieldBang not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TupleGet _ ->
+        WitnessOutput.error (sprintf "TupleGet not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.Error msg ->
+        WitnessOutput.error (sprintf "PSG Error node: %s (node %d)" msg (NodeId.value node.Id))
 
 /// Record a result in the accumulator (for DAG handling)
 and private recordResult (nodeIdVal: int) (result: TransferResult) (acc: MLIRAccumulator) : unit =
@@ -507,6 +685,18 @@ let private wrapInModule (ops: MLIROp list) (stringTable: StringCollect.StringTa
         sb.AppendLine(sprintf "  llvm.mlir.global private constant %s(\"%s\\00\") : !llvm.array<%d x i8>"
             entry.GlobalName escaped (entry.ByteLength + 1)) |> ignore
 
+    // Closure heap globals for escaping closures
+    // @closure_pos: current allocation position (bump pointer)
+    // @closure_heap: pre-allocated buffer for closure environments
+    // TODO: Only emit when closures are actually used
+    let closureHeapSize = 65536  // 64KB - sufficient for most programs
+    sb.AppendLine(sprintf "  llvm.mlir.global internal @closure_pos(0 : i64) : i64") |> ignore
+    // MLIR requires initializer region with llvm.mlir.zero for zero-initialized arrays
+    sb.AppendLine(sprintf "  llvm.mlir.global internal @closure_heap() : !llvm.array<%d x i8> {" closureHeapSize) |> ignore
+    sb.AppendLine(sprintf "    %%0 = llvm.mlir.zero : !llvm.array<%d x i8>" closureHeapSize) |> ignore
+    sb.AppendLine(sprintf "    llvm.return %%0 : !llvm.array<%d x i8>" closureHeapSize) |> ignore
+    sb.AppendLine("  }") |> ignore
+
     // Operations (reversed since we accumulated in reverse order)
     for op in List.rev ops do
         sb.AppendLine(sprintf "  %s" (Alex.Dialects.Core.Serialize.opToString op)) |> ignore
@@ -531,10 +721,19 @@ let transferGraphWithDiagnostics
     // Compute all coeffects ONCE before traversal
     let coeffects = computeCoeffects graph isFreestanding
 
-    // Serialize coeffects if requested (debugging)
+    // Serialize ALL coeffects if requested (debugging)
+    // "Pierce the Veil" - complete visibility into nanopass infrastructure
     match intermediatesDir with
     | Some dir ->
-        PSGElaboration.PreprocessingSerializer.serialize dir coeffects.SSA coeffects.EntryPointLambdaIds graph
+        PSGElaboration.PreprocessingSerializer.serializeAll
+            dir
+            coeffects.SSA
+            coeffects.Mutability
+            coeffects.YieldStates
+            coeffects.PatternBindings
+            coeffects.Strings
+            coeffects.EntryPointLambdaIds
+            graph
     | None -> ()
 
     // Create accumulator
@@ -547,7 +746,42 @@ let transferGraphWithDiagnostics
         Graph = graph
     }
 
-    // Visit entry points - the fold accumulates TopLevelOps from returned codata
+    // Collect all reachable function definitions from all modules
+    // This ensures library functions (like Console.write) get emitted, not just entry points
+    let allFunctionBindings =
+        graph.ModuleClassifications.Value
+        |> Map.toList
+        |> List.collect (fun (_moduleId, classification) ->
+            classification.Definitions
+            |> List.filter (fun defId ->
+                // Only process reachable bindings that are functions (have Lambda child)
+                match SemanticGraph.tryGetNode defId graph with
+                | Some node when node.IsReachable ->
+                    match node.Kind with
+                    | SemanticKind.Binding _ ->
+                        // Check if this binding has a Lambda child (is a function)
+                        node.Children
+                        |> List.exists (fun childId ->
+                            match SemanticGraph.tryGetNode childId graph with
+                            | Some child ->
+                                match child.Kind with
+                                | SemanticKind.Lambda _ -> true
+                                | _ -> false
+                            | None -> false)
+                    | _ -> false
+                | _ -> false))
+        |> List.distinct
+
+    // Visit all function bindings (this emits their func.func definitions)
+    for bindingId in allFunctionBindings do
+        match PSGZipper.create graph bindingId with
+        | Some z ->
+            let _output = visitNode ctx z bindingId
+            ()
+        | None ->
+            MLIRAccumulator.addError (sprintf "Could not create zipper at function binding %A" bindingId) acc
+
+    // Visit entry points - these are module-level constructs that call the functions above
     for entryId in graph.EntryPoints do
         match PSGZipper.create graph entryId with
         | Some z ->
