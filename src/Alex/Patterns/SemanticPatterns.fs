@@ -315,6 +315,26 @@ let (|LazyOp|_|) (info: IntrinsicInfo) =
 let (|SeqOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.Seq then Some info.Operation else None
 
+/// PRD-13a: Check if intrinsic is a List operation (using IntrinsicInfo)
+/// List intrinsics: empty, isEmpty, head, tail, cons, length, map, filter, fold, rev, append, tryHead, tryFind
+let (|ListOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.List then Some info.Operation else None
+
+/// PRD-13a: Check if intrinsic is a Map operation (using IntrinsicInfo)
+/// Map intrinsics: empty, isEmpty, add, remove, tryFind, find, containsKey, count, keys, values, toList, ofList
+let (|MapOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Map then Some info.Operation else None
+
+/// PRD-13a: Check if intrinsic is a Set operation (using IntrinsicInfo)
+/// Set intrinsics: empty, isEmpty, add, remove, contains, count, union, intersect, difference, toList, ofList
+let (|SetOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Set then Some info.Operation else None
+
+/// PRD-13a: Check if intrinsic is an Option operation (using IntrinsicInfo)
+/// Option intrinsics: map, bind, defaultValue, defaultWith, isSome, isNone, get, toList
+let (|OptionOp|_|) (info: IntrinsicInfo) =
+    if info.Module = IntrinsicModule.Option then Some info.Operation else None
+
 /// Conversion function names
 let private conversionFunctions = 
     set ["int"; "int8"; "int16"; "int32"; "int64";

@@ -45,6 +45,11 @@ module SCF = Alex.Dialects.SCF.Templates
 module SSAAssignment = PSGElaboration.SSAAssignment
 module LazyWitness = Alex.Witnesses.LazyWitness
 module SeqOpWitness = Alex.Witnesses.SeqOpWitness
+// PRD-13a: Collection Witnesses
+module ListWitness = Alex.Witnesses.ListWitness
+module MapWitness = Alex.Witnesses.MapWitness
+module SetWitness = Alex.Witnesses.SetWitness
+module OptionWitness = Alex.Witnesses.OptionWitness
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SSA HELPERS (use ctx: WitnessContext)
@@ -1031,6 +1036,199 @@ let private witnessIntrinsic
 
         | _ ->
             // Other Seq operations not yet implemented
+            None
+
+    // PRD-13a: List operations
+    | ListOp opName ->
+        match opName, args with
+        | "empty", [] ->
+            let (ops, result) = ListWitness.witnessEmpty appNodeId ctx.Coeffects.SSA
+            Some (ops, result)
+        
+        | "isEmpty", [listVal] ->
+            let (ops, result) = ListWitness.witnessIsEmpty appNodeId ctx.Coeffects.SSA listVal
+            Some (ops, result)
+        
+        | "head", [listVal] ->
+            let elementType =
+                match returnType with
+                | NativeType.TList elemTy -> mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch elemTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = ListWitness.witnessHead appNodeId ctx.Coeffects.SSA listVal elementType
+            Some (ops, result)
+        
+        | "tail", [listVal] ->
+            let elementType =
+                match listVal.Type with
+                | TStruct [elemTy; TPtr] -> elemTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = ListWitness.witnessTail appNodeId ctx.Coeffects.SSA listVal elementType
+            Some (ops, result)
+        
+        | "cons", [headVal; tailVal] ->
+            let elementType = headVal.Type
+            let (ops, result) = ListWitness.witnessCons appNodeId ctx.Coeffects.SSA headVal tailVal elementType
+            Some (ops, result)
+        
+        | _ ->
+            // Other List operations (map, filter, fold, etc.) - require functional decomposition
+            None
+
+    // PRD-13a: Map operations
+    | MapOp opName ->
+        match opName, args with
+        | "empty", [] ->
+            let (ops, result) = MapWitness.witnessEmpty appNodeId ctx.Coeffects.SSA
+            Some (ops, result)
+        
+        | "isEmpty", [mapVal] ->
+            let (ops, result) = MapWitness.witnessIsEmpty appNodeId ctx.Coeffects.SSA mapVal
+            Some (ops, result)
+        
+        | "tryFind", [keyVal; mapVal] ->
+            let keyType = keyVal.Type
+            // Option is represented as TUnion, extract value type from return type if possible
+            let valueType = mlirReturnType  // Use the mapped return type
+            let (ops, result) = MapWitness.witnessTryFind appNodeId ctx.Coeffects.SSA keyVal mapVal keyType valueType
+            Some (ops, result)
+        
+        | "add", [keyVal; valueVal; mapVal] ->
+            let keyType = keyVal.Type
+            let valueType = valueVal.Type
+            let (ops, result) = MapWitness.witnessAdd appNodeId ctx.Coeffects.SSA keyVal valueVal mapVal keyType valueType
+            Some (ops, result)
+        
+        | "containsKey", [keyVal; mapVal] ->
+            let keyType = keyVal.Type
+            let (ops, result) = MapWitness.witnessContainsKey appNodeId ctx.Coeffects.SSA keyVal mapVal keyType
+            Some (ops, result)
+        
+        | "values", [mapVal] ->
+            let valueType =
+                match returnType with
+                | NativeType.TList valueTy -> mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch valueTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = MapWitness.witnessValues appNodeId ctx.Coeffects.SSA mapVal valueType
+            Some (ops, result)
+        
+        | "keys", [mapVal] ->
+            let keyType =
+                match returnType with
+                | NativeType.TList keyTy -> mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch keyTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = MapWitness.witnessKeys appNodeId ctx.Coeffects.SSA mapVal keyType
+            Some (ops, result)
+        
+        | _ ->
+            // Other Map operations - require functional decomposition or complex tree traversal
+            None
+
+    // PRD-13a: Set operations
+    | SetOp opName ->
+        match opName, args with
+        | "empty", [] ->
+            let (ops, result) = SetWitness.witnessEmpty appNodeId ctx.Coeffects.SSA
+            Some (ops, result)
+        
+        | "isEmpty", [setVal] ->
+            let (ops, result) = SetWitness.witnessIsEmpty appNodeId ctx.Coeffects.SSA setVal
+            Some (ops, result)
+        
+        | "contains", [valueVal; setVal] ->
+            let elementType = valueVal.Type
+            let (ops, result) = SetWitness.witnessContains appNodeId ctx.Coeffects.SSA valueVal setVal elementType
+            Some (ops, result)
+        
+        | "add", [valueVal; setVal] ->
+            let elementType = valueVal.Type
+            let (ops, result) = SetWitness.witnessAdd appNodeId ctx.Coeffects.SSA valueVal setVal elementType
+            Some (ops, result)
+        
+        | "remove", [valueVal; setVal] ->
+            let elementType = valueVal.Type
+            let (ops, result) = SetWitness.witnessRemove appNodeId ctx.Coeffects.SSA valueVal setVal elementType
+            Some (ops, result)
+        
+        | "union", [set1Val; set2Val] ->
+            let elementType =
+                match returnType with
+                | NativeType.TSet elemTy -> mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch elemTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = SetWitness.witnessUnion appNodeId ctx.Coeffects.SSA set1Val set2Val elementType
+            Some (ops, result)
+        
+        | "intersect", [set1Val; set2Val] ->
+            let elementType =
+                match returnType with
+                | NativeType.TSet elemTy -> mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch elemTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = SetWitness.witnessIntersect appNodeId ctx.Coeffects.SSA set1Val set2Val elementType
+            Some (ops, result)
+        
+        | "difference", [set1Val; set2Val] ->
+            let elementType =
+                match returnType with
+                | NativeType.TSet elemTy -> mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch elemTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = SetWitness.witnessDifference appNodeId ctx.Coeffects.SSA set1Val set2Val elementType
+            Some (ops, result)
+        
+        | _ ->
+            // Other Set operations - require functional decomposition
+            None
+
+    // PRD-13a: Option operations
+    | OptionOp opName ->
+        match opName, args with
+        | "isSome", [optionVal] ->
+            let valueType =
+                match optionVal.Type with
+                | TStruct [TInt I8; valTy] -> valTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = OptionWitness.witnessIsSome appNodeId ctx.Coeffects.SSA optionVal valueType
+            Some (ops, result)
+        
+        | "isNone", [optionVal] ->
+            let valueType =
+                match optionVal.Type with
+                | TStruct [TInt I8; valTy] -> valTy
+                | _ -> MLIRTypes.i64
+            let (ops, result) = OptionWitness.witnessIsNone appNodeId ctx.Coeffects.SSA optionVal valueType
+            Some (ops, result)
+        
+        | "get", [optionVal] ->
+            // Option.get returns the unwrapped value
+            let valueType = mlirReturnType
+            let (ops, result) = OptionWitness.witnessGet appNodeId ctx.Coeffects.SSA optionVal valueType
+            Some (ops, result)
+        
+        | "defaultValue", [defaultVal; optionVal] ->
+            let valueType = defaultVal.Type
+            let (ops, result) = OptionWitness.witnessDefaultValue appNodeId ctx.Coeffects.SSA defaultVal optionVal valueType
+            Some (ops, result)
+        
+        | "map", [mapperVal; optionVal] ->
+            let inputType =
+                match optionVal.Type with
+                | TStruct [TInt I8; valTy] -> valTy
+                | _ -> MLIRTypes.i64
+            // Output type from the mapped return type
+            let outputType = mlirReturnType
+            let (ops, result) = OptionWitness.witnessMap appNodeId ctx.Coeffects.SSA mapperVal optionVal inputType outputType
+            Some (ops, result)
+        
+        | "bind", [binderVal; optionVal] ->
+            let inputType =
+                match optionVal.Type with
+                | TStruct [TInt I8; valTy] -> valTy
+                | _ -> MLIRTypes.i64
+            // Output type from the mapped return type
+            let outputType = mlirReturnType
+            let (ops, result) = OptionWitness.witnessBind appNodeId ctx.Coeffects.SSA binderVal optionVal inputType outputType
+            Some (ops, result)
+        
+        | _ ->
+            // Other Option operations
             None
 
     // Unhandled intrinsics

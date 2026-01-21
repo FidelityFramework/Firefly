@@ -142,7 +142,9 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
                 match args with
                 | [okTy; errorTy] -> TStruct [TInt I8; mapNativeTypeForArch arch okTy; mapNativeTypeForArch arch errorTy]
                 | _ -> failwithf "result type requires exactly two type arguments: %A" ty
-            | "list" -> failwithf "list type not yet implemented: %A" ty
+            | "list" ->
+                // PRD-13a: list<'T> is a pointer to cons cell (linked list)
+                TPtr
             | "array" | "Array" ->
                 // Array<T> is a fat pointer {ptr, len} - same layout as string
                 NativeStrType
@@ -234,6 +236,11 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
     | NativeType.TSeq elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
         TStruct [TInt I32; elemMlir; TPtr]  // Flat: state, current, moveNext_ptr
+
+    // PRD-13a: Immutable collection types - all are reference types (pointer to nodes)
+    | NativeType.TList _ -> TPtr  // Pointer to cons cell
+    | NativeType.TMap _ -> TPtr   // Pointer to tree root
+    | NativeType.TSet _ -> TPtr   // Pointer to tree root
 
     // Named records are TApp with FieldCount > 0 - handled in TApp case above
 

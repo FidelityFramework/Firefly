@@ -401,6 +401,61 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.Seq, "head" -> 12        // MoveNext + extract current
                 | IntrinsicModule.Seq, "length" -> 20      // full iteration with counter
                 | IntrinsicModule.Seq, _ -> 15             // default for other Seq ops
+                
+                // PRD-13a: List operations
+                | IntrinsicModule.List, "empty" -> 1           // null pointer
+                | IntrinsicModule.List, "isEmpty" -> 2         // null + icmp
+                | IntrinsicModule.List, "head" -> 2            // GEP + load
+                | IntrinsicModule.List, "tail" -> 2            // GEP + load
+                | IntrinsicModule.List, "cons" -> 4            // const + alloca + 2 stores
+                | IntrinsicModule.List, "length" -> 15         // loop with counter
+                | IntrinsicModule.List, "map" -> 20            // recursive structure
+                | IntrinsicModule.List, "filter" -> 20         // recursive structure
+                | IntrinsicModule.List, "fold" -> 20           // recursive structure
+                | IntrinsicModule.List, "rev" -> 15            // iterative reverse
+                | IntrinsicModule.List, "append" -> 20         // copy + link
+                | IntrinsicModule.List, _ -> 15                // default for other List ops
+                
+                // PRD-13a: Map operations
+                | IntrinsicModule.Map, "empty" -> 1            // null pointer
+                | IntrinsicModule.Map, "isEmpty" -> 2          // null + icmp
+                | IntrinsicModule.Map, "tryFind" -> 20         // tree traversal
+                | IntrinsicModule.Map, "find" -> 18            // tree traversal (may fail)
+                | IntrinsicModule.Map, "add" -> 25             // tree traversal + rebalance
+                | IntrinsicModule.Map, "remove" -> 25          // tree traversal + rebalance
+                | IntrinsicModule.Map, "containsKey" -> 15     // tree traversal
+                | IntrinsicModule.Map, "count" -> 20           // full traversal
+                | IntrinsicModule.Map, "keys" -> 30            // in-order traversal
+                | IntrinsicModule.Map, "values" -> 30          // in-order traversal
+                | IntrinsicModule.Map, "toList" -> 30          // in-order traversal
+                | IntrinsicModule.Map, "ofList" -> 40          // build tree from list
+                | IntrinsicModule.Map, _ -> 20                 // default for other Map ops
+                
+                // PRD-13a: Set operations
+                | IntrinsicModule.Set, "empty" -> 1            // null pointer
+                | IntrinsicModule.Set, "isEmpty" -> 2          // null + icmp
+                | IntrinsicModule.Set, "contains" -> 15        // tree traversal
+                | IntrinsicModule.Set, "add" -> 20             // tree traversal + rebalance
+                | IntrinsicModule.Set, "remove" -> 20          // tree traversal + rebalance
+                | IntrinsicModule.Set, "count" -> 20           // full traversal
+                | IntrinsicModule.Set, "union" -> 30           // tree merge
+                | IntrinsicModule.Set, "intersect" -> 30       // tree filter
+                | IntrinsicModule.Set, "difference" -> 30      // tree filter
+                | IntrinsicModule.Set, "toList" -> 25          // in-order traversal
+                | IntrinsicModule.Set, "ofList" -> 35          // build tree from list
+                | IntrinsicModule.Set, _ -> 20                 // default for other Set ops
+                
+                // PRD-13a: Option operations
+                | IntrinsicModule.Option, "isSome" -> 3        // extract + const + icmp
+                | IntrinsicModule.Option, "isNone" -> 3        // extract + const + icmp
+                | IntrinsicModule.Option, "get" -> 1           // extract value
+                | IntrinsicModule.Option, "defaultValue" -> 5  // extract + icmp + select
+                | IntrinsicModule.Option, "defaultWith" -> 10  // conditional + closure call
+                | IntrinsicModule.Option, "map" -> 15          // conditional + closure call
+                | IntrinsicModule.Option, "bind" -> 20         // conditional + closure call + option handling
+                | IntrinsicModule.Option, "toList" -> 8        // conditional + list cons
+                | IntrinsicModule.Option, _ -> 10              // default for other Option ops
+                
                 | IntrinsicModule.Bits, "htons" | IntrinsicModule.Bits, "ntohs" -> 2  // byte swap uint16
                 | IntrinsicModule.Bits, "htonl" | IntrinsicModule.Bits, "ntohl" -> 2  // byte swap uint32
                 | IntrinsicModule.Bits, _ -> 1             // bitcast operations

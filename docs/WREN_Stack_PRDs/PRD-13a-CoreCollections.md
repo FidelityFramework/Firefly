@@ -387,6 +387,122 @@ Option already exists but needs these operations:
 | `Array.blit` | `'T[] -> int -> 'T[] -> int -> int -> unit` | Copy array segment |
 | `String.concat` | `string -> List<string> -> string` | Join strings with separator |
 
+### 3.6 Tuple Destructuring in Let Bindings
+
+> **Added January 2026** - Identified during BAREWire compilation work.
+
+Tuple destructuring in let bindings is a core F# pattern that FNCS must support:
+
+```fsharp
+// Tuple destructuring pattern - currently broken in FNCS
+let (a, b) = someFunction()   // Should bind 'a' and 'b'
+let x, y, z = triple          // Should bind 'x', 'y', 'z'
+
+// BAREWire usage example:
+let innerSize, innerAlign = getSizeAndAlignment ctx schema innerType
+```
+
+#### 3.6.1 Root Cause Analysis
+
+The issue is in `Bindings.fs`:
+
+```fsharp
+// CURRENT STATE (broken)
+let getBindingName (binding: SynBinding) : string =
+    let (SynBinding(_, _, _, _, _, _, _, headPat, _, _, _, _, _)) = binding
+    match headPat with
+    | SynPat.Named(SynIdent(ident, _), _, _, _) -> ident.idText
+    | SynPat.LongIdent(longDotId, _, _, _, _, _) ->
+        longDotId.LongIdent |> List.last |> fun id -> id.idText
+    | _ -> "_"  // ← SILENT FALL-THROUGH: tuple patterns return "_"
+```
+
+The function `getBindingName` only handles `Named` and `LongIdent` patterns. For `SynPat.Tuple`, it silently returns `"_"`, causing all tuple bindings to fail.
+
+#### 3.6.2 Required Fix
+
+**Option A: Handle Tuple Patterns in Binding Construction**
+
+Modify `checkBinding` in `Bindings.fs` to recognize tuple patterns and create multiple bindings:
+
+```fsharp
+// REQUIRED: Handle tuple patterns
+| SynPat.Tuple(_, pats, _, _) ->
+    // 1. Check the RHS expression - get the tuple value
+    // 2. For each element pattern, extract the corresponding tuple element
+    // 3. Create bindings for each named pattern in the tuple
+
+    // Pseudo-implementation:
+    let rhsType = inferType env rhs
+    match rhsType with
+    | TTuple elemTypes when List.length elemTypes = List.length pats ->
+        pats |> List.mapi (fun i pat ->
+            match pat with
+            | SynPat.Named(ident, _, _, _) ->
+                // Extract tuple element i
+                // Create binding: let ident = Tuple.item i rhs
+                ...
+            | SynPat.Tuple _ ->
+                // Nested tuple - recurse
+                ...
+            | _ -> failwith "Unsupported pattern in tuple"
+        )
+    | _ -> failwith "Type mismatch in tuple destructuring"
+```
+
+**Option B: Desugar Early in PSG Construction**
+
+Transform tuple let-bindings during PSG construction:
+
+```fsharp
+// Source:
+let (a, b) = expr
+
+// Desugars to:
+let __tuple = expr
+let a = fst __tuple
+let b = snd __tuple
+```
+
+This approach reuses existing infrastructure (`fst`, `snd`, or `Tuple.item`).
+
+#### 3.6.3 FNCS Implementation Note
+
+Per the diagnostic principle: **No silent default cases**. The `| _ -> "_"` fall-through must be replaced with explicit error handling:
+
+```fsharp
+// CORRECT: Explicit handling with diagnostic
+| SynPat.Tuple _ ->
+    failwith "Tuple destructuring in let bindings not yet implemented (PRD-13a §3.6)"
+| SynPat.Paren(inner, _) ->
+    getBindingName' inner  // Unwrap parentheses
+| other ->
+    failwith $"Unsupported pattern in let binding: {other.GetType().Name}"
+```
+
+#### 3.6.4 Implementation Checklist
+
+- [ ] Replace `| _ -> "_"` with explicit pattern cases in `getBindingName`
+- [ ] Add diagnostic error for unsupported patterns (no silent fall-through)
+- [ ] Implement `SynPat.Tuple` handling in `checkBinding`
+- [ ] Add tuple element extraction intrinsics (`Tuple.item1`, `item2`, ... or use `fst`/`snd`)
+- [ ] Test with BAREWire `let a, b = ...` patterns
+- [ ] Verify nested tuple patterns work: `let (a, (b, c)) = ...`
+
+#### 3.6.5 Related: General Pattern Matching
+
+Patterns.fs (`checkPattern`) correctly handles `SynPat.Tuple` and returns bindings:
+
+```fsharp
+// In Patterns.fs - this WORKS
+| SynPat.Tuple(_, pats, _, range) ->
+    pats
+    |> List.mapi (fun i pat -> checkPattern env builder pat (Some(TupleElement(i))))
+    |> List.collect id
+```
+
+The issue is that `Bindings.fs` doesn't call through to `checkPattern` for tuple patterns in let bindings. The fix should leverage the existing pattern machinery.
+
 ## 4. Implementation Strategy
 
 ### 4.1 Phase 1: Minimal Viable (BAREWire Unblocking)
@@ -730,3 +846,277 @@ With this PRD, BAREWire needs these changes:
 3. **Update Map/Set usage** → Already correct, just needs intrinsics
 
 The `box`/`unbox` usage in `Memory/View.fs` (lines 459-503) is the critical blocker. This must be refactored to use typed read/write functions dispatched by NTUKind match, not runtime boxing.
+
+## 13. Implementation Status and Gap Analysis (January 2026)
+
+> **This section documents what actually exists vs what's specified, ensuring full capture.**
+
+### 13.1 Current State Summary
+
+| Component | Specified | Status | Notes |
+|-----------|-----------|--------|-------|
+| FNCS type signatures (Intrinsics.fs) | §3 | ✅ Complete | List, Map, Set, Option operations |
+| NativeType TList/TMap/TSet | §2.5 | ✅ Complete | Added to NativeTypes.fs |
+| UnionFind bridge cases | §7.1 | ✅ Complete | applySubst, occursIn, freeTypeVars |
+| TypeMapping.fs collection types | implicit | ✅ Complete | TList/TMap/TSet → TPtr |
+| Reachability.fs intrinsic marking | implicit | ✅ Complete | IntrinsicModule.List/Map/Set/Option |
+| Vector dialect templates | §13.2 | ✅ Complete | Comprehensive in Dialects/Vector/Templates.fs |
+| **ListWitness.fs** | §7.2 | ❌ NOT CREATED | Alex witness needed |
+| **MapWitness.fs** | §7.2 | ❌ NOT CREATED | Alex witness needed |
+| **SetWitness.fs** | §7.2 | ❌ NOT CREATED | Alex witness needed |
+| **OptionWitness.fs** | implicit | ❌ NOT CREATED | Option operations need witness |
+| **FNCSTransfer.fs handlers** | §7.2 | ❌ NOT IMPLEMENTED | Collection intrinsic dispatch |
+| **Functional decomposition** | §13.4 | ❌ NOT IMPLEMENTED | HOFs need PSG decomposition |
+| **Vector dialect integration** | §13.2 | ❌ NOT CONNECTED | Templates exist but unused |
+
+### 13.2 The Functional Decomposition Requirement
+
+Per `fncs_functional_decomposition_principle` memory, current FNCS intrinsics are **type-only stubs**:
+
+```fsharp
+// CURRENT STATE (antipattern)
+| "List.map" ->
+    NativeType.TFun(mapFn, NativeType.TFun(listType, resultListType))
+    // Just a type signature! Alex has no structure to witness.
+```
+
+**Correct approach**: Operations must be classified as **primitives** or **decomposable**:
+
+#### 13.2.1 Primitive Operations (Alex Witnesses Directly)
+
+These cannot decompose further - they ARE the primitives:
+
+| Module | Primitives | MLIR Emission |
+|--------|-----------|---------------|
+| **List** | `empty`, `cons`, `head`, `tail`, `isEmpty` | Direct struct ops |
+| **Map** | `empty`, `isEmpty` | Null check |
+| **Set** | `empty`, `isEmpty` | Null check |
+| **Option** | `None`, `Some`, `isSome`, `isNone` | Tag check |
+
+#### 13.2.2 Decomposable Operations (FNCS Provides Functional Structure)
+
+These should decompose in FNCS/PSGSaturation to primitives:
+
+```fsharp
+// List.map SHOULD decompose to:
+let rec map f xs =
+    if List.isEmpty xs then List.empty
+    else List.cons (f (List.head xs)) (map f (List.tail xs))
+
+// List.fold SHOULD decompose to:
+let rec fold folder acc xs =
+    if List.isEmpty xs then acc
+    else fold folder (folder acc (List.head xs)) (List.tail xs)
+```
+
+| Module | Decomposable Operations |
+|--------|------------------------|
+| **List** | `map`, `filter`, `fold`, `foldBack`, `rev`, `append`, `length`, `tryFind`, `forall`, `exists` |
+| **Map** | `add`, `remove`, `tryFind`, `find`, `containsKey`, `map`, `filter`, `fold`, `keys`, `values`, `toList`, `ofList` |
+| **Set** | `add`, `remove`, `contains`, `union`, `intersect`, `difference`, `map`, `filter`, `fold`, `toList`, `ofList` |
+| **Option** | `map`, `bind`, `defaultValue`, `defaultWith`, `get`, `toList` |
+
+### 13.3 Implementation Path
+
+#### Phase A: Primitive Witnesses (Foundation)
+
+Create Alex witnesses for fundamental operations:
+
+**File: `Alex/Witnesses/ListWitness.fs`**
+```fsharp
+/// Witness List.empty - returns null pointer
+let witnessListEmpty (z: PSGZipper) (elemTy: MLIRType) : MLIROp list * Val =
+    let result = z.FreshSSA TPtr
+    [ LLVMOp.NullPtr result ], { SSA = result; Type = TPtr }
+
+/// Witness List.cons - allocate cons cell, store head and tail
+let witnessListCons (z: PSGZipper) (headVal: Val) (tailVal: Val) : MLIROp list * Val =
+    // Arena allocation + struct construction
+    ...
+
+/// Witness List.head - GEP to head field, load
+let witnessListHead (z: PSGZipper) (listVal: Val) (elemTy: MLIRType) : MLIROp list * Val =
+    ...
+
+/// Witness List.tail - GEP to tail field, load
+let witnessListTail (z: PSGZipper) (listVal: Val) : MLIROp list * Val =
+    ...
+
+/// Witness List.isEmpty - null check
+let witnessListIsEmpty (z: PSGZipper) (listVal: Val) : MLIROp list * Val =
+    ...
+```
+
+#### Phase B: Decomposition in PSGSaturation
+
+Add functional decomposition for higher-order operations. This creates PSG structure that Alex witnesses as recursion.
+
+**File: `FNCS/PSGSaturation/ListSaturation.fs`** (NEW)
+```fsharp
+/// Saturate List.map call to explicit recursion
+/// Input: Call(List.map, [mapper; source])
+/// Output: LetRec with recursive map using head/tail/cons primitives
+let saturateListMap (builder: NodeBuilder) (mapperNode: SemanticNode) (sourceNode: SemanticNode) : SemanticNode =
+    // Generate recursive structure that PSG carries
+    ...
+```
+
+#### Phase C: Vector Dialect Integration (Array Operations)
+
+The Vector dialect templates in `Alex/Dialects/Vector/Templates.fs` are comprehensive. Connect them for Array operations:
+
+| Array Operation | Vector Template | Notes |
+|-----------------|-----------------|-------|
+| `Array.map (fun x -> x * c)` | `broadcast` + element-wise mul | Constant factor |
+| `Array.fold (+) 0` | `reductionAdd` | Horizontal sum |
+| `Array.init n f` | `splat` for constants | Identity/constant init |
+| `[|1..1024|]` | `vector.store` chunks | Range materialization |
+
+**File: `Alex/Witnesses/ArrayVectorWitness.fs`** (NEW)
+```fsharp
+/// Detect vectorizable Array.map patterns
+let canVectorize (mapperLambda: SemanticNode) : bool =
+    // Check if lambda body is element-wise arithmetic
+    match mapperLambda.Kind with
+    | Lambda(_, bodyId, [], _, _) ->
+        let body = getNode bodyId
+        isElementWiseArithmetic body
+    | _ -> false
+
+/// Emit vectorized Array.map using vector dialect
+let witnessArrayMapVectorized (z: PSGZipper) (width: int) ... : MLIROp list * Val =
+    // Use Vector.broadcast, Vector.load, arith ops, Vector.store
+    ...
+```
+
+## 14. Referential Transparency and Graph Coloring
+
+Collection operations are predominantly **referentially transparent** (pure). This mathematical property enables:
+
+1. **Parallelization via Graph Coloring** - Nodes with the same "color" can execute simultaneously
+2. **Structural sharing** in immutable collections preserves purity
+3. **Future INet (Interaction Net) dialect** - Pure regions compile to parallel interaction nets
+
+**Why structural sharing matters for purity:**
+```fsharp
+let m1 = Map.add "a" 1 Map.empty
+let m2 = Map.add "b" 2 m1  // m1 is UNCHANGED - pure operation
+let m3 = Map.add "c" 3 m1  // m1 is STILL UNCHANGED
+// m2 and m3 share unchanged subtrees with m1
+```
+
+If `Map.add` mutated in place, we'd lose purity → lose parallelization opportunities.
+
+## 15. DCont/INet Dialect Integration
+
+When Delimited Continuations (DCont) and Interaction Net (INet) dialects arrive:
+
+```fsharp
+let processData = async {
+    let! data = fetchFromDB()           // Effect: DCont dialect
+    let transformed =                    // Pure: INet dialect (parallel)
+        data
+        |> List.map transform
+        |> List.filter valid
+        |> List.fold combine initial
+    do! saveResults transformed          // Effect: DCont dialect
+}
+```
+
+Pure collection pipelines compile to INet for parallel execution; effectful boundaries use DCont.
+
+## 16. Vector Dialect Specification
+
+The MLIR Vector dialect templates exist in `Alex/Dialects/Vector/Templates.fs` with comprehensive support:
+
+### 16.1 Available Operations
+
+| Category | Operations |
+|----------|------------|
+| **Broadcast/Splat** | `broadcast`, `splat` - scalar to vector |
+| **Element Access** | `extract`, `insert`, `extractStrided`, `insertStrided` |
+| **Shape** | `shapeCast`, `transpose`, `flatTranspose` |
+| **Reduction** | `reductionAdd`, `reductionMul`, `reductionAnd`, `reductionOr`, `reductionXor`, `reductionMin*`, `reductionMax*` |
+| **FMA** | `fma` - fused multiply-add |
+| **Memory** | `load`, `store`, `maskedLoad`, `maskedStore`, `gather`, `scatter` |
+| **Mask** | `createMask`, `constantMask` |
+
+### 16.2 Connection to Collection Operations
+
+| Collection Pattern | Vector Emission | Width |
+|--------------------|-----------------|-------|
+| `Array.map (fun x -> x * 2) arr` | `vector.load` → `arith.muli` → `vector.store` | 4/8/16 based on arch |
+| `Array.fold (+) 0 arr` | Chunked `vector.load` → `arith.addi` → `vector.reduction <add>` | Platform-specific |
+| `Array.sum arr` | Same as fold (+) | Platform-specific |
+| `Array.sumBy f arr` | Map + reduce fusion | Platform-specific |
+| `[|1..n|]` | `arith.constant` iota + `vector.store` chunks | Platform-specific |
+
+### 16.3 Platform Width Detection
+
+```fsharp
+/// Get SIMD width for platform
+let getVectorWidth (arch: Architecture) (elemTy: MLIRType) : int =
+    match arch, elemTy with
+    | X86_64, TInt I32 -> 8   // AVX-256: 8 x i32
+    | X86_64, TInt I64 -> 4   // AVX-256: 4 x i64
+    | X86_64, TFloat F32 -> 8 // AVX-256: 8 x f32
+    | ARM64, TInt I32 -> 4    // NEON: 4 x i32
+    | ARM64, TFloat F32 -> 4  // NEON: 4 x f32
+    | _ -> 1  // Fallback: scalar
+```
+
+### 16.4 Vectorization Eligibility
+
+Not all operations vectorize. Eligibility criteria:
+
+| Criterion | Vectorizable | Not Vectorizable |
+|-----------|--------------|------------------|
+| Element independence | `Array.map (fun x -> x * 2)` | `Array.scan` (prefix dependency) |
+| Memory contiguity | `Array.map` on slice | Sparse/strided access |
+| No early exit | `Array.sum` | `Array.tryFind` (exits on match) |
+| Numeric types | `int`, `float`, `int64` | `string`, custom types |
+
+## 17. Implementation Checklist (Updated January 2026)
+
+### Phase A: Primitive Witnesses (Foundation)
+- [x] Create `Alex/Witnesses/ListWitness.fs` with: empty, cons, head, tail, isEmpty ✅
+- [x] Create `Alex/Witnesses/MapWitness.fs` with: empty, isEmpty (tree ops later) ✅
+- [x] Create `Alex/Witnesses/SetWitness.fs` with: empty, isEmpty (tree ops later) ✅
+- [x] Create `Alex/Witnesses/OptionWitness.fs` with: None, Some, isSome, isNone, get ✅
+- [ ] Update `FNCSTransfer.fs` to dispatch to collection witnesses
+
+### Phase B: Higher-Order Decomposition (Baker)
+- [x] Create `Baker/ShadowAST.fs` for editing transparency ✅ (January 2026)
+- [x] Create `Baker/Recipes/Decomposition.fs` with Context, Result, helpers ✅
+- [x] Create `Baker/Recipes/ListRecipes.fs` for List.map, filter, fold, etc. ✅
+- [x] Create `Baker/Recipes/MapRecipes.fs` for Map.add, tryFind, etc. ✅
+- [x] Create `Baker/Recipes/SetRecipes.fs` for Set.add, contains, etc. ✅
+- [x] Create `Baker/Recipes/OptionRecipes.fs` for Option.map, bind, filter ✅
+- [x] Create `Baker/HOFDecomposition.fs` orchestration with ShadowRegistry ✅
+- [ ] PSG nodes currently placeholders - implement full recursive expansion
+- [ ] Verify PSG carries recursive structure, Alex witnesses it
+
+### Phase C: Vector Dialect Integration
+- [ ] Create `Alex/Witnesses/ArrayVectorWitness.fs`
+- [ ] Implement vectorization eligibility detection
+- [ ] Implement vectorized Array.map for numeric element types
+- [ ] Implement vectorized Array.fold (+) / Array.sum
+- [ ] Implement vectorized range materialization `[|1..n|]`
+- [ ] Platform width detection (AVX-256/AVX-512/NEON)
+
+### Validation
+- [ ] Sample 13a_SimpleCollections compiles
+- [ ] List operations produce correct output
+- [ ] Map operations produce correct output
+- [ ] Set operations produce correct output
+- [ ] Option operations produce correct output
+- [ ] Range expressions `[|1..10|]`, `[1..10]` work
+- [ ] Vectorized Array.map shows SIMD in MLIR output
+
+## 18. Serena Memories
+
+These memories document the collection architecture for future sessions:
+
+- `collection_machinery_architecture` - Decomposition and purity preservation
+- `collection_vectorization_opportunity` - SIMD/vector dialect patterns
+- `ntu_collection_architecture` - NTU type system for collections

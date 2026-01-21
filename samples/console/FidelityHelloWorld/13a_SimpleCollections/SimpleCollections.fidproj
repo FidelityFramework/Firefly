@@ -1,0 +1,18 @@
+[package]
+name = "SimpleCollections"
+version = "0.1.0"
+description = "PRD-13a: Full collection feature coverage test"
+authors = ["SpeakEZ Technologies, Inc."]
+license = "MIT"
+
+[compilation]
+memory_model = "stack_only"
+target = "console"
+
+[dependencies]
+# Types and operations are FNCS intrinsics - no external library needed
+platform = { path = "/home/hhh/repos/Fidelity.Platform/Linux_x86_64" }
+
+[build]
+sources = ["SimpleCollections.fs"]
+output = "simplecollections"

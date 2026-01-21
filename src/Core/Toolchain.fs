@@ -14,8 +14,9 @@ open Core.Types.Dialects
 let lowerMLIRToLLVM (mlirPath: string) (llvmPath: string) : Result<unit, string> =
     try
         // Step 1: mlir-opt to convert to LLVM dialect
-        // Conversion order: scf -> cf -> func -> arith -> llvm, then cleanup casts
-        let mlirOptArgs = sprintf "%s --convert-scf-to-cf --convert-cf-to-llvm --convert-func-to-llvm --convert-arith-to-llvm --reconcile-unrealized-casts" mlirPath
+        // Conversion order: vector -> scf -> cf -> func -> arith -> llvm, then cleanup casts
+        // Note: --convert-vector-to-llvm enables SIMD code generation
+        let mlirOptArgs = sprintf "%s --convert-vector-to-llvm --convert-scf-to-cf --convert-cf-to-llvm --convert-func-to-llvm --convert-arith-to-llvm --reconcile-unrealized-casts" mlirPath
         let mlirOptProcess = new System.Diagnostics.Process()
         mlirOptProcess.StartInfo.FileName <- "mlir-opt"
         mlirOptProcess.StartInfo.Arguments <- mlirOptArgs
@@ -63,7 +64,8 @@ let compileLLVMToNative
         let objPath = Path.ChangeExtension(llvmPath, ".o")
 
         // Step 1: llc to compile LLVM IR to object file
-        let llcArgs = sprintf "-O0 -filetype=obj %s -o %s" llvmPath objPath
+        // Note: -mcpu=native auto-detects host CPU features (AVX2, etc.) for SIMD optimization
+        let llcArgs = sprintf "-mcpu=native -O0 -filetype=obj %s -o %s" llvmPath objPath
         let llcProcess = new System.Diagnostics.Process()
         llcProcess.StartInfo.FileName <- "llc"
         llcProcess.StartInfo.Arguments <- llcArgs

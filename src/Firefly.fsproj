@@ -101,6 +101,11 @@
       <Compile Include="Alex/Witnesses/LazyWitness.fs" />
       <Compile Include="Alex/Witnesses/SeqWitness.fs" />
       <Compile Include="Alex/Witnesses/SeqOpWitness.fs" />
+      <!-- PRD-13a: Core Collections Witnesses -->
+      <Compile Include="Alex/Witnesses/ListWitness.fs" />
+      <Compile Include="Alex/Witnesses/MapWitness.fs" />
+      <Compile Include="Alex/Witnesses/SetWitness.fs" />
+      <Compile Include="Alex/Witnesses/OptionWitness.fs" />
       <Compile Include="Alex/Witnesses/CallDispatch.fs" />
       <Compile Include="Alex/Witnesses/ControlFlowWitness.fs" />
       <Compile Include="Alex/Witnesses/MemoryWitness.fs" />
