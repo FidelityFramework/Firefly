@@ -486,6 +486,52 @@ let private computeUnionCaseSSACost (payloadOpt: NodeId option) : int =
     | Some _ -> 6  // tag + undef + withTag + payload insert + conversion + result
     | None -> 3    // tag + undef + withTag (no payload)
 
+/// Compute the DU slot type from a DU's NativeType
+/// DU layout: Inline (size, align) where size = tagSize + payloadSize
+/// The slot type is determined by payloadSize (the storage type, not case-specific)
+let private getDUSlotType (arch: Architecture) (duType: NativeType) : MLIRType option =
+    match duType with
+    | NativeType.TApp (tycon, _) ->
+        match tycon.Layout with
+        | TypeLayout.Inline (size, align) when size > 8 ->
+            // DU layout: tag + payload
+            let tagSize = size % align
+            let payloadSize = size - tagSize
+            let slotType =
+                match payloadSize with
+                | 1 -> TInt I8
+                | 2 -> TInt I16
+                | 4 -> TInt I32
+                | 8 -> TInt I64
+                | n -> TArray (n, TInt I8)
+            Some slotType
+        | _ -> None
+    | _ -> None
+
+/// Compute exact SSA count for DUConstruct based on actual types
+/// Examines both the DU slot type and payload type to determine if bitcast is needed
+///
+/// SSA breakdown:
+/// - Nullary (no payload): 3 (undef + tagConst + withTag)
+/// - With payload, no bitcast needed: 4 (undef + tagConst + withTag + result)
+/// - With payload, bitcast needed: 5 (undef + tagConst + withTag + bitcast + result)
+let private computeDUConstructSSACost (arch: Architecture) (graph: SemanticGraph) (duType: NativeType) (payloadOpt: NodeId option) : int =
+    match payloadOpt with
+    | None -> 3  // Nullary case: undef + tagConst + withTag
+    | Some payloadId ->
+        // Look up payload node to get its type
+        match Map.tryFind payloadId graph.Nodes with
+        | None -> 4  // Fallback if payload node not found
+        | Some payloadNode ->
+            let payloadMlirType = mapCaptureType arch payloadNode.Type
+            match getDUSlotType arch duType with
+            | None -> 4  // Fallback if DU slot type can't be determined
+            | Some slotType ->
+                if slotType = payloadMlirType then
+                    4  // Types match: undef + tagConst + withTag + result
+                else
+                    5  // Types differ: undef + tagConst + withTag + bitcast + result
+
 /// Count mutable bindings in a subtree (internal state fields for seq)
 /// PRD-15 THROUGH-LINE: Internal state is unique to Seq - mutable vars declared inside body
 /// that persist between MoveNext calls. This is distinct from captures (read-only from enclosing scope).
@@ -517,7 +563,7 @@ let private computeSeqExprSSACost (graph: SemanticGraph) (bodyId: NodeId) (captu
 
 /// Get the number of SSAs needed for a node based on its STRUCTURE
 /// This is the key function - it analyzes actual instance structure, not just kind
-let private nodeExpansionCost (graph: SemanticGraph) (node: SemanticNode) : int =
+let private nodeExpansionCost (arch: Architecture) (graph: SemanticGraph) (node: SemanticNode) : int =
     match node.Kind with
     // Structural analysis - exact counts from instance
     | SemanticKind.Match (scrutineeId, cases) ->
@@ -580,6 +626,15 @@ let private nodeExpansionCost (graph: SemanticGraph) (node: SemanticNode) : int 
     | SemanticKind.YieldBang _ -> 12
     // ForEach: 7 (setup: 4 + condition: 1 + body: 2)
     | SemanticKind.ForEach _ -> 7
+    // DU Operations (January 2026)
+    // DUGetTag: 1 (extractvalue for tag)
+    | SemanticKind.DUGetTag _ -> 1
+    // DUEliminate: 2 (extractvalue + potential bitcast for type conversion)
+    | SemanticKind.DUEliminate _ -> 2
+    // DUConstruct: SSA count depends on whether payload type matches slot type
+    // Computed deterministically from PSG structure
+    | SemanticKind.DUConstruct (_, _, payloadOpt, _) ->
+        computeDUConstructSSACost arch graph node.Type payloadOpt
     | _ -> 1
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -620,8 +675,13 @@ let private producesValue (kind: SemanticKind) : bool =
     | SemanticKind.IfThenElse _ -> true
     | SemanticKind.Match _ -> true
     | SemanticKind.TupleExpr _ -> true
+    | SemanticKind.TupleGet _ -> true
     | SemanticKind.RecordExpr _ -> true
     | SemanticKind.UnionCase _ -> true
+    // DU Operations (January 2026)
+    | SemanticKind.DUGetTag _ -> true
+    | SemanticKind.DUEliminate _ -> true
+    | SemanticKind.DUConstruct _ -> true
     | SemanticKind.ArrayExpr _ -> true
     | SemanticKind.ListExpr _ -> true
     | SemanticKind.FieldGet _ -> true
@@ -772,7 +832,7 @@ let rec private assignFunctionBody
         // ForLoop needs SSAs for internal operation (ivSSA + stepSSA)
         // even though it doesn't "produce a value" in the semantic sense
         | SemanticKind.ForLoop _ ->
-            let cost = nodeExpansionCost graph node  // Structural derivation
+            let cost = nodeExpansionCost arch graph node  // Structural derivation
             let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
             let alloc = NodeSSAAllocation.multi ssas
             FunctionScope.assign node.Id alloc scopeWithSSAs
@@ -780,7 +840,7 @@ let rec private assignFunctionBody
         | _ ->
             // Regular node - assign SSAs based on structural analysis
             if producesValue node.Kind then
-                let cost = nodeExpansionCost graph node  // Structural derivation
+                let cost = nodeExpansionCost arch graph node  // Structural derivation
                 let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
                 let alloc = NodeSSAAllocation.multi ssas
                 FunctionScope.assign node.Id alloc scopeWithSSAs

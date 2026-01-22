@@ -138,20 +138,71 @@ let witnessAddressOf
 // FIELD ACCESS
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Resolve field name to struct index based on type
+let private resolveFieldIndex (structNativeType: NativeType) (fieldName: string) : int =
+    match structNativeType with
+    | NativeType.TApp (tc, _) ->
+        match tc.Name with
+        | "string" ->
+            // String layout: (Pointer, Length)
+            match fieldName with
+            | "Pointer" -> 0
+            | "Length" -> 1
+            | _ -> failwithf "Unknown string field: %s" fieldName
+        | _ ->
+            // DU layout: (Tag, Item1, Item2, ...)
+            // Record layout: fields in definition order
+            match fieldName with
+            | "Tag" -> 0
+            | name when name.StartsWith("Item") ->
+                match System.Int32.TryParse(name.Substring(4)) with
+                | true, n -> n  // Item1 -> 1, Item2 -> 2
+                | false, _ -> failwithf "Invalid DU field name: %s" name
+            | _ ->
+                // Record field - index is position in field list
+                // For records, TypeConstructor.FieldCount tells us field count
+                // Fields are numbered 0..FieldCount-1 in definition order
+                // We need to look up the field index from the type definition
+                // For now, fail explicitly - records need TypeDef lookup
+                failwithf "Record field '%s' on type '%s' requires TypeDef lookup (not yet implemented)" fieldName tc.Name
+    | _ -> failwithf "FieldGet on non-TApp type: %A" structNativeType
+
 /// Witness field get (struct.field or record.field)
-/// Uses extractvalue for value types
+/// Resolves field name to index based on type, then extracts
+///
+/// ARCHITECTURAL NOTE: This is TRANSLITERATION.
+/// For DU payload extraction (Item1, Item2, etc.), we construct a case-specific
+/// struct type using the KNOWN fieldType. LLVM doesn't see "a DU" as a single
+/// construct - each match branch interprets memory with its own type.
+/// In FloatVal branch: struct is (i8, f64). In IntVal branch: struct is (i8, i32).
+/// The fieldType comes from PSG (baked in at Baker level) and is authoritative.
+///
 /// Uses 1 pre-assigned SSA: extract[0]
 let witnessFieldGet
     (nodeId: NodeId)
     (ctx: WitnessContext)
     (structSSA: SSA)
-    (structType: MLIRType)
-    (fieldIndex: int)
+    (structNativeType: NativeType)
+    (fieldName: string)
     (fieldType: MLIRType)
     : MLIROp list * TransferResult =
 
+    let fieldIndex = resolveFieldIndex structNativeType fieldName
+
+    // For DU payload extraction, construct case-specific struct type
+    // using the KNOWN fieldType from PSG. This is transliteration - we state
+    // the correct type for this specific branch.
+    let structMlirType =
+        match fieldName with
+        | name when name.StartsWith("Item") ->
+            // DU layout: (tag, payload) with case-specific payload type
+            TStruct [TInt I8; fieldType]
+        | _ ->
+            // Tag extraction, string fields, records - use standard mapping
+            mapNativeType structNativeType
+
     let fieldSSA = requireNodeSSA nodeId ctx
-    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (fieldSSA, structSSA, [fieldIndex], structType))
+    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (fieldSSA, structSSA, [fieldIndex], structMlirType))
 
     [extractOp], TRValue { SSA = fieldSSA; Type = fieldType }
 
@@ -611,4 +662,149 @@ let witnessTraitCall
         // This is a fallback and should be refined based on type information
         let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [0], receiverType))
         [extractOp], TRValue { SSA = resultSSA; Type = memberType }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DISCRIMINATED UNION OPERATIONS (January 2026)
+//
+// DU Architecture: Pointer-based with case eliminators
+// - DUs are represented as pointers to region-allocated storage
+// - Each case has its own typed eliminator for payload extraction
+// - Pointer bitcast allows case-specific struct types (transliteration)
+//
+// For now (inline struct phase), DUs use (tag, payload) inline structs.
+// The case-specific typing ensures extractvalue uses correct payload type.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Witness DU tag extraction
+/// Extracts the tag (discriminator) from a DU value
+/// Tag is at field index 0, stored as i8 (or i16 for >256 cases)
+/// Uses 1 pre-assigned SSA: extract[0]
+let witnessDUGetTag
+    (nodeId: NodeId)
+    (ctx: WitnessContext)
+    (duSSA: SSA)
+    (duType: NativeType)
+    : MLIROp list * TransferResult =
+
+    let tagSSA = requireNodeSSA nodeId ctx
+
+    // Determine tag type (i8 for ≤256 cases, i16 for more)
+    // For now assume i8 - case count would come from duType
+    let tagType = MLIRTypes.i8
+
+    // Map the DU type to get the MLIR struct type
+    let duMlirType = mapNativeType duType
+
+    // Extract tag from index 0
+    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, duSSA, [0], duMlirType))
+
+    [extractOp], TRValue { SSA = tagSSA; Type = tagType }
+
+/// Witness DU payload elimination (type-safe extraction)
+/// This is the CASE ELIMINATOR pattern:
+/// 1. Use the ACTUAL DU struct type for extractvalue (all cases share same layout)
+/// 2. If the extracted slot type differs from desired payload type, bitcast
+///
+/// For example, DU Number = IntVal of int | FloatVal of float
+/// - Runtime struct: (i8 tag, i64 payload) - i64 holds both int and float bits
+/// - IntVal extraction: extractvalue[1] gives i64, use directly
+/// - FloatVal extraction: extractvalue[1] gives i64, bitcast to f64
+///
+/// Uses 1-2 pre-assigned SSAs: extract[0], optional bitcast[1]
+let witnessDUEliminate
+    (nodeId: NodeId)
+    (ctx: WitnessContext)
+    (duSSA: SSA)
+    (duType: MLIRType)
+    (caseIndex: int)
+    (caseName: string)
+    (payloadType: MLIRType)
+    : MLIROp list * TransferResult =
+
+    let ssas = requireNodeSSAs nodeId ctx
+    let extractSSA = ssas.[0]
+
+    // Get the actual slot type from the DU struct
+    // DU struct is TStruct [tag; payload_slot]
+    let slotType =
+        match duType with
+        | TStruct [_tagTy; payloadSlotTy] -> payloadSlotTy
+        | _ -> payloadType  // Fallback if DU type is not structured as expected
+
+    // Extract using the ACTUAL DU type (not a per-case type)
+    let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (extractSSA, duSSA, [1], duType))
+
+    // Check if we need to bitcast (e.g., i64 -> f64 for FloatVal)
+    if slotType = payloadType then
+        // Types match - no bitcast needed
+        [extractOp], TRValue { SSA = extractSSA; Type = payloadType }
+    else
+        // Types differ - need bitcast
+        let bitcastSSA = ssas.[1]
+        let bitcastOp = MLIROp.LLVMOp (LLVMOp.Bitcast (bitcastSSA, extractSSA, slotType, payloadType))
+        [extractOp; bitcastOp], TRValue { SSA = bitcastSSA; Type = payloadType }
+
+/// Witness DU construction
+/// Creates a DU value with the given tag and optional payload
+///
+/// TAGGED UNION SEMANTICS: The DU struct uses a fixed slot type (e.g., i64) to hold all case payloads.
+/// When the actual payload type differs from the slot type (e.g., f64 into i64 slot), we bitcast first.
+///
+/// SSA layout (determined by SSAAssignment.computeDUConstructSSACost):
+/// - Nullary: 3 (undef + tagConst + withTag)
+/// - With payload, types match: 4 (undef + tagConst + withTag + result)
+/// - With payload, types differ: 5 (undef + tagConst + withTag + bitcast + result)
+let witnessDUConstruct
+    (nodeId: NodeId)
+    (ctx: WitnessContext)
+    (caseName: string)
+    (caseIndex: int)
+    (payloadOpt: Val option)
+    (duType: MLIRType)
+    : MLIROp list * TransferResult =
+
+    let ssas = requireNodeSSAs nodeId ctx
+    let mutable ssaIdx = 0
+    let nextSSA () =
+        let ssa = ssas.[ssaIdx]
+        ssaIdx <- ssaIdx + 1
+        ssa
+
+    // Start with undef
+    let undefSSA = nextSSA ()
+    let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, duType))
+
+    // Create tag constant and insert at index 0
+    let tagConstSSA = nextSSA ()
+    let withTagSSA = nextSSA ()
+    let tagOps = [
+        MLIROp.ArithOp (ArithOp.ConstI (tagConstSSA, int64 caseIndex, MLIRTypes.i8))
+        MLIROp.LLVMOp (LLVMOp.InsertValue (withTagSSA, undefSSA, tagConstSSA, [0], duType))
+    ]
+
+    // Insert payload if present
+    match payloadOpt with
+    | Some payload ->
+        // Get the slot type from the DU struct (element at index 1)
+        let slotType =
+            match duType with
+            | TStruct [_tagTy; payloadSlotTy] -> payloadSlotTy
+            | _ -> payload.Type  // Fallback if DU type is not structured as expected
+
+        // Check if we need to bitcast (e.g., f64 -> i64 for storage)
+        if slotType = payload.Type then
+            // Types match - insert directly (4 SSAs)
+            let resultSSA = nextSSA ()
+            let insertPayloadOp = MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withTagSSA, payload.SSA, [1], duType))
+            [undefOp] @ tagOps @ [insertPayloadOp], TRValue { SSA = resultSSA; Type = duType }
+        else
+            // Types differ - bitcast payload to slot type first (5 SSAs)
+            let bitcastSSA = nextSSA ()
+            let resultSSA = nextSSA ()
+            let bitcastOp = MLIROp.LLVMOp (LLVMOp.Bitcast (bitcastSSA, payload.SSA, payload.Type, slotType))
+            let insertPayloadOp = MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withTagSSA, bitcastSSA, [1], duType))
+            [undefOp] @ tagOps @ [bitcastOp; insertPayloadOp], TRValue { SSA = resultSSA; Type = duType }
+    | None ->
+        // Nullary case - just tag, no payload (3 SSAs)
+        [undefOp] @ tagOps, TRValue { SSA = withTagSSA; Type = duType }
 

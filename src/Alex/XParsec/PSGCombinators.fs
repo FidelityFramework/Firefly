@@ -178,6 +178,36 @@ let pWhileLoop : PSGParser<NodeId * NodeId> =
         | SemanticKind.WhileLoop (guard, body) -> Matched (guard, body), state
         | _ -> NoMatch "Expected WhileLoop", state
 
+// ═══════════════════════════════════════════════════════════════════════════
+// DISCRIMINATED UNION PARSERS (January 2026)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Match a DUGetTag node - extracts tag from DU value
+/// Returns: (duValueNodeId, duType)
+let pDUGetTag : PSGParser<NodeId * NativeType> =
+    fun state ->
+        match state.Current.Kind with
+        | SemanticKind.DUGetTag (duValueId, duType) -> Matched (duValueId, duType), state
+        | _ -> NoMatch "Expected DUGetTag", state
+
+/// Match a DUEliminate node - type-safe payload extraction via case eliminator
+/// Returns: (duValueNodeId, caseIndex, caseName, payloadType)
+let pDUEliminate : PSGParser<NodeId * int * string * NativeType> =
+    fun state ->
+        match state.Current.Kind with
+        | SemanticKind.DUEliminate (duValueId, caseIndex, caseName, payloadType) ->
+            Matched (duValueId, caseIndex, caseName, payloadType), state
+        | _ -> NoMatch "Expected DUEliminate", state
+
+/// Match a DUConstruct node - constructs DU value in arena
+/// Returns: (caseName, caseIndex, payloadOpt, arenaHintOpt)
+let pDUConstruct : PSGParser<string * int * NodeId option * NodeId option> =
+    fun state ->
+        match state.Current.Kind with
+        | SemanticKind.DUConstruct (caseName, caseIndex, payload, arenaHint) ->
+            Matched (caseName, caseIndex, payload, arenaHint), state
+        | _ -> NoMatch "Expected DUConstruct", state
+
 /// Match a ForLoop node
 let pForLoop : PSGParser<string * NodeId * NodeId * bool * NodeId> =
     fun state ->

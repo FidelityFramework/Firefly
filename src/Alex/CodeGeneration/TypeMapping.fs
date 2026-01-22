@@ -250,15 +250,32 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
 
     // Named records are TApp with FieldCount > 0 - handled in TApp case above
 
-    | NativeType.TUnion (tycon, _cases) ->
-        // DU layout should come from NTU via tycon.Layout
-        // PLACEHOLDER: This needs proper integration with NTU layout computation
-        // The layout (tag size, payload size/alignment) should be pre-computed in FNCS
-        // based on platform bindings, not hardcoded here
-        //
-        // TODO: tycon.Layout should provide the computed struct layout
-        // For now, using a placeholder that will cause type errors if mismatched
-        failwithf "TUnion '%s' layout not yet integrated with NTU - needs FNCS enhancement" tycon.Name
+    | NativeType.TUnion (tycon, cases) ->
+        // DU layout: (tag, payload) where payload accommodates all cases
+        // Tag type: i8 for ≤256 cases, i16 for more
+        let tagType = if List.length cases <= 256 then TInt I8 else TInt I16
+
+        // Compute max payload size from case field types
+        // Each case can have multiple fields (tuple payload) or single field
+        let casePayloadTypes =
+            cases
+            |> List.map (fun case ->
+                match case.Fields with
+                | [] -> None  // No payload (e.g., None case)
+                | [(_, ty)] -> Some (mapNativeTypeForArch arch ty)  // Single field
+                | fields ->  // Multiple fields = tuple payload
+                    let fieldTypes = fields |> List.map (fun (_, ty) -> mapNativeTypeForArch arch ty)
+                    Some (TStruct fieldTypes))
+
+        // Find the "largest" payload type for union storage
+        // For now, use the first non-None case's type (proper size comparison would need layout info)
+        let payloadType =
+            casePayloadTypes
+            |> List.choose id
+            |> List.tryHead
+            |> Option.defaultValue (TInt I8)  // Empty union fallback
+
+        TStruct [tagType; payloadType]
 
     | NativeType.TAnon(fields, _) ->
         TStruct (fields |> List.map (fun (_, ty) -> mapNativeTypeForArch arch ty))

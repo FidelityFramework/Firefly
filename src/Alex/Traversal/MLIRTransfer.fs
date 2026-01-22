@@ -504,29 +504,14 @@ and private classifyAndWitness
         let structOutput = visitNode ctx z structId
         match structOutput.Result with
         | TRValue v ->
-            // Get the struct type to find field index
             match SemanticGraph.tryGetNode structId ctx.Graph with
             | Some structNode ->
                 let structNativeType = structNode.Type
-                let structMlirType = mapNativeType structNativeType
                 let fieldMlirType = mapNativeType node.Type
 
-                // Find field index from struct type
-                let fieldIndex =
-                    match structNativeType with
-                    | NativeType.TApp (tc, _) ->
-                        // Look up field index from type constructor's field list
-                        match tc.Name with
-                        | "string" ->
-                            // String has Pointer at 0, Length at 1
-                            if fieldName = "Pointer" then 0 elif fieldName = "Length" then 1 else 0
-                        | _ ->
-                            // TODO: Look up from type definition
-                            0
-                    | _ -> 0
-
+                // Delegate field resolution to witness
                 let fieldOps, fieldResult =
-                    Alex.Witnesses.MemoryWitness.witnessFieldGet node.Id ctx v.SSA structMlirType fieldIndex fieldMlirType
+                    Alex.Witnesses.MemoryWitness.witnessFieldGet node.Id ctx v.SSA structNativeType fieldName fieldMlirType
 
                 // Record the result for later recall
                 match fieldResult with
@@ -560,6 +545,68 @@ and private classifyAndWitness
         WitnessOutput.error (sprintf "TryFinally not yet implemented (node %d)" (NodeId.value node.Id))
     | SemanticKind.RecordExpr _ ->
         WitnessOutput.error (sprintf "RecordExpr not yet implemented (node %d)" (NodeId.value node.Id))
+
+    // ─────────────────────────────────────────────────────────────────────
+    // DISCRIMINATED UNION OPERATIONS (January 2026)
+    // Pointer-based DUs with case eliminators for type-safe payload extraction
+    // ─────────────────────────────────────────────────────────────────────
+    | SemanticKind.DUGetTag (duValueId, duType) ->
+        // Extract tag from DU pointer
+        let duOutput = visitNode ctx z duValueId
+        match duOutput.Result with
+        | TRValue duVal ->
+            let tagOps, tagResult =
+                Alex.Witnesses.MemoryWitness.witnessDUGetTag node.Id ctx duVal.SSA duType
+            { InlineOps = duOutput.InlineOps @ tagOps
+              TopLevelOps = duOutput.TopLevelOps
+              Result = tagResult }
+        | TRError msg -> { duOutput with Result = TRError msg }
+        | _ -> WitnessOutput.error "DUGetTag: DU expression has no value"
+
+    | SemanticKind.DUEliminate (duValueId, caseIndex, caseName, payloadType) ->
+        // Type-safe payload extraction via case eliminator
+        let duOutput = visitNode ctx z duValueId
+        match duOutput.Result with
+        | TRValue duVal ->
+            let payloadMlirType = mapNativeType payloadType
+            // Pass the ACTUAL DU type for extraction, plus the desired payload type
+            // The DU type determines the extractvalue struct annotation;
+            // if payload types differ, a bitcast is needed
+            let elimOps, elimResult =
+                Alex.Witnesses.MemoryWitness.witnessDUEliminate node.Id ctx duVal.SSA duVal.Type caseIndex caseName payloadMlirType
+            match elimResult with
+            | TRValue ev -> MLIRAccumulator.bindNode (NodeId.value node.Id) ev.SSA ev.Type acc
+            | _ -> ()
+            { InlineOps = duOutput.InlineOps @ elimOps
+              TopLevelOps = duOutput.TopLevelOps
+              Result = elimResult }
+        | TRError msg -> { duOutput with Result = TRError msg }
+        | _ -> WitnessOutput.error "DUEliminate: DU expression has no value"
+
+    | SemanticKind.DUConstruct (caseName, caseIndex, payloadOpt, _arenaHintOpt) ->
+        // Construct DU value - for now, use inline struct approach
+        // Full arena allocation will be added when arena infrastructure is complete
+        let payloadOutput =
+            match payloadOpt with
+            | Some payloadId -> visitNode ctx z payloadId
+            | None -> WitnessOutput.empty
+        match payloadOutput.Result with
+        | TRValue pv ->
+            let constructOps, constructResult =
+                Alex.Witnesses.MemoryWitness.witnessDUConstruct node.Id ctx caseName caseIndex (Some pv) (mapNativeType node.Type)
+            { InlineOps = payloadOutput.InlineOps @ constructOps
+              TopLevelOps = payloadOutput.TopLevelOps
+              Result = constructResult }
+        | TRVoid ->
+            // Nullary case (no payload)
+            let constructOps, constructResult =
+                Alex.Witnesses.MemoryWitness.witnessDUConstruct node.Id ctx caseName caseIndex None (mapNativeType node.Type)
+            { InlineOps = constructOps
+              TopLevelOps = []
+              Result = constructResult }
+        | TRError msg -> { payloadOutput with Result = TRError msg }
+        | TRBuiltin _ -> WitnessOutput.error "DUConstruct: payload expression is a builtin (unexpected)"
+
     | SemanticKind.UnionCase _ ->
         WitnessOutput.error (sprintf "UnionCase not yet implemented (node %d)" (NodeId.value node.Id))
     | SemanticKind.TupleExpr _ ->
@@ -648,8 +695,20 @@ and private classifyAndWitness
         WitnessOutput.error (sprintf "Yield not yet implemented (node %d)" (NodeId.value node.Id))
     | SemanticKind.YieldBang _ ->
         WitnessOutput.error (sprintf "YieldBang not yet implemented (node %d)" (NodeId.value node.Id))
-    | SemanticKind.TupleGet _ ->
-        WitnessOutput.error (sprintf "TupleGet not yet implemented (node %d)" (NodeId.value node.Id))
+    | SemanticKind.TupleGet (tupleId, index) ->
+        // Extract element from tuple using llvm.extractvalue
+        let tupleOutput = visitNode ctx z tupleId
+        match tupleOutput.Result with
+        | TRValue tupleVal ->
+            let elemSSA = requireSSAFromCoeffs node.Id ctx.Coeffects
+            let elemType = mapNativeType node.Type
+            let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (elemSSA, tupleVal.SSA, [index], tupleVal.Type))
+            MLIRAccumulator.bindNode (NodeId.value node.Id) elemSSA elemType acc
+            { InlineOps = tupleOutput.InlineOps @ [extractOp]
+              TopLevelOps = tupleOutput.TopLevelOps
+              Result = TRValue { SSA = elemSSA; Type = elemType } }
+        | TRError msg -> { tupleOutput with Result = TRError msg }
+        | _ -> failwithf "TupleGet: tuple expression has no value (node %d)" (NodeId.value node.Id)
     | SemanticKind.Error msg ->
         WitnessOutput.error (sprintf "PSG Error node: %s (node %d)" msg (NodeId.value node.Id))
 
