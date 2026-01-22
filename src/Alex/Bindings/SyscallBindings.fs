@@ -279,6 +279,133 @@ let private bindSysNanosleep (appNodeId: NodeId) (ssa: SSALookup.SSAAssignment) 
         NotSupported "Sys.nanosleep requires 1 argument: nanoseconds"
 
 // ═══════════════════════════════════════════════════════════════════════════
+// FREESTANDING ENTRY POINT INTRINSICS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Sys.stackArgc: unit -> int
+/// Load argc from stack at entry point (freestanding mode)
+/// Linux x86_64: argc is at [rsp] on program entry
+let private bindSysStackArgc (appNodeId: NodeId) (ssa: SSALookup.SSAAssignment) (_prim: PlatformPrimitive) : BindingResult =
+    let ssas = requireSSAs appNodeId ssa
+    let resultSSA = ssas.[0]
+
+    // AT&T syntax: movq (%rsp), $0
+    // Load 64-bit value from [rsp] into output register
+    let ops = [
+        MLIROp.LLVMOp (LLVMOp.InlineAsm (
+            Some resultSSA,
+            "movq (%rsp), $0",
+            "=r,~{memory}",  // Output to register, memory clobber
+            [],              // No explicit inputs - rsp is implicit
+            Some MLIRTypes.i64,
+            true,            // Has side effects (reads memory)
+            false))          // Not align stack
+    ]
+    BoundOps (ops, [], Some { SSA = resultSSA; Type = MLIRTypes.i64 })
+
+/// Sys.stackArgv: unit -> nativeptr<nativeptr<byte>>
+/// Load argv pointer from stack at entry point (freestanding mode)
+/// Linux x86_64: argv is at [rsp + 8] on program entry
+let private bindSysStackArgv (appNodeId: NodeId) (ssa: SSALookup.SSAAssignment) (_prim: PlatformPrimitive) : BindingResult =
+    let ssas = requireSSAs appNodeId ssa
+    let resultSSA = ssas.[0]
+
+    // AT&T syntax: leaq 8(%rsp), $0
+    // Load effective address of [rsp + 8] into output register
+    let ops = [
+        MLIROp.LLVMOp (LLVMOp.InlineAsm (
+            Some resultSSA,
+            "leaq 8(%rsp), $0",
+            "=r,~{memory}",  // Output to register, memory clobber
+            [],              // No explicit inputs - rsp is implicit
+            Some MLIRTypes.ptr,
+            true,            // Has side effects
+            false))          // Not align stack
+    ]
+    BoundOps (ops, [], Some { SSA = resultSSA; Type = MLIRTypes.ptr })
+
+/// Sys.emptyStringArray: unit -> string array
+/// Returns an empty string array (fat pointer with null ptr + length 0)
+/// Used by _start wrapper to provide argv to F# [<EntryPoint>] main functions
+let private bindSysEmptyStringArray (appNodeId: NodeId) (ssa: SSALookup.SSAAssignment) (_prim: PlatformPrimitive) : BindingResult =
+    let ssas = requireSSAs appNodeId ssa
+    // We need 5 SSAs: nullPtr, length0, undef, partial, result
+    let nullPtrSSA = ssas.[0]
+    let lengthSSA = ssas.[1]
+    let undefSSA = ssas.[2]
+    let partialSSA = ssas.[3]
+    let resultSSA = ssas.[4]
+
+    // String arrays in Firefly are fat pointers: { ptr, i64 length }
+    // An empty array is { null, 0 }
+    // We build this struct using LLVM insertvalue
+
+    // Fat pointer type: { ptr, i64 }
+    let fatPtrType = TStruct [MLIRTypes.ptr; MLIRTypes.i64]
+
+    let ops = [
+        // Create null pointer
+        MLIROp.LLVMOp (LLVMOp.NullPtr nullPtrSSA)
+        // Create length 0
+        MLIROp.ArithOp (ArithOp.ConstI (lengthSSA, 0L, MLIRTypes.i64))
+        // Create undef struct
+        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, fatPtrType))
+        // Insert ptr at index 0
+        MLIROp.LLVMOp (LLVMOp.InsertValue (partialSSA, undefSSA, nullPtrSSA, [0], fatPtrType))
+        // Insert length at index 1 to get final result
+        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, partialSSA, lengthSSA, [1], fatPtrType))
+    ]
+    BoundOps (ops, [], Some { SSA = resultSSA; Type = fatPtrType })
+
+/// Sys.exit: int -> unit
+/// Terminate the process with the given exit code
+/// Linux x86_64: syscall 60 (exit)
+let private bindSysExit (appNodeId: NodeId) (ssa: SSALookup.SSAAssignment) (prim: PlatformPrimitive) : BindingResult =
+    match prim.Args with
+    | [exitCodeVal] ->
+        let ssas = requireSSAs appNodeId ssa
+        // SSAs: syscallNum[0], syscallResult[1], exitCodeExt[2] (if needed), unitReturn[3]
+        let syscallNumSSA = ssas.[0]
+        let syscallResultSSA = ssas.[1]
+        let unitReturnSSA = ssas.[3]  // For the unit return value
+
+        // Extend exit code to i64 if needed
+        let extOps, exitCodeFinal =
+            if exitCodeVal.Type = MLIRTypes.i64 then
+                [], exitCodeVal.SSA
+            else
+                let extSSA = ssas.[2]
+                [MLIROp.ArithOp (ArithOp.ExtSI (extSSA, exitCodeVal.SSA, exitCodeVal.Type, MLIRTypes.i64))], extSSA
+
+        // Linux x86_64: exit syscall is 60
+        // syscall(60, exit_code) -> noreturn
+        //
+        // UNIT STORY (January 2026):
+        // Even though exit never returns, F# type says `int -> unit`.
+        // We honor the type contract by emitting a unit value (i32 0) after the syscall.
+        // This code is unreachable at runtime, but makes the type system happy.
+        // LLVM will optimize away the unreachable code.
+        let ops =
+            [MLIROp.ArithOp (ArithOp.ConstI (syscallNumSSA, 60L, MLIRTypes.i64))]
+            @ extOps
+            @ [
+                MLIROp.LLVMOp (LLVMOp.InlineAsm (
+                    Some syscallResultSSA,
+                    "syscall",
+                    "={rax},{rax},{rdi},~{rcx},~{r11},~{memory}",
+                    [(syscallNumSSA, MLIRTypes.i64); (exitCodeFinal, MLIRTypes.i64)],
+                    Some MLIRTypes.i64,
+                    true,   // Has side effects (terminates process)
+                    false)) // Not align stack
+                // Unit return value: i32 0 (unreachable but type-correct)
+                MLIROp.ArithOp (ArithOp.ConstI (unitReturnSSA, 0L, MLIRTypes.i32))
+            ]
+        // Return the unit value (i32 0) - honors the `int -> unit` type contract
+        BoundOps (ops, [], Some { SSA = unitReturnSSA; Type = MLIRTypes.i32 })
+    | _ ->
+        NotSupported $"Sys.exit expects 1 argument (exit code), got {List.length prim.Args}"
+
+// ═══════════════════════════════════════════════════════════════════════════
 // REGISTRATION
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -290,9 +417,16 @@ let registerBindings () =
     PlatformDispatch.register Linux X86_64 "Sys.clock_gettime" bindSysClockGettime
     PlatformDispatch.register Linux X86_64 "Sys.nanosleep" bindSysNanosleep
 
+    // Freestanding entry point intrinsics (x86_64)
+    PlatformDispatch.register Linux X86_64 "Sys.stackArgc" bindSysStackArgc
+    PlatformDispatch.register Linux X86_64 "Sys.stackArgv" bindSysStackArgv
+    PlatformDispatch.register Linux X86_64 "Sys.emptyStringArray" bindSysEmptyStringArray
+    PlatformDispatch.register Linux X86_64 "Sys.exit" bindSysExit
+
     // ARM64 stubs (different syscall numbers but same semantics)
     // TODO: Add ARM64 syscall numbers when needed
     PlatformDispatch.register Linux ARM64 "Sys.write" bindSysWrite
     PlatformDispatch.register Linux ARM64 "Sys.read" bindSysRead
     PlatformDispatch.register Linux ARM64 "Sys.clock_gettime" bindSysClockGettime
     PlatformDispatch.register Linux ARM64 "Sys.nanosleep" bindSysNanosleep
+    // TODO: Add ARM64 stackArgc/stackArgv when needed (different stack layout)

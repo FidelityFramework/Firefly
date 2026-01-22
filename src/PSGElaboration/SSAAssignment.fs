@@ -635,6 +635,13 @@ let private nodeExpansionCost (arch: Architecture) (graph: SemanticGraph) (node:
     // Computed deterministically from PSG structure
     | SemanticKind.DUConstruct (_, _, payloadOpt, _) ->
         computeDUConstructSSACost arch graph node.Type payloadOpt
+    // Standalone Intrinsic nodes (not applied via Application)
+    // These appear in entry point elaboration and other structural expansions
+    | SemanticKind.Intrinsic info ->
+        match info.Module, info.Operation with
+        | IntrinsicModule.Sys, "emptyStringArray" -> 5  // nullPtr + const0 + undef + insertvalue*2
+        | IntrinsicModule.Sys, "exit" -> 16             // syscall with full register setup
+        | _ -> 1  // Default for standalone intrinsics
     | _ -> 1
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -907,31 +914,38 @@ let private collectLambdas (graph: SemanticGraph) : Map<int, string> * Set<int> 
     for kvp in graph.Nodes do
         let node = kvp.Value
         match node.Kind with
-        | SemanticKind.Lambda _ ->
+        | SemanticKind.Lambda (_, _, _, lambdaNameOpt, _) ->
             let nodeIdVal = NodeId.value node.Id
             let name =
-                if Set.contains nodeIdVal entryPoints then
-                    "main"
-                else
-                    // Get base name from parent Binding
-                    let baseName =
-                        match node.Parent with
-                        | Some parentId ->
-                            match Map.tryFind parentId graph.Nodes with
-                            | Some { Kind = SemanticKind.Binding(bindingName, _, _, _) } -> Some bindingName
-                            | _ -> None
-                        | None -> None
+                // Get base name from parent Binding first
+                let parentBindingName =
+                    match node.Parent with
+                    | Some parentId ->
+                        match Map.tryFind parentId graph.Nodes with
+                        | Some { Kind = SemanticKind.Binding(bindingName, _, _, _) } -> Some bindingName
+                        | _ -> None
+                    | None -> None
 
-                    match baseName with
-                    | Some bname ->
-                        // Check if nested by walking Parent chain
-                        match findEnclosingFunctionName node.Id with
-                        | Some enclosing -> sprintf "%s_%s" enclosing bname
-                        | None -> bname
-                    | None ->
-                        let n = sprintf "lambda_%d" lambdaCounter
-                        lambdaCounter <- lambdaCounter + 1
-                        n
+                // Only use lambdaNameOpt if it matches the parent Binding name
+                // This distinguishes explicit names (like "_start") from inherited context
+                // (where lambdaNameOpt = env.EnclosingFunction for capture analysis)
+                match lambdaNameOpt, parentBindingName with
+                | Some explicitName, Some parentName when explicitName = parentName -> explicitName
+                | _, _ ->
+                    if Set.contains nodeIdVal entryPoints then
+                        "main"
+                    else
+                        // Use already-computed parentBindingName
+                        match parentBindingName with
+                        | Some bname ->
+                            // Check if nested by walking Parent chain
+                            match findEnclosingFunctionName node.Id with
+                            | Some enclosing -> sprintf "%s_%s" enclosing bname
+                            | None -> bname
+                        | None ->
+                            let n = sprintf "lambda_%d" lambdaCounter
+                            lambdaCounter <- lambdaCounter + 1
+                            n
 
             lambdaNames <- Map.add nodeIdVal name lambdaNames
 

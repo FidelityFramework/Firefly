@@ -408,112 +408,91 @@ let preBindParams (ctx: WitnessContext) (node: SemanticNode) : (SSA * MLIRType) 
             | Some name -> name
             | None -> sprintf "lambda_%d" nodeIdVal  // fallback for anonymous
 
-        // For main, use C-style signature
-        let isMain = (lambdaName = "main")
+        // ARCHITECTURAL PRINCIPLE (January 2026):
+        // Alex emits what the PSG says. No platform-specific signature overrides.
+        // If main needs C-style signature (console mode), FNCS handles that transformation.
+        // If main needs F#-style signature (freestanding mode with _start), PSG already has it.
 
         let mlirParams, paramBindings, needsArgvConversion, isUnitParam =
-            if isMain then
-                // C-style main: (int argc, char** argv) -> int
-                // Parameters use structured SSA: Arg 0, Arg 1
-                let cParams = [(Arg 0, TInt I32); (Arg 1, TPtr)]
-                let bindings, needsConv =
-                    match params' with
-                    | [(paramName, paramType, _nodeId)] when paramName <> "_" ->
-                        match paramType with
-                        | NativeType.TApp({ Name = "array" }, [NativeType.TApp({ Name = "string" }, [])]) ->
-                            // string[] parameter - needs argv conversion
-                            [(paramName, None)], true
-                        | _ ->
-                            // Other parameter type - bind to argv pointer
-                            [(paramName, Some (Arg 1, TPtr))], false
-                    | [(_, _, _)] -> [], false  // Discarded parameter
-                    | [] -> [], false  // Unit parameter
-                    | _ ->
-                        // Multiple parameters - bind each to sequential args
-                        params' |> List.mapi (fun i (name, _ty, _nodeId) ->
-                            if name = "_" then (name, None)
-                            else (name, Some (Arg (i + 1), TPtr))), false
-                cParams, bindings, needsConv, false
-            else
-                // Regular lambda - use node.Type for parameter types
-                let rec extractParamTypes ty count =
-                    if count <= 0 then []
-                    else
-                        match ty with
-                        | NativeType.TFun(paramTy, resultTy) ->
-                            paramTy :: extractParamTypes resultTy (count - 1)
-                        | _ -> []
+            // Use node.Type for parameter types - trust the PSG
+            let rec extractParamTypes ty count =
+                if count <= 0 then []
+                else
+                    match ty with
+                    | NativeType.TFun(paramTy, resultTy) ->
+                        paramTy :: extractParamTypes resultTy (count - 1)
+                    | _ -> []
 
-                // NTU PRINCIPLE: Unit has size 0, so unit parameters are elided
-                // Check if the function domain type is unit - if so, nullary at native level
-                // Conservative: only elide when we have positive proof of NTUunit
-                let isUnitParam =
-                    match node.Type with
-                    | NativeType.TFun(NativeType.TApp(tc, _), _) ->
-                        tc.NTUKind = Some NTUKind.NTUunit || tc.Name = "unit"
-                    | NativeType.TFun _ ->
-                        false  // TVar, TFun, TTuple domains - not unit, don't elide
-                    | _nonFunType ->
-                        // Lambda should have TFun type. If not, conservative fallback:
-                        // don't elide parameters (safe behavior, just potentially suboptimal)
-                        false
+            // NTU PRINCIPLE: Unit has size 0, so unit parameters are elided
+            // Check if the function domain type is unit - if so, nullary at native level
+            // Conservative: only elide when we have positive proof of NTUunit
+            let isUnitParam =
+                match node.Type with
+                | NativeType.TFun(NativeType.TApp(tc, _), _) ->
+                    tc.NTUKind = Some NTUKind.NTUunit || tc.Name = "unit"
+                | NativeType.TFun _ ->
+                    false  // TVar, TFun, TTuple domains - not unit, don't elide
+                | _nonFunType ->
+                    // Lambda should have TFun type. If not, conservative fallback:
+                    // don't elide parameters (safe behavior, just potentially suboptimal)
+                    false
 
-                // CLOSURE HANDLING:
-                // 1. Escaping closures (with ClosureLayout): Arg 0 is env_ptr, params shift by 1
-                // 2. Nested functions with captures (no ClosureLayout): captures become explicit params
-                // 3. Simple lambdas (no captures): no offset
-                let closureLayoutOpt = lookupClosureLayout node.Id ctx.Coeffects.SSA
-                let hasEscapingClosure = Option.isSome closureLayoutOpt
-                let hasNestedCaptures = not (List.isEmpty captures) && Option.isNone closureLayoutOpt
+            // CLOSURE HANDLING:
+            // 1. Escaping closures (with ClosureLayout): Arg 0 is env_ptr, params shift by 1
+            // 2. Nested functions with captures (no ClosureLayout): captures become explicit params
+            // 3. Simple lambdas (no captures): no offset
+            let closureLayoutOpt = lookupClosureLayout node.Id ctx.Coeffects.SSA
+            let hasEscapingClosure = Option.isSome closureLayoutOpt
+            let hasNestedCaptures = not (List.isEmpty captures) && Option.isNone closureLayoutOpt
 
-                // Use graph-aware type mapping for record types
-                let mapTypeWithGraph = mapNativeTypeWithGraphForArch ctx.Coeffects.Platform.TargetArch ctx.Graph
+            // Use graph-aware type mapping for record types
+            let mapTypeWithGraph = mapNativeTypeWithGraphForArch ctx.Coeffects.Platform.TargetArch ctx.Graph
 
-                // Build capture params for nested functions
-                let captureParams, captureBindings =
-                    if hasNestedCaptures then
-                        let capPs = captures |> List.mapi (fun i cap ->
-                            (Arg i, mapTypeWithGraph cap.Type))
-                        let capBs = captures |> List.mapi (fun i cap ->
-                            (cap.Name, Some (Arg i, mapTypeWithGraph cap.Type)))
-                        capPs, capBs
-                    else
-                        [], []
+            // Build capture params for nested functions
+            let captureParams, captureBindings =
+                if hasNestedCaptures then
+                    let capPs = captures |> List.mapi (fun i cap ->
+                        (Arg i, mapTypeWithGraph cap.Type))
+                    let capBs = captures |> List.mapi (fun i cap ->
+                        (cap.Name, Some (Arg i, mapTypeWithGraph cap.Type)))
+                    capPs, capBs
+                else
+                    [], []
 
-                let captureCount = List.length captureParams
-                let argOffset =
-                    if hasEscapingClosure then 1  // env_ptr at Arg 0
-                    elif hasNestedCaptures then captureCount  // captures at Arg 0..N-1
-                    else 0
+            let captureCount = List.length captureParams
+            let argOffset =
+                if hasEscapingClosure then 1  // env_ptr at Arg 0
+                elif hasNestedCaptures then captureCount  // captures at Arg 0..N-1
+                else 0
 
-                let mlirPs, bindings =
-                    if isUnitParam then
-                        // NTUunit has size 0 - no parameter generated
-                        // A function taking unit is nullary at the native level
-                        // This aligns with call sites which also elide unit arguments
-                        captureParams, captureBindings  // Still include capture params if nested
-                    else
-                        let nodeParamTypes = extractParamTypes node.Type (List.length params')
+            let mlirPs, bindings =
+                if isUnitParam then
+                    // NTUunit has size 0 - no parameter generated
+                    // A function taking unit is nullary at the native level
+                    // This aligns with call sites which also elide unit arguments
+                    captureParams, captureBindings  // Still include capture params if nested
+                else
+                    let nodeParamTypes = extractParamTypes node.Type (List.length params')
 
-                        // Build structured params: (Arg i+offset, MLIRType)
-                        // For closing lambdas, params start at Arg 1 (Arg 0 is env_ptr)
-                        // For nested functions with captures, params start at Arg N (captures at Arg 0..N-1)
-                        let ps = params' |> List.mapi (fun i (_name, nativeTy, _nodeId) ->
-                            let actualType =
-                                if i < List.length nodeParamTypes then nodeParamTypes.[i]
-                                else nativeTy
-                            (Arg (i + argOffset), mapTypeWithGraph actualType))
+                    // Build structured params: (Arg i+offset, MLIRType)
+                    // For closing lambdas, params start at Arg 1 (Arg 0 is env_ptr)
+                    // For nested functions with captures, params start at Arg N (captures at Arg 0..N-1)
+                    let ps = params' |> List.mapi (fun i (_name, nativeTy, _nodeId) ->
+                        let actualType =
+                            if i < List.length nodeParamTypes then nodeParamTypes.[i]
+                            else nativeTy
+                        (Arg (i + argOffset), mapTypeWithGraph actualType))
 
-                        // Build bindings: (paramName, Some (Arg i+offset, MLIRType))
-                        let bs = params' |> List.mapi (fun i (paramName, paramType, _nodeId) ->
-                            let actualType =
-                                if i < List.length nodeParamTypes then nodeParamTypes.[i]
-                                else paramType
-                            (paramName, Some (Arg (i + argOffset), mapTypeWithGraph actualType)))
+                    // Build bindings: (paramName, Some (Arg i+offset, MLIRType))
+                    let bs = params' |> List.mapi (fun i (paramName, paramType, _nodeId) ->
+                        let actualType =
+                            if i < List.length nodeParamTypes then nodeParamTypes.[i]
+                            else paramType
+                        (paramName, Some (Arg (i + argOffset), mapTypeWithGraph actualType)))
 
-                        captureParams @ ps, captureBindings @ bs
+                    captureParams @ ps, captureBindings @ bs
 
-                mlirPs, bindings, false, isUnitParam
+            mlirPs, bindings, false, isUnitParam
 
         // Determine captured variables and mutables for scope creation
         let closureLayoutOpt = lookupClosureLayout node.Id ctx.Coeffects.SSA

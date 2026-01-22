@@ -87,8 +87,6 @@ type PlatformResolutionResult = {
     Bindings: Map<int, BindingResolution>
     /// Whether _start wrapper is needed (freestanding mode)
     NeedsStartWrapper: bool
-    /// Pre-built _start wrapper MLIR ops (if needed)
-    StartWrapperOps: MLIROp list option
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -163,5 +161,4 @@ let empty (mode: RuntimeMode) (os: OSFamily) (arch: Architecture) : PlatformReso
         PlatformWordType = platformWordType arch
         Bindings = Map.empty
         NeedsStartWrapper = (mode = Freestanding)
-        StartWrapperOps = None
     }
