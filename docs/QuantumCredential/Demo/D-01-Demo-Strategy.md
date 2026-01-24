@@ -1,6 +1,6 @@
 # YoshiPi Demo Strategy: Linux Symmetry
 
-> **The Key Insight**: Both the YoshiPi device and the desktop Keystation are Linux systems. This means the same Firefly compilation pipeline, the same Alloy APIs, and the same WebView UI approach work on both ends.
+> **The Key Insight**: Both the YoshiPi device and the desktop Keystation are Linux systems. This means the same Firefly compilation pipeline, the same native F# APIs, and the same WebView UI approach work on both ends.
 
 ---
 
@@ -17,7 +17,7 @@ Both run:
 - Linux kernel
 - Firefly-compiled native binaries
 - WebView-based UI (via system webview)
-- Same Alloy library APIs
+- Same FNCS APIs
 
 The "it's just Linux" symmetry dramatically reduces complexity compared to bare-metal embedded approaches.
 
@@ -42,7 +42,7 @@ The "it's just Linux" symmetry dramatically reduces complexity compared to bare-
 │  │         │                                      │                  │ │
 │  │         ▼                                      ▼                  │ │
 │  │  ┌─────────────┐                    ┌─────────────────────────┐   │ │
-│  │  │ Alloy       │                    │ WebView Monitor UI      │   │ │
+│  │  │ FNCS        │                    │ WebView Monitor UI      │   │ │
 │  │  │ Platform.   │                    │ • Status display        │   │ │
 │  │  │ Bindings    │                    │ • Entropy visualization │   │ │
 │  │  └─────────────┘                    │ • Credential preview    │   │ │
@@ -103,7 +103,7 @@ The "it's just Linux" symmetry dramatically reduces complexity compared to bare-
 |--------|---------|---------|--------|
 | **Target** | Linux/ARM64 | Linux/x86_64 | Linux ABI |
 | **Syscalls** | ARM64 syscall convention | x86_64 syscall convention | Same syscall numbers |
-| **Alloy** | Platform.Bindings | Platform.Bindings | Same API |
+| **FNCS** | Platform.Bindings | Platform.Bindings | Same API |
 | **WebView** | WebKitGTK (ARM) | WebKitGTK (x86_64) | Same library |
 | **IPC** | BAREWire schemas | BAREWire schemas | Same types |
 
@@ -141,7 +141,7 @@ The YoshiPi carrier provides 4x 10-bit analog inputs. The avalanche circuit conn
 └── sampling_frequency  # Sample rate configuration
 ```
 
-**Alloy Binding:**
+**Platform Binding:**
 ```fsharp
 module Platform.Bindings =
     /// Read raw ADC value from IIO device
@@ -165,7 +165,7 @@ Via `ioctl` calls (or libgpiod):
 - `GPIO_GET_LINEHANDLE_IOCTL` - Acquire line handle
 - `GPIOHANDLE_SET_LINE_VALUES_IOCTL` - Set output values
 
-**Alloy Binding:**
+**Platform Binding:**
 ```fsharp
 module Platform.Bindings =
     /// Open GPIO chip device
@@ -282,7 +282,7 @@ backend = "src/Generator"    # Entropy + PQC + Credential
 embed_assets = true
 
 [dependencies]
-alloy = { path = "../../../Alloy/src" }
+# Uses FNCS intrinsics (no separate dependency)
 
 [build]
 output = "qc-generator"
@@ -305,7 +305,7 @@ backend = "src/Receiver"
 embed_assets = true
 
 [dependencies]
-alloy = { path = "../../../Alloy/src" }
+# Uses FNCS intrinsics (no separate dependency)
 
 [build]
 output = "keystation"
@@ -358,7 +358,7 @@ output_kind = "desktop"
 ### This Folder
 - [02_YoshiPi_Architecture](./02_YoshiPi_Architecture.md) - Hardware details, GPIO, ADC
 - [03_MLIR_Dialect_Strategy](./03_MLIR_Dialect_Strategy.md) - Compilation path: standard dialects for demo
-- [04_Linux_Hardware_Bindings](./04_Linux_Hardware_Bindings.md) - Alloy patterns for Linux hardware
+- [04_Linux_Hardware_Bindings](./04_Linux_Hardware_Bindings.md) - Platform.Bindings patterns for Linux hardware
 - [05_PostQuantum_Architecture](./05_PostQuantum_Architecture.md) - PQC algorithms, entropy design
 - [06_January_Roadmap](./06_January_Roadmap.md) - Timeline and sprints
 

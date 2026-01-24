@@ -1,14 +1,14 @@
 # Linux Hardware Bindings for YoshiPi
 
-> **Audience**: Firefly/Alloy developers implementing hardware access for YoshiPi
+> **Audience**: Firefly developers implementing hardware access for YoshiPi
 >
-> **Key Insight**: Linux provides uniform interfaces for hardware. GPIO, ADC, and serial all reduce to file descriptors and syscalls that Alloy already knows how to handle.
+> **Key Insight**: Linux provides uniform interfaces for hardware. GPIO, ADC, and serial all reduce to file descriptors and syscalls that Fidelity.Platform already knows how to handle.
 
 ---
 
 ## The Platform.Bindings Pattern
 
-All hardware access follows the established Platform.Bindings pattern from `Alloy/src/Platform.fs`:
+All hardware access follows the established Platform.Bindings pattern in Fidelity.Platform:
 
 ```fsharp
 module Platform.Bindings =
@@ -18,7 +18,7 @@ module Platform.Bindings =
 ```
 
 **How it works:**
-1. Alloy declares the function signature with `Unchecked.defaultof<T>` body
+1. Fidelity.Platform declares the function signature with `Unchecked.defaultof<T>` body
 2. Alex recognizes `Platform.Bindings.*` calls during PSG traversal
 3. Alex emits platform-specific MLIR (syscalls for Linux, API calls for Windows)
 4. The generated code calls the actual OS interface
@@ -488,7 +488,7 @@ module DeviceBindings =
 
 With these bindings, the YoshiPi demo can:
 
-| Operation | Alloy Module | Linux Interface |
+| Operation | FNCS Module | Linux Interface |
 |-----------|--------------|-----------------|
 | LED control | `GPIO.setValue` | ioctl on `/dev/gpiochip0` |
 | Button input | `GPIO.getValue` | ioctl on `/dev/gpiochip0` |
@@ -496,7 +496,7 @@ With these bindings, the YoshiPi demo can:
 | Fast entropy | `IIO.Buffered.readSamples` | read from `/dev/iio:device0` |
 | USB transfer | `USBGadget.writeCredential` | write to `/dev/ttyGS0` |
 
-**Key Advantage**: All of this is standard Linux programming. The same Firefly compiler, same Alloy libraries, same patterns as desktop - just different device paths and ioctl constants.
+**Key Advantage**: All of this is standard Linux programming. The same Firefly compiler, same FNCS intrinsics, same patterns as desktop - just different device paths and ioctl constants.
 
 ---
 

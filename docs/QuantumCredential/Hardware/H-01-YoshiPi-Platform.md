@@ -398,5 +398,5 @@ vc4
 
 - [01_YoshiPi_Demo_Strategy](./01_YoshiPi_Demo_Strategy.md) - Overall strategy
 - [03_MLIR_Dialect_Strategy](./03_MLIR_Dialect_Strategy.md) - Compilation path and parallel execution
-- [04_Linux_Hardware_Bindings](./04_Linux_Hardware_Bindings.md) - Alloy Platform.Bindings for Linux hardware
+- [04_Linux_Hardware_Bindings](./04_Linux_Hardware_Bindings.md) - Fidelity.Platform bindings for Linux hardware
 - [05_PostQuantum_Architecture](./05_PostQuantum_Architecture.md) - PQC algorithms

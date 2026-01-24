@@ -162,7 +162,7 @@ This transforms the demo from "credential generator" to "decentralized PKI infra
 **Why Sweet Potato for Keystation:**
 - More RAM (2GB vs 512MB) - comfortable for WebKitGTK
 - Same Linux/ARM64 target as YoshiPi
-- Same Alloy APIs, same WebView UI
+- Same native F# APIs, same WebView UI
 - Can drive an ultra-wide touchscreen via DSI or USB
 
 ### Ultra-Wide Touchscreen

@@ -261,7 +261,7 @@ What it defers:
 |------|---------|
 | `Alex/CodeGeneration/MLIRBuilder.fs` | MLIR emission infrastructure |
 | `Alex/Bindings/Linux/` | Platform-specific syscall emission |
-| `Alloy/Platform.fs` | Platform.Bindings signatures |
+| `Fidelity.Platform` | Platform.Bindings signatures |
 
 ### Architecture Documents
 

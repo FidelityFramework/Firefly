@@ -11,7 +11,7 @@ This document provides a comprehensive assessment of the Fidelity ecosystem and 
 | Component | State | Notes |
 |-----------|-------|-------|
 | FCS Integration | ✅ Working | Type checking, symbol resolution functional |
-| PSG Builder | ✅ Working | 11K+ nodes, 15K+ edges for HelloWorld+Alloy |
+| PSG Builder | ✅ Working | 11K+ nodes, 15K+ edges for HelloWorld |
 | Nanopasses | ✅ Working | DefUse, ClassifyOps, ParameterAnnotation |
 | Reachability | ✅ Working | 97%+ dead code elimination |
 | Alex/Zipper | ✅ Working | PSG traversal and MLIR generation |
@@ -47,7 +47,7 @@ This document provides a comprehensive assessment of the Fidelity ecosystem and 
 
 ---
 
-### Alloy Library
+### FNCS Intrinsics
 
 **Status: Core primitives working, expanding**
 
@@ -124,8 +124,8 @@ This document provides a comprehensive assessment of the Fidelity ecosystem and 
 | Network | ✅ Structured | Transport protocols |
 
 **Assessment:**
-BAREWire is designed as a .NET library with dependencies on System.Runtime.InteropServices and other BCL types. Porting to Fidelity/Alloy would require:
-- Replacing BCL memory types with Alloy NativeTypes
+BAREWire is designed as a .NET library with dependencies on System.Runtime.InteropServices and other BCL types. Porting to Fidelity would require:
+- Replacing BCL memory types with FNCS NativeTypes
 - Replacing Span<T> with NativeSpan
 - Removing FSharp.UMX dependency or porting it
 
@@ -149,7 +149,7 @@ Based on the Hardware Showcase Roadmap and current state:
 | Task | Complexity | Dependencies |
 |------|------------|--------------|
 | ARM Cortex-M33 LLVM target | Medium | LLVM toolchain setup |
-| GPIO/ADC primitives in Alloy | Medium | Hardware docs |
+| GPIO/ADC primitives in FNCS | Medium | Hardware docs |
 | ADC sampling for zener entropy | Medium | Analog circuit |
 | PQC library bindings (manual) | High | pq-crystals or pqm4 |
 | Entropy validation | Medium | NIST SP 800-90B |
@@ -208,13 +208,13 @@ Based on the Hardware Showcase Roadmap and current state:
 - [ ] Create `thumbv8m.main-none-eabi` target configuration
 - [ ] Test minimal ARM binary generation
 
-**Alloy:**
+**FNCS:**
 - [ ] Review and test Time.fs primitives
 - [ ] Ensure all current primitives have Alex bindings
 
 ### Week 2: ARM Platform Primitives
 
-**Alloy:**
+**FNCS:**
 - [ ] Add GPIO read/write primitives
 - [ ] Add ADC sampling primitive
 - [ ] Add basic timer primitives

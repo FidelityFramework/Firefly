@@ -145,7 +145,7 @@ Implementation variants in pqm4:
 
 ## Platform Bindings for PQC Libraries
 
-Fidelity uses the Platform.Bindings pattern (BCL-free) rather than DllImport. Alloy declares function signatures with `Unchecked.defaultof<T>` placeholders, and Alex provides platform-specific MLIR emission that links against the native PQC libraries.
+Fidelity uses the Platform.Bindings pattern (BCL-free) rather than DllImport. FNCS defines function signatures with `Unchecked.defaultof<T>` placeholders, and Alex provides platform-specific MLIR emission that links against the native PQC libraries.
 
 ### Layer 1: Platform Bindings (BCL-Free)
 

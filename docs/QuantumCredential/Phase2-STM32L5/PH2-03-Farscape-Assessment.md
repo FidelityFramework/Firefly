@@ -10,7 +10,7 @@ For the January demo goal of compiling F# code that interfaces with CMSIS HAL on
 
 1. **Parser is broken** (BLOCKING): CppSharp integration exists but is bypassed
 2. **No macro support**: CMSIS HAL depends heavily on `#define` constants
-3. **Wrong output format**: Generates P/Invoke for .NET runtime, not Alloy-style externs
+3. **Wrong output format**: Generates P/Invoke for .NET runtime, not FNCS-style intrinsics
 4. **No ARM bindings in Alex**: Need bare-metal register access, not syscalls
 
 ---
@@ -465,13 +465,13 @@ The F# binding doesn't need to resolve these; they're passed at runtime.
 
 ## 6. Comparison with Firefly's Binding Pattern
 
-### 6.1 How Alloy/Alex Bindings Work
+### 6.1 How FNCS/Alex Bindings Work
 
 Firefly's current binding system (for console I/O, time, etc.) follows the **Platform.Bindings pattern** (BCL-free):
 
-**Step 1: Alloy declares Platform.Bindings** (no DllImport!)
+**Step 1: Fidelity.Platform declares bindings** (no DllImport!)
 ```fsharp
-// Alloy/Platform.fs - BCL-free platform bindings
+// Fidelity.Platform - BCL-free platform bindings
 module Platform.Bindings =
     /// Write bytes to file descriptor
     let writeBytes (fd: int) (buffer: nativeint) (count: int) : int =
@@ -508,7 +508,7 @@ let bindWriteBytes (platform: TargetPlatform) (prim: ExternPrimitive) = mlir {
 
 Following the Platform.Bindings pattern (BCL-free):
 
-**Farscape generates** (like Alloy/Platform.fs):
+**Farscape generates** (like Fidelity.Platform):
 ```fsharp
 // Generated: CMSIS.STM32L5.GPIO.fs
 namespace CMSIS.STM32L5
@@ -590,7 +590,7 @@ macros |> List.exists (fun m -> m.Name = "GPIO_PIN_0") |> should be true
 - **B) Mode flag**: Add `OutputFormat` option (PInvoke | Fidelity)
 
 **Tasks**:
-1. Design output format matching Alloy Platform.Bindings pattern
+1. Design output format matching Fidelity.Platform pattern
 2. Generate `Platform.Bindings.*` module functions with `Unchecked.defaultof<T>`
 3. Use `nativeint` for pointer arguments (BCL-free)
 4. Emit proper struct definitions with `[<Struct>]`
@@ -633,7 +633,7 @@ macros |> List.exists (fun m -> m.Name = "GPIO_PIN_0") |> should be true
 ### 9.2 Reference Code
 
 - **Firefly bindings pattern**: `src/Alex/Bindings/Console/ConsoleBindings.fs`
-- **Alloy primitives**: `helpers/Alloy/src/Primitives.fs`
+- **FNCS primitives**: Core type operations
 - **CMSIS headers**: `helpers/cmsis/STM32L5xx_HAL_Driver/Inc/`
 - **Full STM32CubeL5**: `~/repos/STM32CubeL5/`
 

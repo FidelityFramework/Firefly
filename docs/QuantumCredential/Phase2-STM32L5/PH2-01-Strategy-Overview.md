@@ -139,8 +139,8 @@ Both demo paths employ strategic shortcuts. Understanding these shortcuts - what
 
 | Component | Status | Required Work |
 |-----------|--------|---------------|
-| Alloy Platform.Bindings.Webview | Not started | Add ~15 webview conduit functions |
-| Alloy Webview.fs module | Not started | Create BCL-sympathetic wrapper API |
+| Fidelity.Platform.Webview | Not started | Add ~15 webview conduit functions |
+| Fidelity.Platform Webview module | Not started | Create BCL-sympathetic wrapper API |
 | Alex Bindings/Webview | Not started | Generate library calls (not syscalls) |
 | Firefly build orchestration | Not started | Invoke Fable, Vite, embed HTML |
 | IPC (BAREWire-over-webview) | Design exists | Implement base64 encoding bridge |
@@ -213,7 +213,7 @@ Both demo paths employ strategic shortcuts. Understanding these shortcuts - what
 
 ### What NuttX Provides
 
-1. **POSIX Compliance**: `open`, `read`, `write`, `ioctl`, `close` - the same patterns Alloy already uses for console I/O.
+1. **POSIX Compliance**: `open`, `read`, `write`, `ioctl`, `close` - the same patterns FNCS already uses for console I/O.
 
 2. **Character Device Model**: Hardware peripherals appear as `/dev` entries:
    - `/dev/adc0` - ADC for entropy sampling
@@ -227,7 +227,7 @@ Both demo paths employ strategic shortcuts. Understanding these shortcuts - what
 ### How It Maps to Fidelity
 
 ```fsharp
-// Alloy code (same as desktop console I/O pattern)
+// F# with FNCS (same as desktop console I/O pattern)
 module Platform.Bindings =
     let openDevice (path: string) : int = Unchecked.defaultof<int>
     let closeDevice (fd: int) : int = Unchecked.defaultof<int>
@@ -291,7 +291,7 @@ The QuantumCredential project spans both demo targets:
 | PQC algorithms | liboqs/pqm4 | liboqs | Algorithm code |
 | BAREWire schemas | For IR framing | For IPC | Schema definitions |
 | Credential types | F# record types | Same | Type definitions |
-| Alloy library | Core modules | Full library | Core + Console |
+| FNCS | Core modules | Full library | Core + Console |
 
 ### Credential Exchange Protocol
 
@@ -319,7 +319,7 @@ let credentialSchema = BAREWire.schema<Credential>
 ### Immediate (Demo Enablers)
 
 1. **Validate NuttX STM32L5 port** - Get LED blink working on hardware
-2. **Add POSIX bindings to Alloy** - `openDevice`, `closeDevice`, `ioctl`
+2. **Add POSIX bindings to Fidelity.Platform** - `openDevice`, `closeDevice`, `ioctl`
 3. **Extend Alex for ARM NuttX** - Syscall generation for POSIX operations
 4. **Complete WebView Platform.Bindings** - Desktop demo foundation
 

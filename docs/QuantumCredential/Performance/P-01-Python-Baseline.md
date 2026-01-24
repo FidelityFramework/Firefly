@@ -92,7 +92,7 @@ Location: `hhh@192.168.68.60:~/bin/`
 ## Next Steps
 
 1. Design F# module for direct SPI register access on BCM2837
-2. Implement in Alloy as platform binding for ARM64 Linux
+2. Implement as Platform.Bindings for ARM64 Linux
 3. Create entropy generator using Fidelity compilation
 4. Validate sub-500ms performance target
 5. Integrate with QuantumCredential key derivation pipeline

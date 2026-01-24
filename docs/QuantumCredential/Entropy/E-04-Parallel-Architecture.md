@@ -92,7 +92,7 @@ type ADCChannel = CH0 | CH1 | CH2 | CH3
 
 ### Platform Binding Convention
 
-Following Alloy's `Platform.Bindings` pattern:
+Following Fidelity's `Platform.Bindings` pattern:
 
 ```fsharp
 module Platform.Bindings.SPI =
@@ -165,7 +165,7 @@ With DMA burst reads:
 | Component | Repository | Path |
 |-----------|------------|------|
 | fsnative types | ~/repos/fsnative | TBD - ARM native types |
-| Platform.Bindings.SPI | ~/repos/Alloy | src/Platform.fs |
+| Platform.Bindings.SPI | Fidelity.Platform | src/Platform.fs |
 | scf.parallel codegen | Firefly | src/Alex/Bindings/ |
 | Entropy sample | Firefly | samples/embedded/EntropyGenerator/ |
 

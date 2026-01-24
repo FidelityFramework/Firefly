@@ -48,7 +48,7 @@ let (|VolatilePeripheralWrite|_|) (node: PSGNode) =
 
 This architecture enables compile-time validation of memory access patterns, ensuring that read-only registers cannot be written, volatile accesses generate appropriate memory barriers, and hardware constraints are enforced through the type system rather than runtime checks.
 
-The demo exercises this architecture through GPIO control, ADC sampling, and WebView rendering, validating the quotation flow from Alloy declarations through fsnative nanopasses to Alex emission.
+The demo exercises this architecture through GPIO control, ADC sampling, and WebView rendering, validating the quotation flow from FNCS declarations through fsnative nanopasses to Alex emission.
 
 ### BAREWire Zero-Copy Protocol
 
@@ -56,10 +56,10 @@ The BAREWire protocol, protected by patent US 63/786,247 ("System and Method for
 
 ### Platform Binding Pattern
 
-The demo validates the Platform.Bindings pattern where Alloy declares hardware access signatures without implementation, and Alex provides platform-specific MLIR emission. This separation ensures that application code remains hardware-agnostic while enabling aggressive platform-specific optimization:
+The demo validates the Platform.Bindings pattern where FNCS defines hardware access signatures without implementation, and Alex provides platform-specific MLIR emission. This separation ensures that application code remains hardware-agnostic while enabling aggressive platform-specific optimization:
 
 ```fsharp
-// Alloy declares the interface
+// FNCS defines the interface
 module Platform.Bindings =
     let ioctl (fd: int) (request: uint64) (arg: nativeint) : int =
         Unchecked.defaultof<int>
@@ -111,7 +111,7 @@ The STM32L5 bare-metal path remains documented in the Phase2_STM32L5 subdirector
 
 ### Core Documentation
 
-**[01_YoshiPi_Demo_Strategy.md](./01_YoshiPi_Demo_Strategy.md)** establishes the symmetric architecture where credential generator and keystation share code through common Linux targeting. The document explains how Alloy APIs, WebView rendering, and Platform.Bindings work identically across both devices.
+**[01_YoshiPi_Demo_Strategy.md](./01_YoshiPi_Demo_Strategy.md)** establishes the symmetric architecture where credential generator and keystation share code through common Linux targeting. The document explains how native F# APIs, WebView rendering, and Platform.Bindings work identically across both devices.
 
 **[02_YoshiPi_Architecture.md](./02_YoshiPi_Architecture.md)** details the hardware integration including the quad-channel avalanche circuit connection to ADC inputs, GPIO control via the Linux gpiochip interface, and display rendering through WebKitGTK. Memory layout diagrams show how stack-based allocation serves the demo's needs.
 
@@ -134,7 +134,7 @@ The STM32L5 bare-metal path remains documented in the Phase2_STM32L5 subdirector
 | Component | Capability Validated |
 |-----------|---------------------|
 | **Firefly** | ARM64 cross-compilation, build orchestration |
-| **Alloy** | String/Array with native semantics, Platform.Bindings pattern |
+| **FNCS** | String/Array with native semantics, Platform.Bindings pattern |
 | **Alex** | Linux syscall emission, WebKitGTK library bindings, scf.parallel code generation |
 | **BAREWire** | Credential serialization, memory-mapped descriptors |
 | **fsnative** | Quotation attachment, constraint validation nanopasses |
