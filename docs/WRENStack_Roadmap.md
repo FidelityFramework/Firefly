@@ -107,30 +107,32 @@ This foundation works for desktop AND embedded/MCU/unikernel targets. True paral
 
 See: Serena memory `mailboxprocessor_first_stage`
 
-## Feature Inventory
+## Feature Inventory by PRD Category
 
-Each FidelityHelloWorld sample proves specific capabilities:
+Features are organized by PRD category (see [PRDs/INDEX.md](./PRDs/INDEX.md) for complete mapping):
 
-| Sample | Features Proven |
-|--------|-----------------|
-| 01-04 | Basic I/O, let bindings, pipes, currying, lambdas |
-| 05-06 | Arithmetic, interactive input |
-| 07 | Bit operations |
-| 08 | Option type (2-element DU) |
-| 09 | Result type (multi-payload DU) |
-| 10 | Record types and patterns (needs fix) |
-| 11-12 | Higher-order functions, closures |
-| 13 | Recursion (needs fix) |
-| 14-15 | Sequences - codata state machines |
-| 16 | Lazy evaluation - thunk observation |
-| 17-19 | Async via LLVM coroutines - suspension coeffects |
-| 20-22 | **Scoped Regions** - compiler-inferred disposal |
-| 23-24 | Sockets, WebSocket - Region-backed I/O buffers |
-| 25-26 | GTK window, WebView - FFI bindings |
-| 27-28 | Threading primitives - Thread/Mutex coeffects |
-| **29-31** | **MailboxProcessor - CAPSTONE** |
+| PRD Category | Features Proven |
+|--------------|-----------------|
+| **F-01 to F-04** | Basic I/O, let bindings, pipes, currying, lambdas |
+| **F-05 to F-06** | Discriminated unions, interactive parsing |
+| **F-07** | Bits intrinsics (htons, ntohl, bit casting) |
+| **F-08** | Option type (homogeneous DU) |
+| **F-09** | Result type (heterogeneous DU, arena affinity) |
+| **F-10** | Record types and patterns |
+| **C-01, C-02** | Closures, higher-order functions |
+| **C-03** | Recursion and tail calls |
+| **C-04** | Core collections (List, Map, Set) |
+| **C-05** | Lazy evaluation - thunk observation |
+| **C-06, C-07** | Sequences - codata state machines |
+| **A-01 to A-03** | Async via LLVM coroutines - suspension coeffects |
+| **A-04 to A-06** | **Scoped Regions** - compiler-inferred disposal |
+| **I-01, I-02** | Sockets, WebSocket - Region-backed I/O buffers |
+| **D-01, D-02** | GTK window, WebView - FFI bindings |
+| **T-01, T-02** | Threading primitives - Thread/Mutex coeffects |
+| **T-03 to T-05** | **MailboxProcessor - CAPSTONE** |
+| **R-01 to R-03** | Observable/Reactive - event streams |
 
-See: [FidelityHelloWorld_Progression.md](./FidelityHelloWorld_Progression.md)
+See: [PRDs/INDEX.md](./PRDs/INDEX.md) for detailed PRD specifications
 
 ## Dependency Map
 
@@ -176,48 +178,48 @@ See: [FidelityHelloWorld_Progression.md](./FidelityHelloWorld_Progression.md)
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Milestone Checklist
+## Milestone Checklist (by PRD)
 
-### Phase A: Foundation Fixes
-- [ ] Fix Sample 10 (Record pattern matching) - `RecordPattern` Active Pattern
-- [ ] Fix Sample 12 (Closure source bugs) - verify capture coeffects
-- [ ] Fix Sample 13 (Recursive let bindings) - `RecursiveBinding` coeffect
+### Phase A: Foundation Completion (F-xx)
+- [ ] **F-10**: Record pattern matching - `RecordPattern` Active Pattern
+- [ ] **C-01**: Closure source verification - capture coeffects
 
-### Phase B: Sequences
-- [ ] Sample 14: Simple seq { for/yield } - yield state indices
-- [ ] Sample 15: Seq.map, Seq.filter, Seq.take - composed iterators
+### Phase B: Computation (C-xx)
+- [ ] **C-03**: Recursive let bindings - `RecursiveBinding` coeffect
+- [ ] **C-04**: Core collections (List, Map, Set)
+- [ ] **C-05**: Lazy evaluation - thunk observation
+- [ ] **C-06**: Simple seq { for/yield } - yield state indices
+- [ ] **C-07**: Seq.map, Seq.filter, Seq.take - composed iterators
 
-### Phase C: Lazy Evaluation
-- [ ] Sample 16: lazy { } and Lazy.force - thunk observation
+### Phase C: Async & Regions (A-xx)
+- [ ] **A-01**: Basic async { return value } - trivial coroutine
+- [ ] **A-02**: async { let! x = ... } - suspension coeffects
+- [ ] **A-03**: Async.Parallel - sequential composition
+- [ ] **A-04**: Basic region allocation and disposal - `NeedsCleanup` coeffect
+- [ ] **A-05**: Region parameter passing - `BorrowedRegion` coeffect
+- [ ] **A-06**: Region escape prevention and copyOut - escape analysis nanopass
 
-### Phase D: Async (LLVM Coroutines)
-- [ ] Sample 17: Basic async { return value } - trivial coroutine
-- [ ] Sample 18: async { let! x = ... } - suspension coeffects
-- [ ] Sample 19: Async.Parallel - sequential composition
+### Phase D: Networking (I-xx)
+- [ ] **I-01**: TCP socket basics - Sys.* intrinsics with Region buffers
+- [ ] **I-02**: WebSocket echo server - Layer 3 library on Sys intrinsics
 
-### Phase E: Scoped Regions
-- [ ] Sample 20: Basic region allocation and disposal - `NeedsCleanup` coeffect
-- [ ] Sample 21: Region parameter passing - `BorrowedRegion` coeffect
-- [ ] Sample 22: Region escape prevention and copyOut - escape analysis nanopass
+### Phase E: Desktop (D-xx)
+- [ ] **D-01**: GTK window - `FFICall` Active Pattern, `ExternCall` template
+- [ ] **D-02**: WebView with HTML content - WebKitGTK FFI bindings
 
-### Phase F: Networking
-- [ ] Sample 23: TCP socket basics - Sys.* intrinsics with Region buffers
-- [ ] Sample 24: WebSocket echo server - Layer 3 library on Sys intrinsics
+### Phase F: Threading & Actors (T-xx)
+- [ ] **T-01**: Thread.create / Thread.join - Thread coeffect, capture analysis
+- [ ] **T-02**: Mutex synchronization - `SyncPrimitive` coeffect
+- [ ] **T-03**: Basic actor with Post/Receive - `ActorStart` Active Pattern
+- [ ] **T-04**: PostAndReply (request-response) - `SyncChannel` template
+- [ ] **T-05**: Parallel actors with region-based worker memory - composed templates
 
-### Phase G: Desktop Scaffold
-- [ ] Sample 25: GTK window - `FFICall` Active Pattern, `ExternCall` template
-- [ ] Sample 26: WebView with HTML content - WebKitGTK FFI bindings
+### Phase G: Reactive (R-xx)
+- [ ] **R-01**: Observable foundations - basic event streams
+- [ ] **R-02**: Observable operators - map, filter, merge
+- [ ] **R-03**: Observable integration with Async/Actors
 
-### Phase H: Threading Primitives
-- [ ] Sample 27: Thread.create / Thread.join - Thread coeffect, capture analysis
-- [ ] Sample 28: Mutex synchronization - `SyncPrimitive` coeffect
-
-### Phase I: MailboxProcessor (CAPSTONE)
-- [ ] Sample 29: Basic actor with Post/Receive - `ActorStart` Active Pattern
-- [ ] Sample 30: PostAndReply (request-response) - `SyncChannel` template
-- [ ] Sample 31: Parallel actors with region-based worker memory - composed templates
-
-### Phase J: WRENStack Template
+### Phase H: WRENStack Template
 - [ ] Working WrenHello demonstration with actor backend
 - [ ] dotnet template package
 - [ ] Installation documentation
@@ -243,21 +245,20 @@ See: [FidelityHelloWorld_Progression.md](./FidelityHelloWorld_Progression.md)
 
 ## Related Documentation
 
-- [Async_LLVM_Coroutines.md](./Async_LLVM_Coroutines.md) - Technical approach for async
-- [FidelityHelloWorld_Progression.md](./FidelityHelloWorld_Progression.md) - Sample development plan
+**PRDs** (authoritative feature specifications):
+- [PRDs/INDEX.md](./PRDs/INDEX.md) - Master PRD index with dependency graph
+
+**Architecture**:
 - [Architecture_Canonical.md](./Architecture_Canonical.md) - Two-layer FNCS/Alex model
 - [FNCS_Architecture.md](./FNCS_Architecture.md) - F# Native Compiler Services
+- [Async_LLVM_Coroutines.md](./Async_LLVM_Coroutines.md) - Technical approach for async
 - [WebView_Desktop_Architecture.md](./WebView_Desktop_Architecture.md) - Desktop UI architecture
 
-**FNCS Intrinsics Specification**:
-- `/home/hhh/repos/fsnative/docs/fidelity/FNCS_Lazy_Seq_Coroutine_Intrinsics.md` - Semantic contracts for computation types
-
 **Serena Memories** (architectural guidance):
+- `architecture_principles` - Layer separation, non-dispatch model
 - `four_pillars_of_transfer` - Coeffects, Active Patterns, Zipper, Templates
 - `codata_photographer_principle` - Witness, don't construct
-- `architecture_principles` - Layer separation, non-dispatch model
 - `computation_strategy_architecture` - Strategy overview
 - `async_llvm_coroutines` - LLVM coro strategy for async/seq/lazy
 - `mailboxprocessor_first_stage` - MailboxProcessor implementation strategy
 - `scoped_regions_architecture` - Region design and coeffects
-- `coroutines_as_dcont_substrate` - Future DCont implementation via coroutines
