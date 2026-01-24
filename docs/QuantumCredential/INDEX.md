@@ -118,13 +118,21 @@ Patent portfolio and technology foundations.
 | [PH1-01-Linux-Symmetry](Phase1-YoshiPi/PH1-01-Linux-Symmetry.md) | Same compiler targets both YoshiPi and desktop |
 | [PH1-02-IIO-ADC-Bindings](Phase1-YoshiPi/PH1-02-IIO-ADC-Bindings.md) | Linux Industrial I/O subsystem integration |
 
-#### Phase 2: STM32L5 (Bare Metal)
+#### Phase 2: Embedded (Bare Metal)
+
+**Primary Target: Renesas RA6M5**
 
 | Document | Description |
 |----------|-------------|
-| [PH2-01-Strategy-Overview](Phase2-STM32L5/PH2-01-Strategy-Overview.md) | Bare-metal production target strategy |
-| [PH2-02-Hardware-Platforms](Phase2-STM32L5/PH2-02-Hardware-Platforms.md) | STM32L5 and alternative MCU options |
-| [PH2-03-HAL-Bindings](Phase2-STM32L5/PH2-03-HAL-Bindings.md) | STM32 HAL integration via Platform.Bindings |
+| [PH2-00-Embedded-Strategy](Phase2-Embedded/PH2-00-Embedded-Strategy.md) | Platform comparison and strategy |
+| [PH2-01-RA6M5-Platform](Phase2-Embedded/PH2-01-RA6M5-Platform.md) | EK-RA6M5 evaluation kit details |
+| [PH2-02-RA6M5-Security](Phase2-Embedded/PH2-02-RA6M5-Security.md) | TrustZone and Secure Crypto Engine |
+
+**Secondary Target: STM32L5** (on hold)
+
+| Document | Description |
+|----------|-------------|
+| [STM32L5 Documentation](Phase2-Embedded/STM32L5/) | Preserved for future reference |
 
 ---
 
@@ -172,8 +180,8 @@ The hardware (four independent avalanche diodes) implements a mathematical requi
 |----------|-------|---------|----------------|
 | **YoshiPi** | 1 | Development/Demo | 4-channel avalanche via MCP3004 ADC |
 | **Desktop Linux** | 1 | Compiler symmetry | Same code, simulated entropy |
-| **STM32L5** | 2 | Production | Direct ADC, no OS |
-| **STM32U5** | 2 | Alternative | Higher resolution ADC |
+| **Renesas RA6M5** | 2 | Production (primary) | Internal 12-bit ADC, TrustZone |
+| **STM32L5** | 2 | Alternative (on hold) | Direct ADC, no OS |
 
 The same Firefly-compiled F# code runs on all platforms. Only `Platform.Bindings` differ.
 
