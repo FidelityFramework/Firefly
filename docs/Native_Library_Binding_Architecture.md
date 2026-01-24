@@ -232,9 +232,9 @@ let main () =
 Firefly compiles this through its pipeline:
 
 ```
-Blink.fs + Fidelity.STM32L5 + BAREWire.STM32L5 + Alloy
+Blink.fs + Fidelity.STM32L5 + BAREWire.STM32L5
                         ↓
-                      FCS
+                      FNCS
                         ↓
               PSG (Program Semantic Graph)
                         ↓
@@ -366,11 +366,10 @@ Output: A standalone `.elf` binary ready to flash to the microcontroller.
 │  │ Application.fs  │                                                        │
 │  │ + Fidelity.*    │                                                        │
 │  │ + BAREWire.*    │                                                        │
-│  │ + Alloy         │                                                        │
 │  └────────┬────────┘                                                        │
 │           ▼                                                                 │
 │  ┌─────────────────┐                                                        │
-│  │      FCS        │  (F# Compiler Services)                                │
+│  │      FNCS       │  (F# Native Compiler Services)                         │
 │  └────────┬────────┘                                                        │
 │           ▼                                                                 │
 │  ┌─────────────────┐                                                        │
@@ -744,12 +743,12 @@ module Platform.Bindings.SQLite =
 ### System Libraries
 
 ```fsharp
-// Alloy Platform.Bindings (already in Alloy/Platform.fs)
+// Fidelity.Platform bindings
 module Platform.Bindings =
     let writeBytes (fd: int) (buf: nativeint) (count: int) : int =
         Unchecked.defaultof<int>
 
-// Windows bindings would be in a Platform.Bindings.Windows module
+// Platform-specific bindings in Fidelity.Platform/<Target>
 // Alex provides platform-specific MLIR emission for each
 ```
 

@@ -18,7 +18,7 @@ This document describes a desktop application framework built on the Fidelity ec
 - **Single native executable** with embedded web UI
 - **Partas.Solid** component model compiled to JavaScript via Fable
 - **Firefly** orchestrates the entire build pipeline
-- **Platform-agnostic Alloy bindings**, platform-specific Alex implementations
+- **Platform-agnostic Fidelity.Platform bindings**, platform-specific Alex implementations
 - **System webview** (WebKitGTK/WebView2/WKWebView) renders the UI
 
 The architecture follows the same model as SAFE Stack for web applications, but targets native desktop instead of web servers.
@@ -334,12 +334,12 @@ This is **not** Electron. The browser engine is the system's webview, not bundle
 
 The Fidelity framework enforces strict layer separation between platform-agnostic and platform-specific code.
 
-### Alloy: Platform-Agnostic Bindings
+### Fidelity.Platform: Platform-Agnostic Bindings
 
-Alloy defines the **interface** for platform bindings without any platform-specific code:
+Fidelity.Platform defines the **interface** for platform bindings without any platform-specific code:
 
 ```fsharp
-// Alloy/Platform.fs
+// Fidelity.Platform/Platform.fs
 module Platform.Bindings =
     // Alex provides implementation for each platform
     let createWebview (debug: int) (window: nativeint) : nativeint =
@@ -353,7 +353,7 @@ module Platform.Bindings =
 
 The `Unchecked.defaultof<T>` is a **conduit marker** - it signals that Alex provides the actual implementation.
 
-**There is NO platform-specific code in Alloy:**
+**There is NO platform-specific code in Fidelity.Platform:**
 - No `#if LINUX`
 - No `DllImport` (that's BCL!)
 - No Linux/, Windows/, macOS/ directories
@@ -381,7 +381,7 @@ let bindCreateWebview (platform: TargetPlatform) (prim: PlatformPrimitive) = mli
 }
 ```
 
-The same Alloy code compiles to different platform-specific MLIR depending on the `--target` flag.
+The same Fidelity.Platform code compiles to different platform-specific MLIR depending on the `--target` flag.
 
 ### Why This Matters
 
@@ -389,7 +389,7 @@ This separation enables:
 - **Cross-compilation**: Build for any platform from any platform
 - **Single codebase**: No conditional compilation in application code
 - **Type safety**: Compiler verifies the interface, Alex provides implementation
-- **Extensibility**: Add new platforms without touching Alloy
+- **Extensibility**: Add new platforms without touching Fidelity.Platform
 
 ---
 
@@ -564,7 +564,7 @@ The webview approach provides:
 - **Bridge to native**: Same MVU patterns will transfer to FidelityUI
 
 Both approaches share the architectural principles:
-- Platform-agnostic definitions in Alloy
+- Platform-agnostic definitions in Fidelity.Platform
 - Platform-specific implementations in Alex
 - Firefly as the unified build orchestrator
 
@@ -583,7 +583,7 @@ Both approaches share the architectural principles:
 
 | Term | Definition |
 |------|------------|
-| **Alloy** | Native F# standard library - platform-agnostic bindings |
+| **Fidelity.Platform** | Native F# standard library - platform-agnostic bindings |
 | **Alex** | Firefly's multi-dimensional targeting layer - generates platform-specific MLIR |
 | **Conduit** | A Platform.Bindings function where Alex provides the implementation |
 | **DCont** | Delimited continuations MLIR dialect |

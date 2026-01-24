@@ -179,9 +179,9 @@ Frontend (Fable-compiled) and backend (Firefly-compiled) use the same types and 
 
 ### Base64 Utilities
 
-**Native side (Alloy):**
+**Native side (Fidelity.Platform):**
 ```fsharp
-module Alloy.Encoding.Base64
+module Fidelity.Platform.Encoding.Base64
 
 let encode (bytes: Span<byte>) : string = ...
 let decode (str: string) : byte array = ...
@@ -286,9 +286,9 @@ WebView2LoaderStatic.lib (static linking option)
 
 ## Platform.Bindings.Webview Mapping
 
-Mapping from Alloy bindings to webview C API:
+Mapping from Fidelity.Platform bindings to webview C API:
 
-| Alloy Binding | C Function | Notes |
+| Fidelity.Platform Binding | C Function | Notes |
 |---------------|------------|-------|
 | `createWebview` | `webview_create` | |
 | `destroyWebview` | `webview_destroy` | |

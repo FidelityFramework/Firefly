@@ -79,7 +79,7 @@ module Capabilities =
 ### Using Predicates for Conditional Compilation
 
 ```fsharp
-// In Alloy or application code
+// In application code using Fidelity.Platform
 let vectorAdd (a: array<float>) (b: array<float>) =
     if Platform.has_avx512 then
         vectorAdd_avx512 a b
@@ -183,7 +183,6 @@ Projects reference platform bindings:
 name = "HelloWorld"
 
 [dependencies]
-alloy = { path = "/home/hhh/repos/Alloy/src" }
 platform = { path = "/home/hhh/repos/Fidelity.Platform/Linux_x86_64" }
 
 [build]

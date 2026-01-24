@@ -31,7 +31,7 @@ If you're familiar with .NET multi-project solutions, here's the mental model:
 | `dotnet build MySolution.sln` | `firefly build MyApp.fidproj` |
 | Project references | `[desktop]` section defines frontend/backend |
 | MSBuild targets | Firefly build phases |
-| NuGet packages | Alloy library + npm packages |
+| NuGet packages | Fidelity.Platform library + npm packages |
 | `dotnet publish` | `firefly build --target <platform>` |
 
 The difference: Firefly also orchestrates **Fable** (F# → JS) and **Vite** (bundling), producing a truly unified build.
@@ -102,7 +102,7 @@ target = "native"
 
 # Dependencies
 [dependencies]
-alloy = { path = "/home/user/repos/Alloy/src" }
+alloy = { path = "/home/user/repos/Fidelity.Platform/src" }
 
 # Build output
 [build]
@@ -231,8 +231,8 @@ The backend's entry point uses the embedded assets:
 // src/Backend/Main.fs
 module MyApp.Main
 
-open Alloy
-open Alloy.Webview
+open Fidelity.Platform
+open Fidelity.Platform.Webview
 
 let main () =
     let w = Webview.create true
@@ -361,7 +361,7 @@ The `Backend.fsproj` and `Frontend.fsproj` files exist for **IDE support only** 
     <TargetFramework>net9.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../../Alloy/src/Alloy.fsproj" />
+    <ProjectReference Include="../../Fidelity.Platform/src/Fidelity.Platform.fsproj" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Api.fs" />
