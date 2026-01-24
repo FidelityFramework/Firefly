@@ -1,6 +1,6 @@
-# PRD-13a: Core Collections and Range Expressions
+# C-04: Core Collections and Range Expressions
 
-> **Sample**: `13a_Collections` | **Status**: Planned | **Depends On**: PRD-11 (Closures), PRD-13 (Recursion)
+> **Sample**: `13a_Collections` | **Status**: Planned | **Depends On**: C-01 (Closures), C-03 (Recursion)
 
 **Foundation for Eager Collections and Idiomatic F# Syntax**: This PRD establishes the core collection types and range expressions that BAREWire and most F# programs require. Unlike Seq (lazy, pull-based), these are eager, fully-materialized data structures.
 
@@ -38,7 +38,7 @@ These are NOT lazy sequences - collections are fully materialized in memory. Ran
 Following FNCS principles:
 1. **Monomorphization** - Collections are specialized per element type (no uniform representation)
 2. **No Boxing** - Element types are stored directly, not as `obj`
-3. **Arena-Friendly** - Collections allocate from regions when available (PRD-20+)
+3. **Arena-Friendly** - Collections allocate from regions when available (A-04+)
 4. **Structural Sharing** - Immutable operations share unchanged substructure
 
 ## 2. Type Definitions
@@ -130,7 +130,7 @@ Range expressions are idiomatic F# syntax for generating sequences of values. Th
 | `[10..-1..1]` | Countdown 10,9,8,...,1 | `List.ofSeq (seq { 10..-1..1 })` |
 | `[|1..10|]` | Array 1 to 10 | `Array.init 10 (fun i -> i + 1)` |
 | `[|1..2..10|]` | Array with step | Loop-based initialization |
-| `seq { 1..10 }` | Lazy sequence | State machine (PRD-15) |
+| `seq { 1..10 }` | Lazy sequence | State machine (C-06) |
 | `{ 1..10 }` | Sequence (implicit) | Same as `seq { 1..10 }` |
 
 #### 2.6.2 FCS Representation
@@ -473,7 +473,7 @@ Per the diagnostic principle: **No silent default cases**. The `| _ -> "_"` fall
 ```fsharp
 // CORRECT: Explicit handling with diagnostic
 | SynPat.Tuple _ ->
-    failwith "Tuple destructuring in let bindings not yet implemented (PRD-13a §3.6)"
+    failwith "Tuple destructuring in let bindings not yet implemented (C-04 §3.6)"
 | SynPat.Paren(inner, _) ->
     getBindingName' inner  // Unwrap parentheses
 | other ->
@@ -534,7 +534,7 @@ Implement remaining Map and Set operations:
 - Bulk operations: `ofList`, `toList`
 - Set operations: `union`, `intersect`, `difference`
 
-### 4.4 Phase 4: Integration with Regions (PRD-20+)
+### 4.4 Phase 4: Integration with Regions (A-04+)
 
 Once regions are available:
 - Collection nodes allocate from current region
@@ -635,12 +635,12 @@ Alex resolves SRTP to concrete comparison implementations:
 
 ### 6.1 Pre-Region (Stack/Global Arena)
 
-Before PRD-20 regions:
+Before A-04 regions:
 - Collections allocate from a global arena
 - Arena cleared on program exit
 - No early deallocation (acceptable for short-lived programs)
 
-### 6.2 Post-Region (PRD-20+)
+### 6.2 Post-Region (A-04+)
 
 With regions:
 - Collections allocate from the enclosing region
@@ -820,12 +820,12 @@ Set contains 2
 
 | PRD | Relationship |
 |-----|--------------|
-| PRD-11 (Closures) | List.map, filter, fold take closure parameters |
-| PRD-13 (Recursion) | Collection operations are naturally recursive |
-| PRD-14 (Lazy) | `List.tryHead` returns `Option`, not `Lazy` |
-| PRD-15 (Seq) | `Seq.toList`, `List.toSeq` convert between |
-| PRD-16 (SeqOps) | Many Seq ops mirror List ops |
-| PRD-20 (Regions) | Collections allocate from regions |
+| C-01 (Closures) | List.map, filter, fold take closure parameters |
+| C-03 (Recursion) | Collection operations are naturally recursive |
+| C-05 (Lazy) | `List.tryHead` returns `Option`, not `Lazy` |
+| C-06 (Seq) | `Seq.toList`, `List.toSeq` convert between |
+| C-07 (SeqOps) | Many Seq ops mirror List ops |
+| A-04 (Regions) | Collections allocate from regions |
 
 ## 11. Anti-Patterns
 

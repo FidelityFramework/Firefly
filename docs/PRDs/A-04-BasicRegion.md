@@ -1,6 +1,6 @@
-# PRD-20: Basic Region Allocation
+# A-04: Basic Region Allocation
 
-> **Sample**: `20_BasicRegion` | **Status**: Planned | **Depends On**: PRD-11-19
+> **Sample**: `20_BasicRegion` | **Status**: Planned | **Depends On**: C-01 to A-03
 
 ## 1. Executive Summary
 
@@ -346,6 +346,6 @@ Sum of squares 0-99: 328350
 
 ## 10. Related PRDs
 
-- **PRD-21**: Region Passing - Regions as parameters
-- **PRD-22**: Region Escape - copyOut for escaping data
-- **PRD-29-31**: MailboxProcessor - Region per message batch
+- **A-05**: Region Passing - Regions as parameters
+- **A-06**: Region Escape - copyOut for escaping data
+- **T-03 to T-05**: MailboxProcessor - Region per message batch

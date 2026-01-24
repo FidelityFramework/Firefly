@@ -1,6 +1,6 @@
-# PRD-13: Recursive Bindings
+# C-03: Recursive Bindings
 
-> **Sample**: `13_Recursion` | **Status**: In Progress | **Depends On**: PRD-11 (Closures), PRD-12 (HOFs)
+> **Sample**: `13_Recursion` | **Status**: In Progress | **Depends On**: C-01 (Closures), C-02 (HOFs)
 
 ## 1. Executive Summary
 
@@ -209,7 +209,7 @@ let lambdaNode = builder.Create(
 
 Once captures flow through the PSG, Alex/LambdaWitness must handle them for nested recursive functions:
 - Either pass captures as additional parameters (parameter-passing style)
-- Or create a closure environment (flat closure style, as in PRD-11)
+- Or create a closure environment (flat closure style, as in C-01)
 
 For tail-recursive nested functions that don't escape, parameter-passing is more efficient.
 
@@ -271,5 +271,5 @@ sumTo 10: 55        // After capture fix
 
 ## 8. Related PRDs
 
-- **PRD-11**: Closures - nested functions may capture
-- **PRD-12**: HOFs - recursive functions as values
+- **C-01**: Closures - nested functions may capture
+- **C-02**: HOFs - recursive functions as values

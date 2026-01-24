@@ -1,6 +1,6 @@
-# PRD-17: Basic Async (LLVM Coroutines Foundation)
+# A-01: Basic Async (LLVM Coroutines Foundation)
 
-> **Sample**: `17_BasicAsync` | **Status**: Planned | **Depends On**: PRD-11-16 (Closures through Lazy)
+> **Sample**: `17_BasicAsync` | **Status**: Planned | **Depends On**: C-01 to C-07 (Closures through Lazy)
 
 ## 1. Executive Summary
 
@@ -184,7 +184,7 @@ llvm.store %c42, %result_ptr
 
 ### 5.4 Full Coroutine Form (For Reference)
 
-When suspension points exist (PRD-18), the structure becomes:
+When suspension points exist (A-02), the structure becomes:
 
 ```mlir
 llvm.func @async_body(%frame: !llvm.ptr) -> !llvm.ptr
@@ -301,6 +301,6 @@ LLVM's coroutine passes are production-quality and handle all the difficult stat
 
 ## 10. Related PRDs
 
-- **PRD-18**: Async Await - Adds `let!` (suspension points)
-- **PRD-19**: Async Parallel - Adds `Async.Parallel`
-- **PRD-29-31**: MailboxProcessor - Uses async for message loop
+- **A-02**: Async Await - Adds `let!` (suspension points)
+- **A-03**: Async Parallel - Adds `Async.Parallel`
+- **T-03 to T-05**: MailboxProcessor - Uses async for message loop

@@ -543,8 +543,65 @@ and private classifyAndWitness
         WitnessOutput.error (sprintf "TryWith not yet implemented (node %d)" (NodeId.value node.Id))
     | SemanticKind.TryFinally _ ->
         WitnessOutput.error (sprintf "TryFinally not yet implemented (node %d)" (NodeId.value node.Id))
-    | SemanticKind.RecordExpr _ ->
-        WitnessOutput.error (sprintf "RecordExpr not yet implemented (node %d)" (NodeId.value node.Id))
+    // ─────────────────────────────────────────────────────────────────────
+    // RECORD CONSTRUCTION (January 2026)
+    // Records are structs with fields in declaration order
+    // ─────────────────────────────────────────────────────────────────────
+    | SemanticKind.RecordExpr (fields, copyFromOpt) ->
+        // Visit all field value nodes
+        let fieldOutputs = fields |> List.map (fun (name, nodeId) -> (name, visitNode ctx z nodeId))
+        let combinedFields = WitnessOutput.combineAll (fieldOutputs |> List.map snd)
+
+        // Extract field values
+        let fieldVals =
+            fieldOutputs
+            |> List.choose (fun (name, output) ->
+                match output.Result with
+                | TRValue v -> Some (name, v)
+                | _ -> None)
+
+        if List.length fieldVals <> List.length fields then
+            // Some field failed - propagate error
+            match combinedFields.Result with
+            | TRError msg -> combinedFields
+            | _ -> WitnessOutput.error (sprintf "RecordExpr: field expression failed (node %d)" (NodeId.value node.Id))
+        else
+            let recordMlirType = mapNativeType node.Type
+            match copyFromOpt with
+            | None ->
+                // Full record construction: { Name = "Alice"; Age = 30 }
+                let recordOps, recordResult =
+                    Alex.Witnesses.MemoryWitness.witnessRecordExpr node.Id ctx fieldVals recordMlirType
+                match recordResult with
+                | TRValue rv -> MLIRAccumulator.bindNode (NodeId.value node.Id) rv.SSA rv.Type acc
+                | _ -> ()
+                { InlineOps = combinedFields.InlineOps @ recordOps
+                  TopLevelOps = combinedFields.TopLevelOps
+                  Result = recordResult }
+            | Some origId ->
+                // Copy-and-update: { orig with Age = 31 }
+                let origOutput = visitNode ctx z origId
+                match origOutput.Result with
+                | TRValue origVal ->
+                    // Get field definitions from type - REQUIRED for correct index lookup
+                    match node.Type with
+                    | NativeType.TApp (tc, _) ->
+                        match SemanticGraph.tryGetRecordFields tc.Name ctx.Graph with
+                        | Some fieldDefs ->
+                            let updateOps, updateResult =
+                                Alex.Witnesses.MemoryWitness.witnessRecordCopyUpdate node.Id ctx origVal fieldDefs fieldVals recordMlirType
+                            match updateResult with
+                            | TRValue uv -> MLIRAccumulator.bindNode (NodeId.value node.Id) uv.SSA uv.Type acc
+                            | _ -> ()
+                            { InlineOps = combinedFields.InlineOps @ origOutput.InlineOps @ updateOps
+                              TopLevelOps = combinedFields.TopLevelOps @ origOutput.TopLevelOps
+                              Result = updateResult }
+                        | None ->
+                            WitnessOutput.error (sprintf "RecordExpr copy-and-update: type '%s' not found in SemanticGraph TypeDefs (node %d)" tc.Name (NodeId.value node.Id))
+                    | _ ->
+                        WitnessOutput.error (sprintf "RecordExpr copy-and-update: expected TApp type, got %A (node %d)" node.Type (NodeId.value node.Id))
+                | TRError msg -> { origOutput with Result = TRError msg }
+                | _ -> WitnessOutput.error "RecordExpr copy-and-update: original expression has no value"
 
     // ─────────────────────────────────────────────────────────────────────
     // DISCRIMINATED UNION OPERATIONS (January 2026)

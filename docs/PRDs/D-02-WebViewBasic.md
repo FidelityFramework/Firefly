@@ -1,12 +1,12 @@
-# PRD-26: WebKitGTK WebView
+# D-02: WebKitGTK WebView
 
-> **Sample**: `26_WebViewBasic` | **Status**: Planned | **Depends On**: PRD-25 (GTKWindow)
+> **Sample**: `26_WebViewBasic` | **Status**: Planned | **Depends On**: D-01 (GTKWindow)
 
 ## 1. Executive Summary
 
 This PRD adds WebKitGTK WebView to GTK windows - enabling hybrid web/native applications. This is the foundation for the WREN (WebView + Region + Elmish + Native) stack vision.
 
-**Key Insight**: WebKitGTK provides a C API similar to GTK. The same FFI patterns from PRD-25 apply. JavaScript<->F# bridging is future work (PRD beyond scope).
+**Key Insight**: WebKitGTK provides a C API similar to GTK. The same FFI patterns from D-01 apply. JavaScript<->F# bridging is future work (PRD beyond scope).
 
 ## 2. Language Feature Specification
 
@@ -62,7 +62,7 @@ extern void webkit_web_view_load_uri(view: nativeptr<byte>, uri: string)
 extern void webkit_web_view_load_html(view: nativeptr<byte>, content: string, baseUri: string)
 ```
 
-No new FNCS machinery needed beyond PRD-25.
+No new FNCS machinery needed beyond D-01.
 
 ## 4. Firefly/Alex Layer Implementation
 
@@ -73,7 +73,7 @@ WebKit uses the same patterns as GTK:
 - Opaque pointer types
 - String parameters
 
-No new Alex machinery needed beyond PRD-25.
+No new Alex machinery needed beyond D-01.
 
 ## 5. MLIR Output Specification
 
@@ -109,7 +109,7 @@ llvm.call @webkit_web_view_load_html(%webview, %html, %base)
 ```fsharp
 module WebViewBasicSample
 
-// GTK imports (from PRD-25)
+// GTK imports (from D-01)
 [<DllImport("libgtk-4.so.1")>]
 extern void gtk_init()
 
@@ -192,11 +192,11 @@ let main _ =
 
 ## 7. Files to Create/Modify
 
-No new files beyond PRD-25. Sample code demonstrates WebKit usage.
+No new files beyond D-01. Sample code demonstrates WebKit usage.
 
 ## 8. Implementation Checklist
 
-### Phase 1: Verify PRD-25 Complete
+### Phase 1: Verify D-01 Complete
 - [ ] GTK FFI working
 - [ ] External calls working
 - [ ] Library linking working
@@ -234,6 +234,6 @@ gcc app.o -o app $(pkg-config --libs gtk4 webkitgtk-6.0)
 
 ## 11. Related PRDs
 
-- **PRD-25**: GTKWindow - GTK foundation
-- **PRD-29-31**: MailboxProcessor - UI event handling
+- **D-01**: GTKWindow - GTK foundation
+- **T-03 to T-05**: MailboxProcessor - UI event handling
 - (Future): Elmish architecture, JS bridge

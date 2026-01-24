@@ -1,6 +1,6 @@
-# PRD-16: Sequence Operations
+# C-07: Sequence Operations
 
-> **Sample**: `16_SeqOperations` | **Status**: Planned | **Depends On**: PRD-15 (SimpleSeq), PRD-14 (Lazy), PRD-12 (HOFs), PRD-11 (Closures)
+> **Sample**: `16_SeqOperations` | **Status**: Planned | **Depends On**: C-06 (SimpleSeq), C-05 (Lazy), C-02 (HOFs), C-01 (Closures)
 
 ---
 
@@ -15,9 +15,9 @@
 3. **Review this PRD**: Understand the architectural through-line
 4. **Check standing art files**: Review the key implementation files listed below
 
-### Standing Art Files (PRD-11, PRD-14, PRD-15)
+### Standing Art Files (C-01, C-05, C-06)
 
-These files contain the patterns that PRD-16 MUST compose from:
+These files contain the patterns that C-07 MUST compose from:
 
 #### Witness Layer (`src/Alex/Witnesses/`)
 
@@ -49,13 +49,13 @@ These files contain the patterns that PRD-16 MUST compose from:
 ### Architectural Through-Line
 
 ```
-PRD-11 (Closures)     → Flat closure: {code_ptr, cap₀, cap₁, ...}
+C-01 (Closures)     → Flat closure: {code_ptr, cap₀, cap₁, ...}
          ↓ extends (adds state prefix)
-PRD-14 (Lazy)         → Extended closure: {computed: i1, value: T, code_ptr, cap₀...}
+C-05 (Lazy)         → Extended closure: {computed: i1, value: T, code_ptr, cap₀...}
          ↓ extends (adds internal state suffix)
-PRD-15 (SimpleSeq)    → State machine: {state: i32, current: T, code_ptr, cap₀..., internalState₀...}
+C-06 (SimpleSeq)    → State machine: {state: i32, current: T, code_ptr, cap₀..., internalState₀...}
          ↓ composes (nests inner structures)
-PRD-16 (SeqOperations)→ Wrapper sequences: {state, current, code_ptr, inner_seq, closure}
+C-07 (SeqOperations)→ Wrapper sequences: {state, current, code_ptr, inner_seq, closure}
 ```
 
 ### Key Serena Memories
@@ -63,7 +63,7 @@ PRD-16 (SeqOperations)→ Wrapper sequences: {state, current, code_ptr, inner_se
 - `architecture_principles` - Layer separation, non-dispatch model
 - `negative_examples` - Anti-patterns to avoid
 - `lazy_seq_flat_closure_architecture` - Flat closure model specifics
-- `true_flat_closures_implementation` - PRD-11 closure patterns
+- `true_flat_closures_implementation` - C-01 closure patterns
 - `fncs_functional_decomposition_principle` - How intrinsics should decompose
 - `prd16_seqoperations_progress` - **EPHEMERAL**: Current implementation progress
 
@@ -75,7 +75,7 @@ PRD-16 (SeqOperations)→ Wrapper sequences: {state, current, code_ptr, inner_se
 
 ### Primary Spec Chapters (fsnative-spec/spec/)
 
-| Chapter | Path | PRD-16 Relevance |
+| Chapter | Path | C-07 Relevance |
 |---------|------|------------------|
 | **Closure Representation** | `spec/closure-representation.md` | §3: Flat closure struct layout; §8: Nested functions vs escaping closures (mappers/predicates are ESCAPING) |
 | **Lazy Representation** | `spec/lazy-representation.md` | §4: Struct pointer passing convention; foundation pattern for MoveNext |
@@ -86,7 +86,7 @@ PRD-16 (SeqOperations)→ Wrapper sequences: {state, current, code_ptr, inner_se
 
 **Path**: `fsnative-spec/spec/drafts/seq-operations-representation.md`
 
-This draft chapter was created to fill a spec gap identified during PRD-16 development. It specifies:
+This draft chapter was created to fill a spec gap identified during C-07 development. It specifies:
 
 - §4: Wrapper struct layouts (MapSeq, FilterSeq, TakeSeq, CollectSeq)
 - §5: Copy semantics - inner seq and closure copied by VALUE
@@ -94,9 +94,9 @@ This draft chapter was created to fill a spec gap identified during PRD-16 devel
 - §7: MoveNext algorithms for each operation
 - §8: Seq.fold as eager consumer (no wrapper)
 
-**ACTION REQUIRED**: This draft should be promoted to a formal spec chapter before PRD-16 implementation is complete.
+**ACTION REQUIRED**: This draft should be promoted to a formal spec chapter before C-07 implementation is complete.
 
-### Key Spec Constraints for PRD-16
+### Key Spec Constraints for C-07
 
 From the spec audit, these constraints MUST be honored:
 
@@ -109,7 +109,7 @@ From the spec audit, these constraints MUST be honored:
 
 ### Spec Gap Identified and Addressed
 
-**Gap**: The original `seq-representation.md` covered PRD-15 (seq expressions) but NOT PRD-16 (Seq module operations).
+**Gap**: The original `seq-representation.md` covered C-06 (seq expressions) but NOT C-07 (Seq module operations).
 
 **Resolution**: Created `spec/drafts/seq-operations-representation.md` covering:
 - Wrapper sequence structures
@@ -129,7 +129,7 @@ This PRD covers the core sequence operations: `Seq.map`, `Seq.filter`, `Seq.take
 2. The mapper closure (flat closure, no `env_ptr`)
 3. Its own state machine fields
 
-**Builds on PRD-15**: Seq operations wrap inner sequences. The wrapper is itself a flat closure with state machine fields. The inner sequence and transformation closure are inlined captures.
+**Builds on C-06**: Seq operations wrap inner sequences. The wrapper is itself a flat closure with state machine fields. The inner sequence and transformation closure are inlined captures.
 
 ## 2. Language Feature Specification
 
@@ -314,8 +314,8 @@ The wrapper struct creation performs **value copies**:
 **File**: `~/repos/fsnative/src/Compiler/NativeTypedTree/Expressions/Intrinsics.fs`
 
 > **Note (January 2026)**: `Seq.empty` was added early to FNCS to unblock BAREWire dependency resolution.
-> This is a foundational sequence producer that belongs conceptually between PRD-15 (seq expressions)
-> and PRD-16 (seq operations). Added here for convenience given shared PRD boundaries.
+> This is a foundational sequence producer that belongs conceptually between C-06 (seq expressions)
+> and C-07 (seq operations). Added here for convenience given shared PRD boundaries.
 
 ```fsharp
 // Seq intrinsic module
@@ -397,13 +397,13 @@ With intrinsic info attached marking it as `{Module = Seq; Operation = "map"}`.
 
 ### 4.4 Type Unification Considerations
 
-PRD-16 operations produce and consume `TSeq` types. The type unification bridge cases documented in **PRD-15 Section 4.8** ensure that:
+C-07 operations produce and consume `TSeq` types. The type unification bridge cases documented in **C-06 Section 4.8** ensure that:
 
 1. `Seq.map f xs` where `xs: seq<int>` (TApp form from type annotation) correctly unifies with `TSeq int`
 2. The result type `seq<'b>` can be used in contexts expecting either representation
 3. Chained operations like `Seq.take 5 (Seq.map f xs)` work regardless of how types are constructed
 
-**No new bridge cases are needed for PRD-16** - it uses the existing `TSeq` type and its bridge cases from PRD-15.
+**No new bridge cases are needed for C-07** - it uses the existing `TSeq` type and its bridge cases from C-06.
 
 ## 5. Alex Layer Implementation
 
@@ -494,7 +494,7 @@ let emitMapMoveNext (layout: MapSeqLayout) : MLIROp list =
             yield sprintf "%%cap_%d = llvm.extractvalue %%mapper[%d] : !mapper_closure_type" i (i + 1)
 
         // Call mapper: code_ptr(cap₀, cap₁, ..., inner_val) -> B
-        // Following flat closure calling convention from PRD-11:
+        // Following flat closure calling convention from C-01:
         // - Captures come FIRST (prepended)
         // - Original parameters come LAST
         let capArgs = layout.MapperLayout.Captures |> List.mapi (fun i _ -> sprintf "%%cap_%d" i) |> String.concat ", "
@@ -678,7 +678,7 @@ let witnessSeqFold
 
 ### 5.6 SSA Cost Formulas
 
-Following PRD-14's coeffect-based SSA pre-computation, each seq operation has deterministic SSA requirements:
+Following C-05's coeffect-based SSA pre-computation, each seq operation has deterministic SSA requirements:
 
 #### 5.6.1 Wrapper Creation SSA Costs
 
@@ -781,7 +781,7 @@ take.MoveNext calls map.MoveNext calls filter.MoveNext calls inner.MoveNext
 // Source: Seq.map (fun x -> x * 2) numbers
 // where numbers: seq { yield 1; yield 2; yield 3 }
 
-// Inner seq type (from PRD-15)
+// Inner seq type (from C-06)
 !inner_seq = !llvm.struct<(i32, i32, ptr)>
 
 // Mapper closure type (no captures - just code_ptr)
@@ -824,7 +824,7 @@ llvm.func @map_double_moveNext(%self: !llvm.ptr) -> i1 {
 
 // Creation: Seq.map (fun x -> x * 2) numbers
 // 1. Create inner seq (numbers)
-%inner_seq = ... // from PRD-15
+%inner_seq = ... // from C-06
 
 // 2. Create mapper closure (just code_ptr for no-capture lambda)
 %mapper_code = llvm.mlir.addressof @double_func : !llvm.ptr
@@ -930,7 +930,7 @@ Sample 16 (`16_SeqOperations`) must comprehensively test:
 
 | Part | Feature Area | Coverage Goal |
 |------|--------------|---------------|
-| 1 | Source sequences | PRD-15 constructs as inputs |
+| 1 | Source sequences | C-06 constructs as inputs |
 | 2 | Seq.map | No-capture and with-capture variants |
 | 3 | Seq.filter | No-capture and with-capture variants |
 | 4 | Seq.take | Normal case and edge cases |
@@ -945,12 +945,12 @@ Sample 16 (`16_SeqOperations`) must comprehensively test:
 
 ### 7.2 Part-by-Part Test Specifications
 
-#### Part 1: Source Sequences (PRD-15 Foundation)
+#### Part 1: Source Sequences (C-06 Foundation)
 ```fsharp
 let range (start: int) (stop: int) = seq { ... }
 let naturals (n: int) = range 1 n
 ```
-**Purpose**: Establish PRD-15 sequences as inputs for transformation operations.
+**Purpose**: Establish C-06 sequences as inputs for transformation operations.
 
 #### Part 2: Seq.map - Basic (No Captures)
 ```fsharp
@@ -1314,10 +1314,10 @@ deepPipelineWithFold: 400
 
 ## 9. Related PRDs
 
-- **PRD-11**: Closures - Mapper/predicate are flat closures
-- **PRD-12**: HOFs - Seq operations are HOFs
-- **PRD-14**: Lazy - Foundation for deferred computation
-- **PRD-15**: SimpleSeq - Foundation for sequences
+- **C-01**: Closures - Mapper/predicate are flat closures
+- **C-02**: HOFs - Seq operations are HOFs
+- **C-05**: Lazy - Foundation for deferred computation
+- **C-06**: SimpleSeq - Foundation for sequences
 
 ## 10. Architectural Alignment
 
@@ -1335,4 +1335,4 @@ This PRD aligns with the flat closure architecture:
 - For typical depths (3-5 operations), this is acceptable
 - Very deep pipelines may need alternative strategies (future optimization)
 
-> **Critical:** See Serena memory `compose_from_standing_art_principle` for why composing from PRD-11/14/15 patterns is essential. New features MUST extend standing art, not reinvent.
+> **Critical:** See Serena memory `compose_from_standing_art_principle` for why composing from C-01/14/15 patterns is essential. New features MUST extend standing art, not reinvent.

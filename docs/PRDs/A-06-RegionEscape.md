@@ -1,6 +1,6 @@
-# PRD-22: Region Escape Analysis
+# A-06: Region Escape Analysis
 
-> **Sample**: `22_RegionEscape` | **Status**: Planned | **Depends On**: PRD-20-21 (BasicRegion, RegionPassing)
+> **Sample**: `22_RegionEscape` | **Status**: Planned | **Depends On**: A-04-21 (BasicRegion, RegionPassing)
 
 ## 1. Executive Summary
 
@@ -303,6 +303,6 @@ NOT full Rust-style borrow checking. Simpler, but requires explicit copyOut for 
 
 ## 10. Related PRDs
 
-- **PRD-20**: BasicRegion - Foundation
-- **PRD-21**: RegionPassing - Borrowed regions
-- **PRD-29-31**: MailboxProcessor - Message extraction from worker regions
+- **A-04**: BasicRegion - Foundation
+- **A-05**: RegionPassing - Borrowed regions
+- **T-03 to T-05**: MailboxProcessor - Message extraction from worker regions

@@ -1,6 +1,6 @@
-# PRD-30: Actor PostAndReply
+# T-04: Actor PostAndReply
 
-> **Sample**: `30_ActorReply` | **Status**: Planned | **Depends On**: PRD-29 (BasicActor)
+> **Sample**: `30_ActorReply` | **Status**: Planned | **Depends On**: T-03 (BasicActor)
 
 ## 1. Executive Summary
 
@@ -328,5 +328,5 @@ This requires timer integration - deferred to future work.
 
 ## 10. Related PRDs
 
-- **PRD-29**: BasicActor - Foundation
-- **PRD-31**: ParallelActors - Multiple actors with replies
+- **T-03**: BasicActor - Foundation
+- **T-05**: ParallelActors - Multiple actors with replies

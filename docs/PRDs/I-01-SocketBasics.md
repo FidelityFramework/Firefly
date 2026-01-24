@@ -1,6 +1,6 @@
-# PRD-23: Socket I/O Basics
+# I-01: Socket I/O Basics
 
-> **Sample**: `23_SocketBasics` | **Status**: Planned | **Depends On**: PRD-17-19 (Async), PRD-20-22 (Regions)
+> **Sample**: `23_SocketBasics` | **Status**: Planned | **Depends On**: A-01-19 (Async), A-04-22 (Regions)
 
 ## 1. Executive Summary
 
@@ -278,6 +278,6 @@ Socket operations return -1 on error with errno set. For now, error handling is 
 
 ## 10. Related PRDs
 
-- **PRD-24**: WebSocket - Protocol on top of sockets
-- **PRD-17-19**: Async - Async socket operations
-- **PRD-29-31**: MailboxProcessor - Network actors
+- **I-02**: WebSocket - Protocol on top of sockets
+- **A-01-19**: Async - Async socket operations
+- **T-03 to T-05**: MailboxProcessor - Network actors

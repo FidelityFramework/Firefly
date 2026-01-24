@@ -1,6 +1,6 @@
-# PRD-21: Region Parameters
+# A-05: Region Parameters
 
-> **Sample**: `21_RegionPassing` | **Status**: Planned | **Depends On**: PRD-20 (BasicRegion)
+> **Sample**: `21_RegionPassing` | **Status**: Planned | **Depends On**: A-04 (BasicRegion)
 
 ## 1. Executive Summary
 
@@ -235,6 +235,6 @@ Doubled: 20 20 20 20 20
 
 ## 9. Related PRDs
 
-- **PRD-20**: BasicRegion - Foundation
-- **PRD-22**: RegionEscape - Data escaping regions
-- **PRD-29-31**: MailboxProcessor - Workers with borrowed regions
+- **A-04**: BasicRegion - Foundation
+- **A-06**: RegionEscape - Data escaping regions
+- **T-03 to T-05**: MailboxProcessor - Workers with borrowed regions

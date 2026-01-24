@@ -1,4 +1,4 @@
-# PRD-11: MLKit-Style Flat Closures
+# C-01: MLKit-Style Flat Closures
 
 > **Sample**: `11_Closures` | **Status**: In Progress | **Depends On**: Samples 01-10 (complete)
 
@@ -601,6 +601,6 @@ done
 
 ## 12. Related PRDs
 
-- **PRD-12**: Higher-Order Functions - Builds on closures for functions as values
-- **PRD-17-19**: Async - Uses closures for continuation callbacks
-- **PRD-29-31**: MailboxProcessor - Synthesizes closures + async + threading
+- **C-02**: Higher-Order Functions - Builds on closures for functions as values
+- **A-01 to A-03**: Async - Uses closures for continuation callbacks
+- **T-03 to T-05**: MailboxProcessor - Synthesizes closures + async + threading

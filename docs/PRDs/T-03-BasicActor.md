@@ -1,17 +1,17 @@
-# PRD-29: MailboxProcessor Basic Actor
+# T-03: MailboxProcessor Basic Actor
 
-> **Sample**: `29_BasicActor` | **Status**: Planned | **Depends On**: PRD-11-28 (All Prior Features)
+> **Sample**: `29_BasicActor` | **Status**: Planned | **Depends On**: C-01-28 (All Prior Features)
 
 ## 1. Executive Summary
 
 MailboxProcessor is the **capstone feature** of the WREN Stack - it synthesizes closures, async, threading, mutex synchronization, and regions into a single coherent abstraction. An actor is a concurrent unit with a private mailbox that processes messages sequentially.
 
 **Key Insight**: MailboxProcessor is a composition, not a primitive. It emerges from combining existing capabilities:
-- Thread (PRD-27) for concurrent execution
-- Mutex + CondVar (PRD-28) for message queue synchronization
-- Async (PRD-17-19) for message loop coroutine
-- Closures (PRD-11) for behavior function capture
-- Regions (PRD-20-22) for per-batch memory management
+- Thread (T-01) for concurrent execution
+- Mutex + CondVar (T-02) for message queue synchronization
+- Async (A-01-19) for message loop coroutine
+- Closures (C-01) for behavior function capture
+- Regions (A-04 to A-06) for per-batch memory management
 
 **Reference**: See `mailboxprocessor_first_stage` memory for implementation strategy.
 
@@ -48,7 +48,7 @@ type CounterMessage =
     | Get of AsyncReplyChannel<int>
 ```
 
-Messages are discriminated unions (already supported via PRD-05+).
+Messages are discriminated unions (already supported via F-05+).
 
 ## 3. FNCS Layer Implementation
 
@@ -394,5 +394,5 @@ MailboxProcessor demonstrates mastery of:
 
 ## 10. Related PRDs
 
-- **PRD-30**: PostAndReply - Two-way communication
-- **PRD-31**: ParallelActors - Multiple interacting actors
+- **T-04**: PostAndReply - Two-way communication
+- **T-05**: ParallelActors - Multiple interacting actors

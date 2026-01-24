@@ -1,12 +1,12 @@
-# PRD-24: WebSocket Echo Server
+# I-02: WebSocket Echo Server
 
-> **Sample**: `24_WebSocketEcho` | **Status**: Planned | **Depends On**: PRD-23 (SocketBasics)
+> **Sample**: `24_WebSocketEcho` | **Status**: Planned | **Depends On**: I-01 (SocketBasics)
 
 ## 1. Executive Summary
 
 This PRD implements a WebSocket echo server - demonstrating the WebSocket protocol on top of raw sockets. This validates that Fidelity can handle real-world network protocols.
 
-**Key Insight**: WebSocket is an application-level protocol. The implementation uses socket primitives (PRD-23) plus byte manipulation (regions, NativePtr) plus string handling.
+**Key Insight**: WebSocket is an application-level protocol. The implementation uses socket primitives (I-01) plus byte manipulation (regions, NativePtr) plus string handling.
 
 ## 2. Language Feature Specification
 
@@ -269,5 +269,5 @@ WebSocket is a real protocol - this sample validates that Fidelity can handle:
 
 ## 10. Related PRDs
 
-- **PRD-23**: SocketBasics - Foundation
-- **PRD-29-31**: MailboxProcessor - WebSocket server actor
+- **I-01**: SocketBasics - Foundation
+- **T-03 to T-05**: MailboxProcessor - WebSocket server actor

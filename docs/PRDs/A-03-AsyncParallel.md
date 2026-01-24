@@ -1,12 +1,12 @@
-# PRD-19: Async.Parallel
+# A-03: Async.Parallel
 
-> **Sample**: `19_AsyncParallel` | **Status**: Planned | **Depends On**: PRD-17-18 (BasicAsync, AsyncAwait)
+> **Sample**: `19_AsyncParallel` | **Status**: Planned | **Depends On**: A-01-18 (BasicAsync, AsyncAwait)
 
 ## 1. Executive Summary
 
 `Async.Parallel` runs multiple async computations and collects their results. This is a composition operation - it doesn't introduce new suspension semantics, but combines multiple asyncs into one.
 
-**Key Insight**: `Async.Parallel` in single-threaded mode runs asyncs sequentially. True parallelism requires threading (PRD-27-28). But the API and semantics are established here.
+**Key Insight**: `Async.Parallel` in single-threaded mode runs asyncs sequentially. True parallelism requires threading (T-01/T-02). But the API and semantics are established here.
 
 ## 2. Language Feature Specification
 
@@ -110,7 +110,7 @@ let witnessAsyncParallel z asyncArraySSA =
 
 ### 4.2 Parallel Implementation (With Threading)
 
-When threading is available (PRD-27-28):
+When threading is available (T-01/T-02):
 
 ```fsharp
 let witnessAsyncParallelThreaded z asyncArraySSA =
@@ -249,7 +249,7 @@ Note: In single-threaded mode, "Computing N" appears in order. With true threadi
 - [ ] Samples 01-18 still pass
 
 ### Phase 3 (Future): True Parallelism
-- [ ] After PRD-27-28: Implement threaded version
+- [ ] After T-01/T-02: Implement threaded version
 - [ ] Add thread pool or worker spawn
 - [ ] Implement completion synchronization
 
@@ -264,6 +264,6 @@ Lists could be supported via `Async.ParallelSeq : seq<Async<'T>> -> Async<'T[]>`
 
 ## 10. Related PRDs
 
-- **PRD-17-18**: BasicAsync, AsyncAwait - Foundation
-- **PRD-27-28**: Threading - True parallelism
-- **PRD-29-31**: MailboxProcessor - Parallel actors
+- **A-01-18**: BasicAsync, AsyncAwait - Foundation
+- **T-01/T-02**: Threading - True parallelism
+- **T-03-31**: MailboxProcessor - Parallel actors

@@ -1,6 +1,6 @@
-# PRD-18: Async Await (let! and Suspension)
+# A-02: Async Await (let! and Suspension)
 
-> **Sample**: `18_AsyncAwait` | **Status**: Planned | **Depends On**: PRD-17 (BasicAsync)
+> **Sample**: `18_AsyncAwait` | **Status**: Planned | **Depends On**: A-01 (BasicAsync)
 
 ## 1. Executive Summary
 
@@ -41,7 +41,7 @@ At each `let!`:
 3. When inner completes, resume with its result
 4. Bind result to name and continue
 
-For now (single-threaded), inner asyncs complete immediately, so suspension is technically immediate resumption. True suspension matters when combined with I/O (PRD-23-24) or threading (PRD-27-28).
+For now (single-threaded), inner asyncs complete immediately, so suspension is technically immediate resumption. True suspension matters when combined with I/O (I-01/I-02) or threading (T-01/T-02).
 
 ## 3. FNCS Layer Implementation
 
@@ -314,14 +314,14 @@ Result: 42
 
 Currently, inner asyncs complete immediately. True suspension requires:
 
-1. **I/O Operations** (PRD-23-24): Socket read that may block
-2. **Thread Integration** (PRD-27-28): Async running on different thread
+1. **I/O Operations** (I-01/I-02): Socket read that may block
+2. **Thread Integration** (T-01/T-02): Async running on different thread
 
 When these exist, `llvm.coro.suspend` actually suspends, and a scheduler resumes the coroutine when the awaited operation completes.
 
 ## 10. Related PRDs
 
-- **PRD-17**: BasicAsync - Foundation
-- **PRD-19**: AsyncParallel - Running multiple asyncs
-- **PRD-23-24**: Networking - True async I/O
-- **PRD-29-31**: MailboxProcessor - Async message loop
+- **A-01**: BasicAsync - Foundation
+- **A-03**: AsyncParallel - Running multiple asyncs
+- **I-01/I-02**: Networking - True async I/O
+- **T-03-31**: MailboxProcessor - Async message loop

@@ -1,14 +1,14 @@
-# PRD-15: Simple Sequence Expressions
+# C-06: Simple Sequence Expressions
 
-> **Sample**: `15_SimpleSeq` | **Status**: Planned | **Depends On**: PRD-14 (Lazy), PRD-11 (Closures)
+> **Sample**: `15_SimpleSeq` | **Status**: Planned | **Depends On**: C-05 (Lazy), C-01 (Closures)
 
 ## 1. Executive Summary
 
 Sequence expressions (`seq { }`) provide lazy, on-demand iteration in F#. Unlike `Lazy<'T>` (single deferred value), `Seq<'T>` produces multiple values through resumable computation.
 
-**Key Insight**: A sequence is an **extended flat closure with state machine fields**. Like Lazy (PRD-14), captures are inlined directly into the struct. The sequence adds state tracking for resumable computation at yield points.
+**Key Insight**: A sequence is an **extended flat closure with state machine fields**. Like Lazy (C-05), captures are inlined directly into the struct. The sequence adds state tracking for resumable computation at yield points.
 
-**Builds on PRD-14**: Both `Lazy<'T>` and `Seq<'T>` are flat closures with extra state. Lazy has `{computed, value, code_ptr, captures...}`. Seq has `{state, current, code_ptr, captures...}`.
+**Builds on C-05**: Both `Lazy<'T>` and `Seq<'T>` are flat closures with extra state. Lazy has `{computed, value, code_ptr, captures...}`. Seq has `{state, current, code_ptr, captures...}`.
 
 ## 2. Language Feature Specification
 
@@ -67,7 +67,7 @@ The `for...in` construct drives the state machine.
 
 ### 3.1 Flat Closure Extension (No `env_ptr`)
 
-Following the flat closure model from PRD-11 and PRD-14:
+Following the flat closure model from C-01 and C-05:
 
 ```
 Seq<T> = {state: i32, current: T, code_ptr: ptr, capture₀, capture₁, ...}
@@ -82,7 +82,7 @@ Seq<T> = {state: i32, current: T, code_ptr: ptr, capture₀, capture₁, ...}
 
 **There is no `env_ptr` field.** Captures are stored directly in the struct.
 
-### 3.2 Capture Semantics (from PRD-11)
+### 3.2 Capture Semantics (from C-01)
 
 | Variable Kind | Capture Mode | Storage in Seq |
 |---------------|--------------|----------------|
@@ -204,7 +204,7 @@ type SemanticKind =
 
 ### 4.3 TypeEnv Extension
 
-Following PRD-13's environment enrichment pattern:
+Following C-03's environment enrichment pattern:
 
 ```fsharp
 type TypeEnv = {
@@ -218,14 +218,14 @@ type TypeEnv = {
 
 ### 4.4 Checking `seq { }` Expressions
 
-**LambdaContext Extension**: Following PRD-11's flat closure model, sequence generators use `LambdaContext.SeqGenerator` to distinguish them from regular closures and lazy thunks:
+**LambdaContext Extension**: Following C-01's flat closure model, sequence generators use `LambdaContext.SeqGenerator` to distinguish them from regular closures and lazy thunks:
 
 ```fsharp
-/// Extended LambdaContext (from PRD-11, extended in PRD-14, PRD-15)
+/// Extended LambdaContext (from C-01, extended in C-05, C-06)
 type LambdaContext =
-    | RegularClosure       // PRD-11: {code_ptr, cap₀, cap₁, ...}
-    | LazyThunk            // PRD-14: {computed, value, code_ptr, cap₀, ...}
-    | SeqGenerator         // PRD-15: {state, current, code_ptr, cap₀, ...}
+    | RegularClosure       // C-01: {code_ptr, cap₀, cap₁, ...}
+    | LazyThunk            // C-05: {computed, value, code_ptr, cap₀, ...}
+    | SeqGenerator         // C-06: {state, current, code_ptr, cap₀, ...}
 
 /// The LambdaContext determines the extraction base index for captures:
 /// - RegularClosure: base = 1 (after code_ptr)
@@ -243,7 +243,7 @@ let checkSeqExpr
     (range: range)
     : SemanticNode =
 
-    // STEP 1: Pre-create SeqExpr node to get NodeId (PRD-13 pattern)
+    // STEP 1: Pre-create SeqExpr node to get NodeId (C-03 pattern)
     let elementType = freshTypeVar range
     let seqNode = builder.Create(
         SemanticKind.SeqExpr(NodeId.Empty, []),  // Placeholder
@@ -260,7 +260,7 @@ let checkSeqExpr
     // STEP 3: Check body - yields will validate against EnclosingSeqExpr
     let bodyNode = checkExpr seqEnv builder seqBody
 
-    // STEP 4: Collect captures (reuse closure logic from PRD-11)
+    // STEP 4: Collect captures (reuse closure logic from C-01)
     let captures = collectCaptures env builder bodyNode.Id
 
     // STEP 5: Update SeqExpr node with actual body and captures
@@ -345,7 +345,7 @@ let checkForEach
 
 ### 4.8 Type Unification Bridge Cases (Critical Architecture)
 
-**This section documents critical architectural knowledge for PRD-15 through PRD-30.**
+**This section documents critical architectural knowledge for C-06 through T-04.**
 
 #### 4.8.1 The Type Representation Duality
 
@@ -390,7 +390,7 @@ The solution is explicit "bridge cases" in the `unify` function that make both r
     unify elem1 elem2 range
 ```
 
-#### 4.8.4 Existing Bridge Cases (Pre-PRD-15)
+#### 4.8.4 Existing Bridge Cases (Pre-C-06)
 
 This pattern already existed for `nativeptr` and `byref`:
 
@@ -406,14 +406,14 @@ This pattern already existed for `nativeptr` and `byref`:
     unify elem1 elem2 range
 ```
 
-#### 4.8.5 Bridge Cases Added in PRD-15
+#### 4.8.5 Bridge Cases Added in C-06
 
 | Direct Form | TApp Names | Purpose |
 |-------------|------------|---------|
 | `TSeq elem` | `"seq"` | Sequence expressions |
-| `TLazy elem` | `"Lazy"`, `"lazy"` | Lazy thunks (gap fixed from PRD-14) |
+| `TLazy elem` | `"Lazy"`, `"lazy"` | Lazy thunks (gap fixed from C-05) |
 
-**Important Discovery**: TLazy was missing its bridge case before PRD-15 - this was a pre-existing gap that has been fixed as part of this implementation.
+**Important Discovery**: TLazy was missing its bridge case before C-06 - this was a pre-existing gap that has been fixed as part of this implementation.
 
 #### 4.8.6 When to Add Bridge Cases
 
@@ -509,7 +509,7 @@ let run (graph: SemanticGraph) : YieldStateCoeffect =
 
 ### 5.2 SeqLayout Coeffect
 
-Following PRD-14's LazyLayout pattern:
+Following C-05's LazyLayout pattern:
 
 **File**: `src/Alex/Preprocessing/SeqLayout.fs`
 
@@ -969,19 +969,19 @@ let main _ =
 
 | Lesson | Application |
 |--------|-------------|
-| Flat closure model (PRD-11) | Captures inlined in seq struct |
-| Pre-creation pattern (PRD-13) | SeqExpr node created before checking body |
-| Environment enrichment (PRD-13) | `EnclosingSeqExpr` added to TypeEnv |
-| Coeffect pattern (PRD-14) | YieldStateIndices, SeqLayout computed before witnessing |
-| Extended closure (PRD-14) | Seq struct = closure + state machine fields |
+| Flat closure model (C-01) | Captures inlined in seq struct |
+| Pre-creation pattern (C-03) | SeqExpr node created before checking body |
+| Environment enrichment (C-03) | `EnclosingSeqExpr` added to TypeEnv |
+| Coeffect pattern (C-05) | YieldStateIndices, SeqLayout computed before witnessing |
+| Extended closure (C-05) | Seq struct = closure + state machine fields |
 
 ## 10. Related PRDs
 
-- **PRD-11**: Closures - Sequences reuse flat closure model
-- **PRD-13**: Recursion - Pre-creation and environment enrichment patterns
-- **PRD-14**: Lazy - Foundation for extended flat closures
-- **PRD-16**: SeqOperations - `Seq.map`, `Seq.filter`, etc.
-- **PRD-17**: Async - Builds on same deferred computation model
+- **C-01**: Closures - Sequences reuse flat closure model
+- **C-03**: Recursion - Pre-creation and environment enrichment patterns
+- **C-05**: Lazy - Foundation for extended flat closures
+- **C-07**: SeqOperations - `Seq.map`, `Seq.filter`, etc.
+- **A-01**: Async - Builds on same deferred computation model
 
 ## 11. Architectural Alignment
 
@@ -992,7 +992,7 @@ This PRD aligns with the flat closure architecture:
 2. **No env_ptr** - Captures inlined directly
 3. **Self-contained structs** - No pointer chains
 4. **Coeffect-based layout** - State indices and layout computed before witnessing
-5. **Capture reuse** - Same analysis as PRD-11 closures
+5. **Capture reuse** - Same analysis as C-01 closures
 6. **MoveNext by pointer** - Mutation requires pointer to struct (stack-allocated for for-each)
 
-> **Critical:** See Serena memory `compose_from_standing_art_principle` for why composing from PRD-11/14 patterns is essential. New features MUST extend standing art, not reinvent.
+> **Critical:** See Serena memory `compose_from_standing_art_principle` for why composing from C-01/14 patterns is essential. New features MUST extend standing art, not reinvent.

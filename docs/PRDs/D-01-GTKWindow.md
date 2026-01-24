@@ -1,12 +1,12 @@
-# PRD-25: GTK Window (FFI Foundation)
+# D-01: GTK Window (FFI Foundation)
 
-> **Sample**: `25_GTKWindow` | **Status**: Planned | **Depends On**: PRD-11-22
+> **Sample**: `25_GTKWindow` | **Status**: Planned | **Depends On**: C-01 to A-06
 
 ## 1. Executive Summary
 
 This PRD introduces GTK FFI - calling into native GTK libraries to create desktop GUI applications. This validates Fidelity's ability to interoperate with existing C libraries.
 
-**Key Insight**: GTK uses a C API with function pointers for callbacks. Fidelity's closure representation (PRD-11) is compatible with C function pointer calling conventions.
+**Key Insight**: GTK uses a C API with function pointers for callbacks. Fidelity's closure representation (C-01) is compatible with C function pointer calling conventions.
 
 ## 2. Language Feature Specification
 
@@ -292,6 +292,6 @@ Or use `lld` with appropriate library paths.
 
 ## 10. Related PRDs
 
-- **PRD-11**: Closures - Callback functions
-- **PRD-26**: WebViewBasic - WebKit in GTK
-- **PRD-29-31**: MailboxProcessor - GUI event handling
+- **C-01**: Closures - Callback functions
+- **D-02**: WebViewBasic - WebKit in GTK
+- **T-03 to T-05**: MailboxProcessor - GUI event handling

@@ -139,7 +139,8 @@ let witnessAddressOf
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Resolve field name to struct index based on type
-let private resolveFieldIndex (structNativeType: NativeType) (fieldName: string) : int =
+/// For records, uses SemanticGraph.tryGetRecordFields to look up field order
+let private resolveFieldIndex (structNativeType: NativeType) (fieldName: string) (ctx: WitnessContext) : int =
     match structNativeType with
     | NativeType.TApp (tc, _) ->
         match tc.Name with
@@ -159,12 +160,16 @@ let private resolveFieldIndex (structNativeType: NativeType) (fieldName: string)
                 | true, n -> n  // Item1 -> 1, Item2 -> 2
                 | false, _ -> failwithf "Invalid DU field name: %s" name
             | _ ->
-                // Record field - index is position in field list
-                // For records, TypeConstructor.FieldCount tells us field count
-                // Fields are numbered 0..FieldCount-1 in definition order
-                // We need to look up the field index from the type definition
-                // For now, fail explicitly - records need TypeDef lookup
-                failwithf "Record field '%s' on type '%s' requires TypeDef lookup (not yet implemented)" fieldName tc.Name
+                // Record field - look up from TypeDef in SemanticGraph
+                // TypeDefs use simple names (not module-qualified) per FNCS architecture
+                match SemanticGraph.tryGetRecordFields tc.Name ctx.Graph with
+                | Some fields ->
+                    // Find field index by name
+                    match fields |> List.tryFindIndex (fun (name, _) -> name = fieldName) with
+                    | Some idx -> idx
+                    | None -> failwithf "Record type '%s' has no field '%s'. Available fields: %A" tc.Name fieldName (fields |> List.map fst)
+                | None ->
+                    failwithf "Type '%s' not found in SemanticGraph or is not a record type" tc.Name
     | _ -> failwithf "FieldGet on non-TApp type: %A" structNativeType
 
 /// Witness field get (struct.field or record.field)
@@ -187,7 +192,7 @@ let witnessFieldGet
     (fieldType: MLIRType)
     : MLIROp list * TransferResult =
 
-    let fieldIndex = resolveFieldIndex structNativeType fieldName
+    let fieldIndex = resolveFieldIndex structNativeType fieldName ctx
 
     // For DU payload extraction, construct case-specific struct type
     // using the KNOWN fieldType from PSG. This is transliteration - we state

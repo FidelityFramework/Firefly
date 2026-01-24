@@ -1,10 +1,10 @@
-# PRD-12: Higher-Order Functions
+# C-02: Higher-Order Functions
 
-> **Sample**: `12_HigherOrderFunctions` | **Status**: Planned | **Depends On**: PRD-11 (Closures)
+> **Sample**: `12_HigherOrderFunctions` | **Status**: Planned | **Depends On**: C-01 (Closures)
 
 ## 1. Executive Summary
 
-Higher-order functions (HOFs) are functions that take functions as arguments or return functions as results. This PRD builds directly on the closure infrastructure from PRD-11 - HOFs are essentially the *use* of closures.
+Higher-order functions (HOFs) are functions that take functions as arguments or return functions as results. This PRD builds directly on the closure infrastructure from C-01 - HOFs are essentially the *use* of closures.
 
 **Key Insight**: If closures work correctly, HOFs are largely "free" - they're just function values being passed around. The remaining work is ensuring function types propagate correctly through FNCS type inference and that Alex handles function-typed parameters/returns.
 
@@ -224,12 +224,12 @@ increment then double on 5: 12
 
 ## 9. Risk Assessment
 
-**Low Risk**: HOFs are primarily a type system feature. If PRD-11 (Closures) is complete, HOFs should largely "just work." The main verification is ensuring:
+**Low Risk**: HOFs are primarily a type system feature. If C-01 (Closures) is complete, HOFs should largely "just work." The main verification is ensuring:
 1. Function types flow correctly through inference
 2. Indirect calls through function-typed bindings emit correct MLIR
 
 ## 10. Related PRDs
 
-- **PRD-11**: Closures - Required foundation
-- **PRD-14-15**: Sequences - Will use HOFs (`Seq.map`, `Seq.filter`)
-- **PRD-29-31**: MailboxProcessor - Behavior functions are HOFs
+- **C-01**: Closures - Required foundation
+- **C-06/C-07**: Sequences - Will use HOFs (`Seq.map`, `Seq.filter`)
+- **T-03 to T-05**: MailboxProcessor - Behavior functions are HOFs

@@ -1,6 +1,6 @@
-# PRD-31: Parallel Actors (Capstone)
+# T-05: Parallel Actors (Capstone)
 
-> **Sample**: `31_ParallelActors` | **Status**: Planned | **Depends On**: PRD-29-30 (BasicActor, ActorReply)
+> **Sample**: `31_ParallelActors` | **Status**: Planned | **Depends On**: T-03-30 (BasicActor, ActorReply)
 
 ## 1. Executive Summary
 
@@ -105,7 +105,7 @@ let coordinatorBehavior (inbox: Inbox<CoordinatorMessage>) = async {
 
 ## 4. FNCS Layer Implementation
 
-No new FNCS features needed beyond PRD-29-30. This sample validates composition of existing features.
+No new FNCS features needed beyond T-03-30. This sample validates composition of existing features.
 
 ## 5. Firefly/Alex Layer Implementation
 
@@ -277,8 +277,8 @@ If Sample 31 passes, the WREN Stack has proven:
 ┌────────────────────────────────────────┐
 │              WREN Stack                │
 ├────────────────────────────────────────┤
-│  W - WebView (PRD-26)                  │
-│  R - Regions (PRD-20-22)               │
+│  W - WebView (D-02)                  │
+│  R - Regions (A-04 to A-06)               │
 │  E - Elmish (via Actors)               │
 │  N - Native (all of Fidelity)          │
 ├────────────────────────────────────────┤
@@ -294,6 +294,6 @@ Sample 31 validates that functional programming + actor model + native compilati
 
 ## 11. Related PRDs
 
-- **PRD-29**: BasicActor - Foundation
-- **PRD-30**: ActorReply - Two-way communication
+- **T-03**: BasicActor - Foundation
+- **T-04**: ActorReply - Two-way communication
 - (Future): Supervision trees, fault tolerance, distributed actors

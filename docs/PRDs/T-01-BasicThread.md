@@ -1,6 +1,6 @@
-# PRD-27: Thread Primitives
+# T-01: Thread Primitives
 
-> **Sample**: `27_BasicThread` | **Status**: Planned | **Depends On**: PRD-11 (Closures)
+> **Sample**: `27_BasicThread` | **Status**: Planned | **Depends On**: C-01 (Closures)
 
 ## 1. Executive Summary
 
@@ -36,7 +36,7 @@ let t1 = Thread.create increment
 let t2 = Thread.create increment
 Thread.join t1
 Thread.join t2
-// counter may be 2 (or less due to race - see PRD-28 for synchronization)
+// counter may be 2 (or less due to race - see T-02 for synchronization)
 ```
 
 ### 2.4 Thread Return Value
@@ -307,6 +307,6 @@ All threads completed
 
 ## 10. Related PRDs
 
-- **PRD-11**: Closures - Thread functions are closures
-- **PRD-28**: Mutex - Synchronization for shared state
-- **PRD-29-31**: MailboxProcessor - Threaded message processing
+- **C-01**: Closures - Thread functions are closures
+- **T-02**: Mutex - Synchronization for shared state
+- **T-03-31**: MailboxProcessor - Threaded message processing

@@ -1,6 +1,6 @@
-# PRD-28: Mutex Synchronization
+# T-02: Mutex Synchronization
 
-> **Sample**: `28_MutexSync` | **Status**: Planned | **Depends On**: PRD-27 (BasicThread)
+> **Sample**: `28_MutexSync` | **Status**: Planned | **Depends On**: T-01 (BasicThread)
 
 ## 1. Executive Summary
 
@@ -291,5 +291,5 @@ With mutex (expect 200000): 200000
 
 ## 10. Related PRDs
 
-- **PRD-27**: BasicThread - Threading foundation
-- **PRD-29-31**: MailboxProcessor - Uses mutex for message queue
+- **T-01**: BasicThread - Threading foundation
+- **T-03-31**: MailboxProcessor - Uses mutex for message queue

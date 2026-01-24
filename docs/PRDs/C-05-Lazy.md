@@ -1,8 +1,8 @@
-# PRD-14: Lazy Values (Thunks)
+# C-05: Lazy Values (Thunks)
 
-> **Sample**: `14_Lazy` | **Status**: Planned | **Depends On**: PRD-11 (Closures)
+> **Sample**: `14_Lazy` | **Status**: Planned | **Depends On**: C-01 (Closures)
 
-**Foundation of the Lazy Stack**: This PRD establishes deferred computation with memoization. `Lazy<'T>` is a simpler primitive than `Seq<'T>` - it computes once and caches. Sequences (PRD-15) build on this foundation.
+**Foundation of the Lazy Stack**: This PRD establishes deferred computation with memoization. `Lazy<'T>` is a simpler primitive than `Seq<'T>` - it computes once and caches. Sequences (C-06) build on this foundation.
 
 ## 1. Executive Summary
 
@@ -12,7 +12,7 @@ Lazy values defer computation until explicitly forced. Unlike sequences (which m
 
 ### 1.1 Flat Closure Alignment
 
-The PRD-11 closure architecture established that closures are self-contained:
+The C-01 closure architecture established that closures are self-contained:
 
 ```
 Closure = {code_ptr, capture₀, capture₁, ...}
@@ -67,14 +67,14 @@ Following the flat closure model, the lazy struct contains:
 
 **There is no `env_ptr` field.** Captured variables are stored directly in the struct.
 
-### 3.2 Capture Semantics (from PRD-11)
+### 3.2 Capture Semantics (from C-01)
 
 | Variable Kind | Capture Mode | Storage in Lazy |
 |---------------|--------------|-----------------|
 | Immutable | ByValue | Copy of value |
 | Mutable | ByRef | Pointer to storage location |
 
-For mutable captures that escape (e.g., lazy value returned from function), the storage is hoisted to arena allocation per PRD-11 patterns.
+For mutable captures that escape (e.g., lazy value returned from function), the storage is hoisted to arena allocation per C-01 patterns.
 
 ### 3.3 Struct Layout Examples
 
@@ -114,7 +114,7 @@ type SemanticKind =
     | LazyExpr of body: NodeId * captures: CaptureInfo list
 ```
 
-The `captures` list uses the same `CaptureInfo` type as Lambda (PRD-11):
+The `captures` list uses the same `CaptureInfo` type as Lambda (C-01):
 - Name, Type, IsMutable, SourceNodeId
 - FNCS computes captures during type checking (scope is known)
 
@@ -157,7 +157,7 @@ let checkLazyExpr
     // 1. Check body expression
     let bodyNode = checkExpr env builder body
 
-    // 2. Collect captures (reuse closure capture analysis from PRD-11)
+    // 2. Collect captures (reuse closure capture analysis from C-01)
     let captures = collectCaptures env builder bodyNode.Id
 
     // 3. Create LazyExpr node
@@ -168,7 +168,7 @@ let checkLazyExpr
         children = [bodyNode.Id])
 ```
 
-**Key Point**: Capture analysis is reused from PRD-11. FNCS already knows how to identify captured variables during lambda checking - the same logic applies to lazy.
+**Key Point**: Capture analysis is reused from C-01. FNCS already knows how to identify captured variables during lambda checking - the same logic applies to lazy.
 
 ### 4.6 Files to Modify (FNCS)
 
@@ -183,7 +183,7 @@ let checkLazyExpr
 
 ### 5.1 LazyLayout Coeffect
 
-Following the `ClosureLayout` pattern from PRD-11, compute lazy struct layouts as coeffects:
+Following the `ClosureLayout` pattern from C-01, compute lazy struct layouts as coeffects:
 
 **File**: `src/Alex/Preprocessing/LazyLayout.fs`
 
@@ -209,7 +209,7 @@ type LazyLayout = {
 /// Compute lazy layouts for all LazyExpr nodes
 let run (graph: SemanticGraph) (closureLayouts: ClosureLayoutCoeffect) : Map<NodeId, LazyLayout> =
     // For each LazyExpr, build layout based on captures
-    // Reuse capture layout computation from PRD-11
+    // Reuse capture layout computation from C-01
 ```
 
 ### 5.2 Lazy Struct Type Generation
@@ -476,7 +476,7 @@ With by-value lazy structs, this requires the lazy value to be stored in mutable
 - Add memoization when arena PRDs (20-22) are complete
 - Simpler starting point
 
-**Decision**: Start with **deferred memoization** for PRD-14. The semantics are correct for pure thunks (same result each time). True memoization with caching will be added after arena support (PRD-20-22) provides the memory management foundation.
+**Decision**: Start with **deferred memoization** for C-05. The semantics are correct for pure thunks (same result each time). True memoization with caching will be added after arena support (A-04 to A-06) provides the memory management foundation.
 
 ### 7.3 Pure Thunk Semantics (Initial Implementation)
 
@@ -570,7 +570,7 @@ Sum: 30
 ### Phase 1: FNCS Foundation
 - [ ] Add `TLazy` to NativeTypes
 - [ ] Add `LazyExpr`, `LazyForce` to SemanticKind
-- [ ] Implement `lazy { }` checking with capture analysis (reuse PRD-11 logic)
+- [ ] Implement `lazy { }` checking with capture analysis (reuse C-01 logic)
 - [ ] Add `Lazy.force` intrinsic
 - [ ] FNCS builds successfully
 
@@ -589,18 +589,18 @@ Sum: 30
 - [ ] Captures work (lazyAdd captures a, b)
 - [ ] Samples 01-13 still pass (regression)
 
-### Phase 4: Memoization (Future - requires PRD-20-22)
+### Phase 4: Memoization (Future - requires A-04 to A-06)
 - [ ] Arena allocation for lazy struct
 - [ ] Force mutates struct to cache result
 - [ ] Second force returns cached value
 
 ## 10. Related PRDs
 
-- **PRD-11**: Closures - Lazy uses same flat closure model
-- **PRD-13**: Recursion - Pre-creation pattern for NodeIds
-- **PRD-15**: SimpleSeq - Sequences build on lazy foundation
-- **PRD-16**: SeqOperations - Higher-order sequence functions
-- **PRD-20-22**: Regions/Arena - Enable true memoization
+- **C-01**: Closures - Lazy uses same flat closure model
+- **C-03**: Recursion - Pre-creation pattern for NodeIds
+- **C-06**: SimpleSeq - Sequences build on lazy foundation
+- **C-07**: SeqOperations - Higher-order sequence functions
+- **A-04 to A-06**: Regions/Arena - Enable true memoization
 
 ## 11. Architectural Alignment
 
@@ -614,7 +614,7 @@ This PRD aligns with the flat closure architecture documented in:
 2. **No env_ptr** - Captures inlined directly
 3. **Self-contained structs** - No pointer chains
 4. **Coeffect-based layout** - SSA computed before witnessing
-5. **Capture reuse** - Same analysis as PRD-11 closures
+5. **Capture reuse** - Same analysis as C-01 closures
 
 ## 12. Implementation Lessons (January 2026)
 
@@ -622,16 +622,16 @@ This PRD aligns with the flat closure architecture documented in:
 
 > **New features MUST compose from recently established patterns, not invent parallel mechanisms.**
 
-PRD-14 implementation initially went wrong by creating a `{code_ptr, env_ptr}` closure model with null env_ptr for no-capture cases. This completely ignored that **flat closures had just been established** in PRD-11.
+C-05 implementation initially went wrong by creating a `{code_ptr, env_ptr}` closure model with null env_ptr for no-capture cases. This completely ignored that **flat closures had just been established** in C-01.
 
 **The correct approach:**
 1. Identify what existing patterns the feature needs (closures, capture analysis)
-2. Check what was RECENTLY established (PRD-11 flat closures)
+2. Check what was RECENTLY established (C-01 flat closures)
 3. EXTEND the existing pattern, don't reinvent
 
 ```
 WRONG: Lazy-specific closure model with nulls
-RIGHT: Lazy = PRD-11 Flat Closure + memoization state
+RIGHT: Lazy = C-01 Flat Closure + memoization state
        {computed: i1, value: T, code_ptr: ptr, cap₀, cap₁, ...}
 ```
 
@@ -658,7 +658,7 @@ See Serena memory: `lazy_thunk_calling_convention`
 
 ### 12.3 Capture Analysis Reuse
 
-FNCS already had capture analysis for Lambda (PRD-11). The correct approach was to **reuse it**:
+FNCS already had capture analysis for Lambda (C-01). The correct approach was to **reuse it**:
 
 ```fsharp
 // In Applications.fs - made public for reuse
