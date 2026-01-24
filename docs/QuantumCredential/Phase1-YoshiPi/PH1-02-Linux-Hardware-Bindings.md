@@ -507,4 +507,4 @@ With these bindings, the YoshiPi demo can:
 - [03_MLIR_Dialect_Strategy](./03_MLIR_Dialect_Strategy.md) - Compilation path and parallel execution
 - [05_PostQuantum_Architecture](./05_PostQuantum_Architecture.md) - PQC algorithms
 - [Architecture_Canonical](../Architecture_Canonical.md) - Platform binding pattern
-- [Native_Library_Binding_Architecture](../Native_Library_Binding_Architecture.md) - Binding design principles
+- Farscape docs (`~/repos/Farscape/docs/`) - Quotation-based binding architecture

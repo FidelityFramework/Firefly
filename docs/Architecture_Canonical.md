@@ -315,4 +315,4 @@ The samples use FNCS intrinsics directly. Compilation flow:
 - [QC_Demo/01_Demo_Strategy_Integrated.md](./QC_Demo/01_Demo_Strategy_Integrated.md) - Integrated demo strategy (desktop + embedded)
 
 ### Platform Bindings
-- [Native_Library_Binding_Architecture.md](./Native_Library_Binding_Architecture.md) - Platform binding patterns
+- See `~/repos/Farscape/docs/` for native library binding patterns (quotation-based architecture)

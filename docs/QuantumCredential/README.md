@@ -160,7 +160,7 @@ These criteria validate both the immediate demo goals and the underlying archite
 | [Quotation_Based_Memory_Architecture.md](../Quotation_Based_Memory_Architecture.md) | Core memory model underlying all Fidelity targets |
 | [Architecture_Canonical.md](../Architecture_Canonical.md) | Platform.Bindings pattern and nanopass pipeline |
 | [WebView_Desktop_Architecture.md](../WebView_Desktop_Architecture.md) | WebView integration shared between demo devices |
-| [Native_Library_Binding_Architecture.md](../Native_Library_Binding_Architecture.md) | Binding design principles for hardware access |
+| Farscape docs (`~/repos/Farscape/docs/`) | Quotation-based native library binding architecture |
 
 ### Related SpeakEZ Articles
 

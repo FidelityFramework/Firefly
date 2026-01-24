@@ -505,4 +505,3 @@ These optimizations are not in scope for the initial implementation.
 
 - [WebView_Desktop_Architecture.md](./WebView_Desktop_Architecture.md) - Overall architecture and IPC model
 - [Architecture_Canonical.md](./Architecture_Canonical.md) - Firefly compilation pipeline
-- [Native_Library_Binding_Architecture.md](./Native_Library_Binding_Architecture.md) - Platform binding patterns

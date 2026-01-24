@@ -6,7 +6,6 @@
 >
 > **Related Documents**:
 > - [Architecture_Canonical.md](./Architecture_Canonical.md) - Layer separation principle
-> - [Native_Library_Binding_Architecture.md](./Native_Library_Binding_Architecture.md) - Platform conduit pattern
 > - [Demo_UI_Stretch_Goal.md](./Demo_UI_Stretch_Goal.md) - FidelityUI long-term vision
 
 ---
@@ -573,7 +572,6 @@ Both approaches share the architectural principles:
 ## Cross-References
 
 - **[Architecture_Canonical.md](./Architecture_Canonical.md)** - Layer separation principle, the split model
-- **[Native_Library_Binding_Architecture.md](./Native_Library_Binding_Architecture.md)** - Platform conduit pattern
 - **[Demo_UI_Stretch_Goal.md](./Demo_UI_Stretch_Goal.md)** - FidelityUI long-term vision
 - **[WebView_Build_Integration.md](./WebView_Build_Integration.md)** - Build system details
 
