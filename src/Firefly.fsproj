@@ -133,6 +133,7 @@
 
   <ItemGroup>
     <PackageReference Include="FSharp.Core" Version="10.0.101" />
+    <PackageReference Include="IcedTasks" Version="0.11.7" />
     <!-- FNCS: F# Native Compiler Services (native type universe) -->
     <ProjectReference Include="../../fsnative/src/Compiler/FSharp.Native.Compiler.Service.fsproj" />
     <PackageReference Include="XParsec" Version="0.3.0" />
