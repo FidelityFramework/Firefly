@@ -102,12 +102,36 @@ Set<T> = ptr<SetNode<T>>
 ```fsharp
 type NTUKind =
     // ... existing kinds ...
+    | NTUarray     // 'T[] (mutable, contiguous)
     | NTUlist      // List<'T>
     | NTUmap       // Map<'K, 'V>
     | NTUset       // Set<'T>
 ```
 
-### 2.5 NativeType Extensions
+### 2.5 Type Constructor Arity Principle
+
+> **Arity is explicit in the type constructor. No helper functions needed.**
+
+Following the same principle as function arity (see "Arity On The Side Of Caution"), type constructors carry their arity explicitly:
+
+| Type Constructor | Arity | NTUKind | Usage |
+|-----------------|-------|---------|-------|
+| `arrayTyCon` | 1 | NTUarray | `TApp(arrayTyCon, [elemType])` |
+| `listTyCon` | 1 | NTUlist | `TApp(listTyCon, [elemType])` |
+| `mapTyCon` | 2 | NTUmap | `TApp(mapTyCon, [keyType; valType])` |
+| `setTyCon` | 1 | NTUset | `TApp(setTyCon, [elemType])` |
+
+**Why no helper functions?** The type constructor with its arity IS the intrinsic. `mkArrayType elemType` is unnecessary indirection - just use `TApp(arrayTyCon, [elemType])` directly. This parallels how saturated function calls compile to direct calls rather than closure creation.
+
+```fsharp
+// WRONG - helper function indirection
+let mkArrayType elemType = NativeType.TApp(arrayTyCon, [elemType])
+
+// RIGHT - direct type application (arity is explicit)
+NativeType.TApp(arrayTyCon, [elemType])
+```
+
+### 2.6 NativeType Extensions
 
 ```fsharp
 type NativeType =
@@ -117,11 +141,11 @@ type NativeType =
     | TSet of elementType: NativeType
 ```
 
-### 2.6 Range Expressions
+### 2.7 Range Expressions
 
 Range expressions are idiomatic F# syntax for generating sequences of values. They desugar to collection initialization.
 
-#### 2.6.1 Syntax Forms
+#### 2.7.1 Syntax Forms
 
 | Syntax | Meaning | Desugars To |
 |--------|---------|-------------|
@@ -133,7 +157,7 @@ Range expressions are idiomatic F# syntax for generating sequences of values. Th
 | `seq { 1..10 }` | Lazy sequence | State machine (C-06) |
 | `{ 1..10 }` | Sequence (implicit) | Same as `seq { 1..10 }` |
 
-#### 2.6.2 FCS Representation
+#### 2.7.2 FCS Representation
 
 FCS parses range expressions as `SynExpr.IndexRange`:
 
@@ -152,7 +176,7 @@ FCS parses range expressions as `SynExpr.IndexRange`:
 
 **Current FNCS Status**: `IndexRange` currently errors with "requires slice support". This PRD implements proper range expression handling.
 
-#### 2.6.3 FNCS Implementation
+#### 2.7.3 FNCS Implementation
 
 **SemanticKind Extension:**
 
@@ -227,7 +251,7 @@ let checkRangeExpr
         children = childIds)
 ```
 
-#### 2.6.4 Alex Code Generation
+#### 2.7.4 Alex Code Generation
 
 **List Range** `[1..10]`:
 ```mlir
@@ -281,7 +305,7 @@ llvm.func @range_stepped_to_array(%start: i32, %step: i32, %finish: i32) -> !arr
 }
 ```
 
-#### 2.6.5 Intrinsics for Range Support
+#### 2.7.5 Intrinsics for Range Support
 
 | Intrinsic | Signature | Purpose |
 |-----------|-----------|---------|

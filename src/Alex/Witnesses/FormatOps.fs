@@ -28,8 +28,6 @@ let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA li
 // CONSTANTS
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Uses MLIRTypes.nativeStr for fat pointer type
-
 // ═══════════════════════════════════════════════════════════════════════════
 // INTEGER TO STRING CONVERSION
 // ═══════════════════════════════════════════════════════════════════════════
@@ -37,7 +35,8 @@ let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA li
 /// Convert an integer value to a string (fat pointer)
 /// Uses a while loop to extract digits, handles sign, zero case
 /// Uses ~40 pre-assigned SSAs
-let intToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (intVal: Val) : MLIROp list * Val =
+/// wordWidth: Platform word width (I64 on 64-bit, I32 on 32-bit)
+let intToString (wordWidth: IntBitWidth) (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (intVal: Val) : MLIROp list * Val =
     let ssas = requireSSAs nodeId ssa
     let mutable ssaIdx = 0
     let nextSSA () =
@@ -200,13 +199,13 @@ let intToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (intVal: Val) : 
 
     // Build fat string struct
     let undefSSA = nextSSA ()
-    let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, MLIRTypes.nativeStr))
+    let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, TStruct [TPtr; TInt wordWidth]))
 
     let withPtrSSA = nextSSA ()
-    let insertPtrOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, strPtrSSA, [0], MLIRTypes.nativeStr))
+    let insertPtrOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, strPtrSSA, [0], TStruct [TPtr; TInt wordWidth]))
 
     let fatStrSSA = nextSSA ()
-    let insertLenOp = MLIROp.LLVMOp (LLVMOp.InsertValue (fatStrSSA, withPtrSSA, strLenSSA, [1], MLIRTypes.nativeStr))
+    let insertLenOp = MLIROp.LLVMOp (LLVMOp.InsertValue (fatStrSSA, withPtrSSA, strLenSSA, [1], TStruct [TPtr; TInt wordWidth]))
 
     // Combine all operations
     let allOps =
@@ -217,7 +216,7 @@ let intToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (intVal: Val) : 
         [whileOp; finalPosOp; wasZeroOp; zeroCharOp; zeroIfOp; adjPosOp; negPosOp; negIfOp] @
         [startPtrPosOp; strPtrOp; strLenOp; undefOp; insertPtrOp; insertLenOp]
 
-    (allOps, { SSA = fatStrSSA; Type = MLIRTypes.nativeStr })
+    (allOps, { SSA = fatStrSSA; Type = TStruct [TPtr; TInt wordWidth] })
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FLOAT TO STRING CONVERSION
@@ -226,7 +225,8 @@ let intToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (intVal: Val) : 
 /// Convert a float value to a string (fat pointer)
 /// Format: [-]digits.digits (6 decimal places)
 /// Uses ~70 pre-assigned SSAs
-let floatToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (floatVal: Val) : MLIROp list * Val =
+/// wordWidth: Platform word width (I64 on 64-bit, I32 on 32-bit)
+let floatToString (wordWidth: IntBitWidth) (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (floatVal: Val) : MLIROp list * Val =
     let ssas = requireSSAs nodeId ssa
     let mutable ssaIdx = 0
     let nextSSA () =
@@ -485,13 +485,13 @@ let floatToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (floatVal: Val
     let strLenOp = MLIROp.ArithOp (ArithOp.SubI (strLenSSA, bufSizeSSA, startPtrPosSSA, MLIRTypes.i64))
 
     let undefSSA = nextSSA ()
-    let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, MLIRTypes.nativeStr))
+    let undefOp = MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, TStruct [TPtr; TInt wordWidth]))
 
     let withPtrSSA = nextSSA ()
-    let insertPtrOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, strPtrSSA, [0], MLIRTypes.nativeStr))
+    let insertPtrOp = MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, strPtrSSA, [0], TStruct [TPtr; TInt wordWidth]))
 
     let fatStrSSA = nextSSA ()
-    let insertLenOp = MLIROp.LLVMOp (LLVMOp.InsertValue (fatStrSSA, withPtrSSA, strLenSSA, [1], MLIRTypes.nativeStr))
+    let insertLenOp = MLIROp.LLVMOp (LLVMOp.InsertValue (fatStrSSA, withPtrSSA, strLenSSA, [1], TStruct [TPtr; TInt wordWidth]))
 
     // ─────────────────────────────────────────────────────────────────────────
     // COMBINE ALL OPERATIONS
@@ -507,7 +507,7 @@ let floatToString (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) (floatVal: Val
         [negPosOp; negIfOp; startPtrPosOp] @
         [strPtrOp; strLenOp; undefOp; insertPtrOp; insertLenOp]
 
-    (allOps, { SSA = fatStrSSA; Type = MLIRTypes.nativeStr })
+    (allOps, { SSA = fatStrSSA; Type = TStruct [TPtr; TInt wordWidth] })
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STRING TO INTEGER CONVERSION

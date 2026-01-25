@@ -76,8 +76,8 @@ module MLIRTypes =
     let index = TIndex
     let unit = TUnit
 
-    /// Native string type: fat pointer = {ptr, len}
-    let nativeStr = TStruct [TPtr; TInt I64]
+    // NOTE: Native string type is NOT defined here - it's platform-dependent.
+    // Use mapType Types.stringType ctx through TransferTypes for the canonical path.
 
     /// Check if type is an integer type
     let isInteger = function TInt _ -> true | _ -> false

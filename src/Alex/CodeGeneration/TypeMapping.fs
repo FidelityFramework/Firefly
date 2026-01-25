@@ -14,13 +14,6 @@ open Alex.Dialects.Core.Types
 open Alex.Bindings.PlatformTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TYPE CONSTANTS
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Native string type: fat pointer = {ptr, len: i64}
-let NativeStrType = TStruct [TPtr; TInt I64]
-
-// ═══════════════════════════════════════════════════════════════════════════
 // TYPE SIZE COMPUTATION (for DU slot sizing)
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -91,8 +84,8 @@ let mapNTUKindToMLIRType (arch: Architecture) (kind: NTUKind) : MLIRType =
     | NTUKind.NTUunit -> TInt I32  // Unit represented as i32 0
     // Pointers
     | NTUKind.NTUptr | NTUKind.NTUfnptr -> TPtr
-    // String (fat pointer)
-    | NTUKind.NTUstring -> NativeStrType
+    // String (fat pointer) - platform-aware length
+    | NTUKind.NTUstring -> TStruct [TPtr; TInt wordWidth]
     // Composite/complex types - representation comes from platform tier, not here
     | kind -> failwithf "NTUKind %A requires platform-tier resolution, not scalar mapping" kind
 
@@ -149,8 +142,8 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
         | _, Some NTUKind.NTUfloat64 -> TFloat F64
         // Char (Unicode codepoint)
         | _, Some NTUKind.NTUchar -> TInt I32
-        // String (fat pointer)
-        | TypeLayout.FatPointer, Some NTUKind.NTUstring -> NativeStrType
+        // String (fat pointer) - platform-aware length
+        | TypeLayout.FatPointer, Some NTUKind.NTUstring -> TStruct [TPtr; TInt wordWidth]
         // SECOND: Name-based fallback for types without proper NTU metadata
         // Note: Arrays have FatPointer layout but no specific NTUKind, handled in fallback
         | _ ->
@@ -177,8 +170,8 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
                 // PRD-13a: list<'T> is a pointer to cons cell (linked list)
                 TPtr
             | "array" | "Array" ->
-                // Array<T> is a fat pointer {ptr, len} - same layout as string
-                NativeStrType
+                // Array<T> is a fat pointer {ptr, len} - platform-aware length
+                TStruct [TPtr; TInt wordWidth]
             | _ ->
                 // Check FieldCount for record types
                 if tycon.FieldCount > 0 then
@@ -225,7 +218,7 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
                     | TypeLayout.Inline (size, align) when size > 0 ->
                         failwithf "TApp with unknown Inline layout (%d, %d): %s" size align tycon.Name
                     | TypeLayout.FatPointer ->
-                        NativeStrType
+                        TStruct [TPtr; TInt wordWidth]
                     | TypeLayout.PlatformWord ->
                         // Should have been handled by NTU-aware code at top; this is a fallback
                         TInt wordWidth

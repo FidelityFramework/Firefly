@@ -159,22 +159,22 @@ let retVal (value: SSA) (valueTy: MLIRType) : LLVMOp =
 // COMPOSITE PATTERNS (common combinations)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Build a fat pointer (native string) from ptr and len
+/// Build a fat pointer struct from ptr and len
+/// fatPtrTy: The struct type (e.g., TStruct [TPtr; TInt wordWidth])
 /// Returns operations to insert ptr at [0] and len at [1]
-let buildFatPtr (resultSSA: SSA) (ptrSSA: SSA) (lenSSA: SSA) : LLVMOp list =
-    let strTy = MLIRTypes.nativeStr
+let buildFatPtr (fatPtrTy: MLIRType) (resultSSA: SSA) (ptrSSA: SSA) (lenSSA: SSA) : LLVMOp list =
     [
-        undef (V (-1)) strTy  // Placeholder - actual SSA assigned by caller
-        insertValueAt (V (-2)) (V (-1)) ptrSSA 0 strTy
-        insertValueAt resultSSA (V (-2)) lenSSA 1 strTy
+        undef (V (-1)) fatPtrTy  // Placeholder - actual SSA assigned by caller
+        insertValueAt (V (-2)) (V (-1)) ptrSSA 0 fatPtrTy
+        insertValueAt resultSSA (V (-2)) lenSSA 1 fatPtrTy
     ]
 
-/// Extract ptr and len from fat pointer (native string)
-let extractFatPtr (aggregate: SSA) (ptrResult: SSA) (lenResult: SSA) : LLVMOp list =
-    let strTy = MLIRTypes.nativeStr
+/// Extract ptr and len from fat pointer struct
+/// fatPtrTy: The struct type (e.g., TStruct [TPtr; TInt wordWidth])
+let extractFatPtr (fatPtrTy: MLIRType) (aggregate: SSA) (ptrResult: SSA) (lenResult: SSA) : LLVMOp list =
     [
-        extractValueAt ptrResult aggregate 0 strTy
-        extractValueAt lenResult aggregate 1 strTy
+        extractValueAt ptrResult aggregate 0 fatPtrTy
+        extractValueAt lenResult aggregate 1 fatPtrTy
     ]
 
 // ═══════════════════════════════════════════════════════════════════════════

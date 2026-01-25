@@ -45,9 +45,12 @@ let private requireNodeSSA (nodeId: NodeId) (ctx: WitnessContext) : SSA =
 
 
 
-/// Check if a type is the native string type
+/// Check if a type is the native string type (fat pointer with ptr + integer length)
+/// Matches any word width (I32 on 32-bit, I64 on 64-bit platforms)
 let private isNativeStrType (ty: MLIRType) : bool =
-    ty = MLIRTypes.nativeStr
+    match ty with
+    | TStruct [TPtr; TInt _] -> true  // Fat pointer: {ptr, len} with any integer width
+    | _ -> false
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INDEX OPERATIONS
@@ -650,13 +653,15 @@ let witnessTraitCall
     match memberName with
     | "Length" when isNativeStrType receiverType ->
         // String.Length - extract length field (index 1) from fat pointer
+        // Length is platform word sized (i64 on 64-bit, i32 on 32-bit)
         let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [1], receiverType))
-        [extractOp], TRValue { SSA = resultSSA; Type = MLIRTypes.i64 }
+        [extractOp], TRValue { SSA = resultSSA; Type = TInt (wordWidth ctx) }
 
     | "Length" ->
         // Array/collection Length - extract count field (index 1) from fat pointer
+        // Length is platform word sized (i64 on 64-bit, i32 on 32-bit)
         let extractOp = MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, receiverSSA, [1], receiverType))
-        [extractOp], TRValue { SSA = resultSSA; Type = MLIRTypes.i64 }
+        [extractOp], TRValue { SSA = resultSSA; Type = TInt (wordWidth ctx) }
 
     | "Pointer" when isNativeStrType receiverType ->
         // String.Pointer - extract pointer field (index 0) from fat pointer

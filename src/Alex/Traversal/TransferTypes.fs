@@ -186,3 +186,7 @@ let targetArch (ctx: WitnessContext) : Architecture =
 /// field types from TypeDef nodes. ALL type mapping should go through this.
 let mapType (ty: NativeType) (ctx: WitnessContext) : MLIRType =
     mapNativeTypeWithGraphForArch ctx.Coeffects.Platform.TargetArch ctx.Graph ty
+
+/// Get platform-aware word width for string length, array length, etc.
+let wordWidth (ctx: WitnessContext) : IntBitWidth =
+    platformWordWidth ctx.Coeffects.Platform.TargetArch

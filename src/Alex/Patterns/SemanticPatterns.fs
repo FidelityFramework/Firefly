@@ -269,26 +269,6 @@ let (|BitsOp|_|) (info: IntrinsicInfo) =
 let (|FnPtrOp|_|) (info: IntrinsicInfo) =
     if info.Module = IntrinsicModule.FnPtr then Some info.Operation else None
 
-/// Check if intrinsic is a Signal operation (using IntrinsicInfo)
-/// Signal intrinsics: create, get, set, update
-let (|SignalOp|_|) (info: IntrinsicInfo) =
-    if info.Module = IntrinsicModule.Signal then Some info.Operation else None
-
-/// Check if intrinsic is an Effect operation (using IntrinsicInfo)
-/// Effect intrinsics: create, createWithCleanup, dispose
-let (|EffectOp|_|) (info: IntrinsicInfo) =
-    if info.Module = IntrinsicModule.Effect then Some info.Operation else None
-
-/// Check if intrinsic is a Memo operation (using IntrinsicInfo)
-/// Memo intrinsics: create, get
-let (|MemoOp|_|) (info: IntrinsicInfo) =
-    if info.Module = IntrinsicModule.Memo then Some info.Operation else None
-
-/// Check if intrinsic is a Batch operation (using IntrinsicInfo)
-/// Batch intrinsics: run
-let (|BatchOp|_|) (info: IntrinsicInfo) =
-    if info.Module = IntrinsicModule.Batch then Some info.Operation else None
-
 /// Check if intrinsic is an Arena operation (using IntrinsicInfo)
 /// Arena intrinsics: fromPointer, alloc, allocAligned, remaining, reset
 /// Arena<'lifetime> provides deterministic bump allocation with compile-time lifetime tracking

@@ -218,10 +218,10 @@ let private witnessStringConcat (appNodeId: NodeId) (ctx: WitnessContext) (str1:
     let len2SSA = ssas.[3]
 
     let extractOps = [
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (ptr1SSA, str1.SSA, [0], MLIRTypes.nativeStr))
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (len1SSA, str1.SSA, [1], MLIRTypes.nativeStr))
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (ptr2SSA, str2.SSA, [0], MLIRTypes.nativeStr))
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (len2SSA, str2.SSA, [1], MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (LLVMOp.ExtractValue (ptr1SSA, str1.SSA, [0], mapType Types.stringType ctx))
+        MLIROp.LLVMOp (LLVMOp.ExtractValue (len1SSA, str1.SSA, [1], mapType Types.stringType ctx))
+        MLIROp.LLVMOp (LLVMOp.ExtractValue (ptr2SSA, str2.SSA, [0], mapType Types.stringType ctx))
+        MLIROp.LLVMOp (LLVMOp.ExtractValue (len2SSA, str2.SSA, [1], mapType Types.stringType ctx))
     ]
 
     // Total length
@@ -253,13 +253,13 @@ let private witnessStringConcat (appNodeId: NodeId) (ctx: WitnessContext) (str1:
     let withPtrSSA = ssas.[8]
 
     let buildStrOps = [
-        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, MLIRTypes.nativeStr))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, bufSSA, [0], MLIRTypes.nativeStr))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withPtrSSA, totalLenSSA, [1], MLIRTypes.nativeStr))
+        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, mapType Types.stringType ctx))
+        MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, bufSSA, [0], mapType Types.stringType ctx))
+        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withPtrSSA, totalLenSSA, [1], mapType Types.stringType ctx))
     ]
 
     let allOps = extractOps @ [addLenOp; allocOp; memcpy1Op; gepOp; memcpy2Op] @ buildStrOps
-    Some (allOps, TRValue { SSA = resultSSA; Type = MLIRTypes.nativeStr })
+    Some (allOps, TRValue { SSA = resultSSA; Type = mapType Types.stringType ctx })
 
 /// Witness String.contains - scan string for character
 /// String.contains: string -> char -> bool
@@ -572,7 +572,7 @@ let private witnessIntrinsic
     | FormatOp "int" ->
         match args with
         | [intVal] ->
-            let ops, resultVal = Format.intToString appNodeId ctx.Coeffects.SSA intVal
+            let ops, resultVal = Format.intToString (wordWidth ctx) appNodeId ctx.Coeffects.SSA intVal
             Some (ops, TRValue resultVal)
         | _ -> None
 
@@ -580,14 +580,14 @@ let private witnessIntrinsic
         match args with
         | [int64Val] ->
             // intToString handles i64 directly (no extension needed for i64 input)
-            let ops, resultVal = Format.intToString appNodeId ctx.Coeffects.SSA int64Val
+            let ops, resultVal = Format.intToString (wordWidth ctx) appNodeId ctx.Coeffects.SSA int64Val
             Some (ops, TRValue resultVal)
         | _ -> None
 
     | FormatOp "float" ->
         match args with
         | [floatVal] ->
-            let ops, resultVal = Format.floatToString appNodeId ctx.Coeffects.SSA floatVal
+            let ops, resultVal = Format.floatToString (wordWidth ctx) appNodeId ctx.Coeffects.SSA floatVal
             Some (ops, TRValue resultVal)
         | _ -> None
 
@@ -717,11 +717,11 @@ let private witnessIntrinsic
              let withPtrSSA = ssas.[ssaOffset + 1]
 
              let ops = lenOps @ [
-                 MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, MLIRTypes.nativeStr))
-                 MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, ptr.SSA, [0], MLIRTypes.nativeStr))
-                 MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withPtrSSA, lenSSA, [1], MLIRTypes.nativeStr))
+                 MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, mapType Types.stringType ctx))
+                 MLIROp.LLVMOp (LLVMOp.InsertValue (withPtrSSA, undefSSA, ptr.SSA, [0], mapType Types.stringType ctx))
+                 MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withPtrSSA, lenSSA, [1], mapType Types.stringType ctx))
              ]
-             Some (ops, TRValue { SSA = resultSSA; Type = MLIRTypes.nativeStr })
+             Some (ops, TRValue { SSA = resultSSA; Type = mapType Types.stringType ctx })
         | _ -> None
 
     // Arena operations - deterministic bump allocation
