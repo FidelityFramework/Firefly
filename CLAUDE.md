@@ -847,3 +847,180 @@ Before committing any change, ask:
 > "If someone deleted all the comments and looked only at what this code DOES, would they see library-specific logic in MLIR generation?"
 
 If yes, you have violated the layer separation principle. Revert and fix upstream.
+
+## CRITICAL: Architectural Enforcement (January 2026)
+
+> **Physical constraints prevent architectural drift. Trust but verify.**
+
+### Read-Only Files
+
+The following files are **READ-ONLY** by design and protected by pre-commit hooks:
+
+| File | Why Read-Only | Allowed Changes |
+|------|---------------|-----------------|
+| **MLIRTransfer.fs** | The canonical fold - architectural gold | 1. New SemanticKind cases (with witness delegation)<br>2. Bugs in fold logic<br>3. New coeffect types |
+
+**Pre-commit hook** prevents accidental edits. To bypass (for legitimate changes):
+```bash
+git commit --no-verify
+```
+
+**If you need to add Application handling logic:**
+- ❌ DO NOT add it to MLIRTransfer.fs
+- ✅ CREATE a new witness file in `src/Alex/Witnesses/`
+
+### Witness Size Limit: 300 Lines
+
+All witnesses MUST be under 300 lines. This is enforced by CI via `tests/ArchitectureValidation.sh`.
+
+**If a witness exceeds 300 lines:**
+1. **Factor into smaller witnesses** by intrinsic module or operation class
+2. **Move transform logic to FNCS** - witnesses observe and emit, they don't compute
+3. **Check for "filling FNCS gaps"** - collection operations, string manipulation, DateTime arithmetic belong in FNCS
+
+### Witness Template
+
+When creating a new witness, follow this template:
+
+```fsharp
+/// WitnessName - Witness [Module] intrinsic operations
+///
+/// SCOPE: Handle ONLY [Module] intrinsics from FNCS.
+/// DOES NOT: Implement transform logic, fill FNCS gaps, route to other witnesses.
+///
+/// [Brief description of what operations are covered]
+module Alex.Witnesses.WitnessName
+
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open Alex.Dialects.Core.Types
+open Alex.Dialects.LLVM.Templates  // If needed
+open Alex.Dialects.Arith.Templates  // If needed
+open Alex.Traversal.TransferTypes
+open Alex.CodeGeneration.TypeMapping
+open Alex.Patterns.SemanticPatterns
+
+module SSAAssign = PSGElaboration.SSAAssignment
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SSA HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Get result SSA for a node
+let private requireSSA (nodeId: NodeId) (ctx: WitnessContext) : SSA =
+    match SSAAssign.lookupSSA nodeId ctx.Coeffects.SSA with
+    | Some ssa -> ssa
+    | None -> failwithf "No result SSA for node %A" nodeId
+
+/// Get all pre-assigned SSAs for a node (if multiple needed)
+let private requireSSAs (nodeId: NodeId) (ctx: WitnessContext) : SSA list =
+    match SSAAssign.lookupSSAs nodeId ctx.Coeffects.SSA with
+    | Some ssas -> ssas
+    | None -> failwithf "No SSAs for node %A" nodeId
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WITNESS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Witness [Module] intrinsic operations
+let witness
+    (ctx: WitnessContext)
+    (node: SemanticNode)
+    (args: Val list)
+    (returnType: NativeType)
+    : MLIROp list * TransferResult =
+
+    let appNodeId = node.Id
+    let resultType = mapType returnType ctx
+    let resultSSA = requireSSA appNodeId ctx
+
+    // Extract intrinsic info
+    match node.Kind with
+    | SemanticKind.Application (funcNodeId, _) ->
+        match SemanticGraph.tryGetNode funcNodeId ctx.Graph with
+        | Some funcNode ->
+            match funcNode.Kind with
+            | SemanticKind.Intrinsic intrinsicInfo ->
+                match intrinsicInfo with
+                | [IntrinsicKind] opKind ->
+                    match opKind, args with
+                    | "operation1", [arg1] ->
+                        // Handle operation1
+                        let op = MLIROp.LLVMOp (...)
+                        [op], TRValue { SSA = resultSSA; Type = resultType }
+
+                    | "operation2", [arg1; arg2] ->
+                        // Handle operation2
+                        let ops = [...]
+                        ops, TRValue { SSA = resultSSA; Type = resultType }
+
+                    | _ ->
+                        [], TRError (sprintf "Unhandled [Module] operation: %s" opName)
+
+                | _ ->
+                    [], TRError "Not a [Module] intrinsic"
+            | _ ->
+                [], TRError "Function node is not an intrinsic"
+        | None ->
+            [], TRError "Function node not found"
+    | _ ->
+        [], TRError "Not an Application node"
+```
+
+**Total file size: ~150-250 lines maximum.**
+
+### Gap Emergence Protocol
+
+When a sample fails with "Operation X not implemented", follow this protocol:
+
+| Question | If Yes → | If No → |
+|----------|----------|---------|
+| Is this a primitive operation? (read, write, add, get, set) | **Witness in appropriate module** | Continue |
+| Is this a higher-order operation? (map, filter, fold) | **FNCS functional decomposition** | Continue |
+| Is this structural? (string concat, DateTime arithmetic) | **FNCS elaboration to basic ops** | Continue |
+| Is this transform logic? (computing values, building structures) | **FNCS, NOT Alex** | Continue |
+
+**Default answer: Fix in FNCS, NOT in witnesses.**
+
+**Error messages should indicate where to fix:**
+```fsharp
+[], TRError "List.map needs FNCS functional decomposition (recursive calls)"
+[], TRError "String.concat needs FNCS elaboration to NativePtr/NativeStr primitives"
+[], TRError "DateTime.hour needs FNCS intrinsic decomposition to arith ops"
+```
+
+### Architecture Validation (CI)
+
+Run `tests/ArchitectureValidation.sh` to check:
+1. ✅ All witnesses under 300 lines
+2. ✅ No transform logic in witnesses (string ops, DateTime arithmetic)
+3. ✅ MLIRTransfer.fs size is acceptable (~965 lines)
+4. ✅ CallDispatch.fs is factored (not a 1558-line dispatcher)
+
+**This script runs in CI and will fail the build if violated.**
+
+### Serena Memories for This System
+
+When working on transfer/witnesses, consult these memories:
+
+| Memory | Purpose |
+|--------|---------|
+| `call_dispatch_central_dispatcher_failure` | The failure mode - what NOT to do |
+| `mlir_transfer_read_only_audit` | Why MLIRTransfer.fs is frozen |
+| `call_dispatch_factoring_plan` | How to factor large witnesses |
+| `mlir_transfer_canonical_architecture` | The correct architecture (Three Concerns) |
+| `four_pillars_of_transfer` | Active Patterns + Coeffects + Zipper + Templates |
+| `negative_examples` | All antipatterns, including central dispatch |
+
+### The Key Insight
+
+**MLIRTransfer.fs is architectural gold. Freezing it prevents the next CallDispatch.**
+
+The failure mode:
+1. Start with clean fold (~200 lines)
+2. Add "just this one intrinsic" inline
+3. Add "just this similar operation"
+4. Add "just this helper for this class"
+5. 10 iterations later: 1558-line central dispatcher
+
+**Physical constraints (read-only files, size limits, CI validation) prevent this drift.**

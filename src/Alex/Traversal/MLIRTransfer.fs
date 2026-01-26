@@ -1,4 +1,19 @@
-/// MLIRTransfer - Canonical Transfer from SemanticGraph to MLIR
+/// MLIRTransfer - THE CLEAN FOLD (Read-Only by Design)
+///
+/// ╔═══════════════════════════════════════════════════════════════════╗
+/// ║ ARCHITECTURAL BOUNDARY: This file is READ-ONLY                   ║
+/// ║                                                                   ║
+/// ║ Only modify this file for:                                       ║
+/// ║ 1. Adding new SemanticKind cases (with witness delegation)       ║
+/// ║ 2. Fixing bugs in the fold logic itself                          ║
+/// ║ 3. Updating to new coeffect types                                ║
+/// ║                                                                   ║
+/// ║ If you need to add Application handling logic:                   ║
+/// ║ → Create a NEW witness file in src/Alex/Witnesses/               ║
+/// ║ → DO NOT add it to this file                                     ║
+/// ║                                                                   ║
+/// ║ See Serena memory: call_dispatch_central_dispatcher_failure      ║
+/// ╚═══════════════════════════════════════════════════════════════════╝
 ///
 /// CANONICAL ARCHITECTURE (January 2026):
 /// See: mlir_transfer_canonical_architecture memory

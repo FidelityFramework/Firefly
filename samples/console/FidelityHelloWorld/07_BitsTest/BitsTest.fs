@@ -7,8 +7,8 @@ let main argv =
     let networkShort = Bits.htons 0x1234us
     let hostShort = Bits.ntohs networkShort
 
-    // Byte order conversions for uint32
-    let networkLong = Bits.htonl (uint32 0x12345678)
+    // Byte order conversions for uint (platform word)
+    let networkLong = Bits.htonl (uint 0x12345678)
     let hostLong = Bits.ntohl networkLong
 
     // Bit casting - float32 <-> int32

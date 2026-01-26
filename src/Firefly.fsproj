@@ -95,22 +95,44 @@
 
       <!-- Alex Witnesses - Category-based MLIR generation -->
       <Compile Include="Alex/Witnesses/LiteralWitness.fs" />
-      <!-- Factored Witnesses -->
+      <!-- Factored Witnesses (Operations) -->
       <Compile Include="Alex/Witnesses/ArithOps.fs" />
-      <Compile Include="Alex/Witnesses/FormatOps.fs" />
+      <Compile Include="Alex/Witnesses/BitsOps.fs" />
+      <Compile Include="Alex/Witnesses/ConversionOps.fs" />
       <Compile Include="Alex/Witnesses/SyscallOps.fs" />
+      <Compile Include="Alex/Witnesses/PtrIntrinsics.fs" />
+      <!-- PRD-14: Lazy -->
       <Compile Include="Alex/Witnesses/LazyWitness.fs" />
-      <Compile Include="Alex/Witnesses/SeqWitness.fs" />
-      <Compile Include="Alex/Witnesses/SeqOpWitness.fs" />
+      <!-- PRD-15: Seq (Factored) -->
+      <Compile Include="Alex/Witnesses/Seq/Creation.fs" />
+      <Compile Include="Alex/Witnesses/Seq/MoveNextSequential.fs" />
+      <Compile Include="Alex/Witnesses/Seq/MoveNextWhile.fs" />
+      <Compile Include="Alex/Witnesses/Seq/Iteration.fs" />
+      <!-- PRD-16: SeqOp (Factored) -->
+      <Compile Include="Alex/Witnesses/SeqOp/Map.fs" />
+      <Compile Include="Alex/Witnesses/SeqOp/Filter.fs" />
+      <Compile Include="Alex/Witnesses/SeqOp/Take.fs" />
+      <Compile Include="Alex/Witnesses/SeqOp/Aggregations.fs" />
       <!-- PRD-13a: Core Collections Witnesses -->
       <Compile Include="Alex/Witnesses/ListWitness.fs" />
       <Compile Include="Alex/Witnesses/MapWitness.fs" />
       <Compile Include="Alex/Witnesses/SetWitness.fs" />
       <Compile Include="Alex/Witnesses/OptionWitness.fs" />
-      <Compile Include="Alex/Witnesses/CallDispatch.fs" />
-      <Compile Include="Alex/Witnesses/ControlFlowWitness.fs" />
-      <Compile Include="Alex/Witnesses/MemoryWitness.fs" />
-      <Compile Include="Alex/Witnesses/LambdaWitness.fs" />
+      <!-- ControlFlow (Factored) -->
+      <Compile Include="Alex/Witnesses/ControlFlow/ConditionalWitness.fs" />
+      <Compile Include="Alex/Witnesses/ControlFlow/LoopWitness.fs" />
+      <Compile Include="Alex/Witnesses/ControlFlow/MatchWitness.fs" />
+      <!-- Memory (Factored) -->
+      <Compile Include="Alex/Witnesses/Memory/Indexing.fs" />
+      <Compile Include="Alex/Witnesses/Memory/Fields.fs" />
+      <Compile Include="Alex/Witnesses/Memory/Aggregates.fs" />
+      <Compile Include="Alex/Witnesses/Memory/Traits.fs" />
+      <Compile Include="Alex/Witnesses/Memory/UnionCases.fs" />
+      <Compile Include="Alex/Witnesses/Memory/UnionOps.fs" />
+      <!-- Lambda (Factored) -->
+      <Compile Include="Alex/Witnesses/Lambda/Closure.fs" />
+      <Compile Include="Alex/Witnesses/Lambda/Scope.fs" />
+      <Compile Include="Alex/Witnesses/Lambda/Application.fs" />
 
       <!-- Alex Traversal - MLIR Transfer via Zipper + XParsec (pull model) -->
       <Compile Include="Alex/Traversal/MLIRTransfer.fs" />
