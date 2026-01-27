@@ -12,7 +12,6 @@ open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Dialects.Arith.Templates
 open Alex.Dialects.LLVM.Templates
-open Alex.Bindings.PlatformTypes
 
 module SSAAssign = PSGElaboration.SSAAssignment
 

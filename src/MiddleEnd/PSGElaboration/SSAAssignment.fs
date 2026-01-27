@@ -16,7 +16,6 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open FSharp.Native.Compiler.NativeTypedTree.UnionFind
 open Alex.Dialects.Core.Types
-open Alex.Bindings.PlatformTypes
 open PSGElaboration.Coeffects
 
 // ═══════════════════════════════════════════════════════════════════════════

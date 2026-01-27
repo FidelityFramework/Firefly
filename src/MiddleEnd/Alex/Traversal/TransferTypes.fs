@@ -197,5 +197,5 @@ let mapType (ty: NativeType) (ctx: WitnessContext) : MLIRType =
     mapNativeTypeWithGraphForArch ctx.Coeffects.Platform.TargetArch ctx.Graph ty
 
 /// Get platform-aware word width for string length, array length, etc.
-let wordWidth (ctx: WitnessContext) : IntBitWidth =
+let wordWidth (ctx: WitnessContext) : IntWidth =
     platformWordWidth ctx.Coeffects.Platform.TargetArch

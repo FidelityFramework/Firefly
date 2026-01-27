@@ -15,8 +15,6 @@ open System.Reflection
 open Core.CompilerConfig
 open Core.Toolchain
 open Alex.Traversal.PSGZipper
-open Alex.Bindings.BindingTypes
-open Alex.Bindings.PlatformTypes
 module SyscallBindings = Alex.Bindings.SyscallBindings
 module PlatformHelpers = Alex.Bindings.PlatformHelpers
 open Core.FNCS.Integration

@@ -11,7 +11,6 @@ open FSharp.Native.Compiler.NativeTypedTree.UnionFind
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
-open Alex.Bindings.PlatformTypes
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TYPE SIZE COMPUTATION (for DU slot sizing)

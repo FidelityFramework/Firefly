@@ -29,19 +29,15 @@
       <!-- Core Types -->
       <Compile Include="Core/Types/Dialects.fs" />
 
-      <!-- Toolchain (needs OutputKind from MLIRTypes) -->
-      <Compile Include="Core/Toolchain.fs" />
+      <!-- Alex MLIR Type System (used by TypeMapping and Elements) -->
+      <Compile Include="MiddleEnd/Alex/Dialects/Core/Types.fs" />
+      <Compile Include="MiddleEnd/Alex/Dialects/Core/Serialize.fs" />
 
       <!-- FNCS Integration (thin layer receiving SemanticGraph) -->
       <Compile Include="FrontEnd/FNCS/Integration.fs" />
       <!-- Platform Templates -->
       <Compile Include="FrontEnd/Templates/TemplateTypes.fs" />
       <Compile Include="FrontEnd/Templates/TemplateLoader.fs" />
-
-      <!-- Alex Dialects - Structured MLIR types (ZERO sprintf architecture) -->
-      <!-- Core types and serialization - MUST come first -->
-      <Compile Include="MiddleEnd/Alex/Dialects/Core/Types.fs" />
-      <Compile Include="MiddleEnd/Alex/Dialects/Core/Serialize.fs" />
 
       <!-- Alex CodeGeneration - TypeMapping first (no deps, used by SSAAssignment) -->
       <Compile Include="MiddleEnd/Alex/CodeGeneration/TypeMapping.fs" />
@@ -54,8 +50,6 @@
       <Compile Include="MiddleEnd/PSGElaboration/StringCollection.fs" />
       <!-- Platform Config (depends on PlatformTypes) -->
       <Compile Include="MiddleEnd/PSGElaboration/PlatformConfig.fs" />
-      <Compile Include="MiddleEnd/PSGElaboration/PlatformPatterns.fs" />
-      <Compile Include="MiddleEnd/PSGElaboration/PlatformBindingResolution.fs" />
       <Compile Include="MiddleEnd/PSGElaboration/PatternBindingAnalysis.fs" />
       <Compile Include="MiddleEnd/PSGElaboration/CoeffectValidation.fs" />
       <Compile Include="MiddleEnd/PSGElaboration/PreprocessingSerializer.fs" />
@@ -68,9 +62,6 @@
 
       <!-- Alex CodeGeneration - TypeSizing uses TypeMapping (moved earlier) -->
       <Compile Include="MiddleEnd/Alex/CodeGeneration/TypeSizing.fs" />
-
-      <!-- Alex Patterns - Active patterns for semantic classification -->
-      <Compile Include="MiddleEnd/Alex/Patterns/SemanticPatterns.fs" />
 
       <!-- Alex XParsec - Composable PSG pattern matchers -->
       <Compile Include="MiddleEnd/Alex/XParsec/PSGCombinators.fs" />
@@ -90,14 +81,10 @@
 
       <!-- Alex Witnesses - Category-based MLIR generation -->
       <Compile Include="MiddleEnd/Alex/Witnesses/LiteralWitness.fs" />
-      <!-- Factored Witnesses -->
-      <Compile Include="MiddleEnd/Alex/Witnesses/ArithOps.fs" />
-      <Compile Include="MiddleEnd/Alex/Witnesses/FormatOps.fs" />
-      <Compile Include="MiddleEnd/Alex/Witnesses/SyscallOps.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/ArithWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/PlatformWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/LazyWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/SeqWitness.fs" />
-      <Compile Include="MiddleEnd/Alex/Witnesses/SeqOpWitness.fs" />
       <!-- PRD-13a: Core Collections Witnesses -->
       <Compile Include="MiddleEnd/Alex/Witnesses/ListWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/MapWitness.fs" />
@@ -121,6 +108,9 @@
 
       <!-- BackEnd - LLVM Code Generation -->
       <Compile Include="BackEnd/LLVM/Codegen.fs" />
+
+      <!-- Core - Deprecated Toolchain wrapper (AFTER MiddleEnd/BackEnd so it can delegate) -->
+      <Compile Include="Core/Toolchain.fs" />
 
       <!-- CLI Infrastructure -->
       <Compile Include="CLI/Diagnostics/EnvironmentInfo.fs" />

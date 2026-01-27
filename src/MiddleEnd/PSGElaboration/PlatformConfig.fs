@@ -11,25 +11,7 @@ module PSGElaboration.PlatformConfig
 
 open Alex.Dialects.Core.Types
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PLATFORM TYPES (Authoritative definitions)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Target operating system family
-type OSFamily =
-    | Linux
-    | Windows
-    | MacOS
-    | FreeBSD
-
-/// Target CPU architecture
-type Architecture =
-    | X86_64
-    | ARM64
-    | ARM32_Thumb
-    | RISCV64
-    | RISCV32
-    | WASM32
+// Architecture and OSFamily are now defined in Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RUNTIME MODE
@@ -82,10 +64,9 @@ let platformWordType (arch: Architecture) : MLIRType =
     | ARM32_Thumb | RISCV32 | WASM32 -> TInt I32  // 32-bit platforms
 
 /// Resolve platform word integer width for a given architecture
-let platformWordWidth (arch: Architecture) : IntBitWidth =
-    match arch with
-    | X86_64 | ARM64 | RISCV64 -> I64
-    | ARM32_Thumb | RISCV32 | WASM32 -> I32
+/// Delegates to the canonical definition in Alex.Dialects.Core.Types
+let platformWordWidth (arch: Architecture) : IntWidth =
+    Alex.Dialects.Core.Types.platformWordWidth arch
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PLATFORM RESOLUTION RESULT
