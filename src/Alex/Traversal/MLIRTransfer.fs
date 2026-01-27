@@ -46,6 +46,7 @@ open PSGElaboration.PlatformConfig
 
 module MutAnalysis = PSGElaboration.MutabilityAnalysis
 module SSAAssign = PSGElaboration.SSAAssignment
+module SSAValidate = PSGElaboration.SSAValidation
 module StringCollect = PSGElaboration.StringCollection
 module PatternAnalysis = PSGElaboration.PatternBindingAnalysis
 module YieldStateIndices = PSGElaboration.YieldStateIndices
@@ -80,8 +81,17 @@ let deriveStringByteLength (s: string) : int =
 let computeCoeffects (graph: SemanticGraph) (isFreestanding: bool) : TransferCoeffects =
     let hostPlatform = TargetPlatform.detectHost()
     let runtimeMode = if isFreestanding then Freestanding else Console
+
+    // Compute SSA assignments
+    let ssaAssignment = SSAAssign.assignSSA hostPlatform.Arch graph
+
+    // VALIDATE SSA ASSIGNMENTS (January 2026)
+    // Fail compilation with hard errors if SSA invariants are violated
+    // (redefinition, namespace leakage, use-before-def)
+    SSAValidate.validateOrFail graph ssaAssignment
+
     {
-        SSA = SSAAssign.assignSSA hostPlatform.Arch graph
+        SSA = ssaAssignment
         Platform = PlatformRes.analyze graph runtimeMode hostPlatform.OS hostPlatform.Arch
         Mutability = MutAnalysis.analyze graph
         PatternBindings = PatternAnalysis.analyze graph
@@ -104,7 +114,9 @@ let computeCoeffects (graph: SemanticGraph) (isFreestanding: bool) : TransferCoe
 ///
 /// The fold is the only place that adds to TopLevelOps.
 /// Witnesses return; the fold accumulates.
-let rec private visitNode
+///
+/// INTERNAL: Witnesses can call this to traverse child nodes
+let rec internal visitNode
     (ctx: WitnessContext)
     (z: PSGZipper)
     (nodeId: NodeId)
@@ -793,9 +805,24 @@ and private classifyAndWitness
     | SemanticKind.InterpolatedString _ ->
         WitnessOutput.error (sprintf "InterpolatedString not yet implemented (node %d)" (NodeId.value node.Id))
     | SemanticKind.LazyExpr _ ->
-        WitnessOutput.error (sprintf "LazyExpr not yet implemented (node %d)" (NodeId.value node.Id))
-    | SemanticKind.LazyForce _ ->
-        WitnessOutput.error (sprintf "LazyForce not yet implemented (node %d)" (NodeId.value node.Id))
+        // LazyExpr's child is the thunk Lambda - visit it first to elide func.func
+        let thunkLambdaOutput =
+            match node.Children with
+            | [thunkId] -> visitNode ctx z thunkId
+            | _ -> WitnessOutput.error (sprintf "LazyExpr expects exactly one child (thunk Lambda) (node %d)" (NodeId.value node.Id))
+
+        // Now witness LazyExpr, passing the thunk output
+        let lazyOutput = Alex.Witnesses.LazyWitness.witnessLazyExpr ctx z node thunkLambdaOutput
+
+        // Combine outputs
+        { InlineOps = lazyOutput.InlineOps
+          TopLevelOps = lazyOutput.TopLevelOps  // LazyWitness combines them
+          Result = lazyOutput.Result }
+
+    | SemanticKind.LazyForce lazyValueId ->
+        // Visit the lazy value first
+        let lazyOutput = visitNode ctx z lazyValueId
+        Alex.Witnesses.LazyWitness.witnessLazyForce ctx node lazyOutput
     | SemanticKind.SeqExpr _ ->
         WitnessOutput.error (sprintf "SeqExpr not yet implemented (node %d)" (NodeId.value node.Id))
     | SemanticKind.Yield _ ->

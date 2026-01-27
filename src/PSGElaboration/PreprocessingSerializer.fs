@@ -200,19 +200,19 @@ let private kindToShortString (kind: SemanticKind) : string =
     | kind -> sprintf "%A" kind |> fun s -> if s.Length > 50 then s.Substring(0, 47) + "..." else s
 
 /// Find which function a node belongs to (for context)
-let private findParentFunction (nodeId: int) (graph: SemanticGraph) (lambdaNames: Map<int, string>) : string option =
+let private findParentFunction (nodeId: NodeId) (graph: SemanticGraph) (lambdaNames: Map<NodeId, string>) : string option =
     // Walk up parent chain to find enclosing Lambda
-    let rec findLambda currentId visited =
+    let rec findLambda (currentId: NodeId) (visited: Set<NodeId>) =
         if Set.contains currentId visited then None
         else
-            match Map.tryFind (NodeId currentId) graph.Nodes with
+            match Map.tryFind currentId graph.Nodes with
             | Some node ->
                 match node.Kind with
                 | SemanticKind.Lambda _ ->
                     lambdaNames |> Map.tryFind currentId
                 | _ ->
                     match node.Parent with
-                    | Some parentId -> findLambda (NodeId.value parentId) (Set.add currentId visited)
+                    | Some parentId -> findLambda parentId (Set.add currentId visited)
                     | None -> None
             | None -> None
     findLambda nodeId Set.empty
@@ -224,10 +224,9 @@ let serializeSSAAssignment (ssa: SSAAssignment) (graph: SemanticGraph) : SSAAssi
         |> Seq.choose (fun node ->
             match node.Kind with
             | SemanticKind.Lambda(params', _, _captures, _, _) ->
-                let nodeIdVal = NodeId.value node.Id
-                let name = ssa.LambdaNames |> Map.tryFind nodeIdVal |> Option.defaultValue "unknown"
+                let name = ssa.LambdaNames |> Map.tryFind node.Id |> Option.defaultValue "unknown"
                 Some {
-                    NodeId = nodeIdVal
+                    NodeId = NodeId.value node.Id
                     Name = name
                     Type = sprintf "%A" node.Type
                     ParamCount = List.length params'
@@ -239,15 +238,15 @@ let serializeSSAAssignment (ssa: SSAAssignment) (graph: SemanticGraph) : SSAAssi
     let nodeSSAAssignments =
         ssa.NodeSSA
         |> Map.toList
-        |> List.sortBy fst
+        |> List.sortBy (fst >> NodeId.value)
         |> List.map (fun (nodeId, alloc) ->
             let nodeKind =
-                match Map.tryFind (NodeId nodeId) graph.Nodes with
+                match Map.tryFind nodeId graph.Nodes with
                 | Some node -> kindToShortString node.Kind
                 | None -> "Unknown"
             let parentFunc = findParentFunction nodeId graph ssa.LambdaNames
             {
-                NodeId = nodeId
+                NodeId = NodeId.value nodeId
                 NodeKind = nodeKind
                 SSAs = alloc.SSAs |> List.map ssaToJson
                 ResultSSA = ssaToJson alloc.Result
@@ -259,7 +258,7 @@ let serializeSSAAssignment (ssa: SSAAssignment) (graph: SemanticGraph) : SSAAssi
         ssa.ClosureLayouts
         |> Map.toList
         |> List.map (fun (nodeId, layout) ->
-            let lambdaName = ssa.LambdaNames |> Map.tryFind nodeId |> Option.defaultValue "unknown"
+            let lambdaName = ssa.LambdaNames |> Map.tryFind (NodeId nodeId) |> Option.defaultValue "unknown"
             {
                 LambdaNodeId = nodeId
                 LambdaName = lambdaName
@@ -275,9 +274,9 @@ let serializeSSAAssignment (ssa: SSAAssignment) (graph: SemanticGraph) : SSAAssi
             })
 
     {
-        LambdaNames = ssa.LambdaNames |> Map.toList
+        LambdaNames = ssa.LambdaNames |> Map.toList |> List.map (fun (nodeId, name) -> (NodeId.value nodeId, name))
         Lambdas = lambdas
-        EntryPointLambdas = ssa.EntryPointLambdas |> Set.toList
+        EntryPointLambdas = ssa.EntryPointLambdas |> Set.toList |> List.map NodeId.value
         NodeSSACount = Map.count ssa.NodeSSA
         NodeSSAAssignments = nodeSSAAssignments
         ClosureLayouts = closureLayouts

@@ -63,6 +63,7 @@
       <!-- PSGElaboration - MLIR-aware coeffects (peer to Alex) -->
       <Compile Include="PSGElaboration/Coeffects.fs" />
       <Compile Include="PSGElaboration/SSAAssignment.fs" />
+      <Compile Include="PSGElaboration/SSAValidation.fs" />
       <Compile Include="PSGElaboration/YieldStateIndices.fs" />
       <Compile Include="PSGElaboration/MutabilityAnalysis.fs" />
       <Compile Include="PSGElaboration/StringCollection.fs" />
@@ -87,8 +88,13 @@
       <!-- Alex CodeGeneration - TypeSizing uses TypeMapping (moved earlier) -->
       <Compile Include="Alex/CodeGeneration/TypeSizing.fs" />
 
+      <!-- Alex Elements - Atomic MLIR emission (internal) -->
+      <Compile Include="Alex/Elements/MLIRElements.fs" />
+      <Compile Include="Alex/Elements/CoeffectLookup.fs" />
+
       <!-- Alex Patterns - Active patterns for semantic classification -->
       <Compile Include="Alex/Patterns/SemanticPatterns.fs" />
+      <Compile Include="Alex/Patterns/ElisionPatterns.fs" />
 
       <!-- Alex XParsec - Composable PSG pattern matchers -->
       <Compile Include="Alex/XParsec/PSGCombinators.fs" />
