@@ -32,9 +32,6 @@
       <!-- Toolchain (needs OutputKind from MLIRTypes) -->
       <Compile Include="Core/Toolchain.fs" />
 
-      <!-- Core Foundation Types -->
-      <Compile Include="Core/XParsec/Foundation.fs" />
-
       <!-- FNCS Integration (thin layer receiving SemanticGraph) -->
       <Compile Include="Core/FNCS/Integration.fs" />
       <!-- Platform Templates -->
@@ -45,17 +42,6 @@
       <!-- Core types and serialization - MUST come first -->
       <Compile Include="Alex/Dialects/Core/Types.fs" />
       <Compile Include="Alex/Dialects/Core/Serialize.fs" />
-      <!-- Dialect templates - one per upstream MLIR dialect -->
-      <Compile Include="Alex/Dialects/Arith/Templates.fs" />
-      <Compile Include="Alex/Dialects/LLVM/Templates.fs" />
-      <Compile Include="Alex/Dialects/SCF/Templates.fs" />
-      <Compile Include="Alex/Dialects/CF/Templates.fs" />
-      <Compile Include="Alex/Dialects/Func/Templates.fs" />
-      <Compile Include="Alex/Dialects/Index/Templates.fs" />
-      <Compile Include="Alex/Dialects/Vector/Templates.fs" />
-
-      <!-- Platform Types - OSFamily/Architecture (no dependencies, breaks cycles) -->
-      <Compile Include="Alex/Bindings/PlatformTypes.fs" />
 
       <!-- Alex CodeGeneration - TypeMapping first (no deps, used by SSAAssignment) -->
       <Compile Include="Alex/CodeGeneration/TypeMapping.fs" />
@@ -79,11 +65,6 @@
       <!-- Alex Traversal - TransferTypes: Types witnesses receive (ctx: WitnessContext) -->
       <Compile Include="Alex/Traversal/TransferTypes.fs" />
 
-      <!-- Alex Bindings - Base types -->
-      <Compile Include="Alex/Bindings/BindingTypes.fs" />
-      <Compile Include="Alex/Bindings/PlatformHelpers.fs" />
-      <Compile Include="Alex/Bindings/SyscallBindings.fs" />
-
       <!-- Alex CodeGeneration - TypeSizing uses TypeMapping (moved earlier) -->
       <Compile Include="Alex/CodeGeneration/TypeSizing.fs" />
 
@@ -95,6 +76,13 @@
 
       <!-- Alex Elements - Atomic MLIR ops (internal, XParsec-based) -->
       <Compile Include="Alex/Elements/MLIRElements.fs" />
+      <Compile Include="Alex/Elements/LLVMElements.fs" />
+      <Compile Include="Alex/Elements/ArithElements.fs" />
+      <Compile Include="Alex/Elements/SCFElements.fs" />
+      <Compile Include="Alex/Elements/CFElements.fs" />
+      <Compile Include="Alex/Elements/FuncElements.fs" />
+      <Compile Include="Alex/Elements/IndexElements.fs" />
+      <Compile Include="Alex/Elements/VectorElements.fs" />
 
       <!-- Alex Elision Patterns - Composable MLIR templates (public, XParsec-based) -->
       <Compile Include="Alex/Patterns/ElisionPatterns.fs" />
@@ -113,7 +101,6 @@
       <Compile Include="Alex/Witnesses/MapWitness.fs" />
       <Compile Include="Alex/Witnesses/SetWitness.fs" />
       <Compile Include="Alex/Witnesses/OptionWitness.fs" />
-      <Compile Include="Alex/Witnesses/CallDispatch.fs" />
       <Compile Include="Alex/Witnesses/ControlFlowWitness.fs" />
       <Compile Include="Alex/Witnesses/MemoryWitness.fs" />
       <Compile Include="Alex/Witnesses/LambdaWitness.fs" />

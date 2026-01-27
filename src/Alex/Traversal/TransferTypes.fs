@@ -17,7 +17,6 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
-open Alex.Bindings.PlatformTypes
 open PSGElaboration.PlatformConfig
 open Alex.CodeGeneration.TypeMapping
 

@@ -1,5 +1,70 @@
 # Firefly Compiler - Claude Context
 
+## ⚡ ACTIVE ASSIGNMENT: Alex XParsec Remediation (January 2026)
+
+> **STATUS:** Planning Complete, Ready for Implementation
+> **PRIORITY:** This is THE ONLY active assignment. All other work is paused.
+
+### Quick Start for Context Window Transition
+
+**At the START of EVERY context window:**
+
+1. **Read the checklist:** `mcp__serena-local__read_memory` for `alex_remediation_checklist_2026jan`
+2. **Read the plan:** `/home/hhh/.claude/plans/elegant-marinating-summit.md`
+3. **Read core memories:**
+   - `alex_element_pattern_witness_architecture`
+   - `xparsec_correct_usage_pattern`
+   - `alex_xparsec_throughout_architecture`
+   - `codata_photographer_principle`
+4. **Review the canonical example:** `src/Alex/Witnesses/LazyWitness.fs` (38 lines)
+5. **Check current progress in checklist** - See what's ✅ complete, 🔄 in-progress, ⬜ not started
+
+**At the END of EVERY context window:**
+
+1. **Update the checklist:** Mark items ✅ complete or 🔄 in-progress
+2. **Document issues:** Add blockers/findings to "Session Notes" in checklist
+3. **Commit work** (if compilable): Keep working tree clean
+4. **Update memory:** `mcp__serena-local__edit_memory` to persist progress
+
+### Assignment Overview
+
+**Goal:** Systematically refactor Alex to leverage XParsec APIs throughout Element/Pattern/Witness architecture
+
+**Key Metrics:**
+- **Target:** 56% code reduction (8,000 → 3,500 lines)
+- **Witnesses:** 90% reduction (5,773 → 600 lines)
+- **Direct MLIR ops:** 100% elimination (564 → 0)
+- **XParsec-based witnesses:** 1300% increase (1 → 14)
+
+**Canonical Example:** `src/Alex/Witnesses/LazyWitness.fs` (38 lines) - ALL witnesses must follow this pattern
+
+**Timeline:** 5-6 days (29-41 hours) with testing
+
+**Progress Tracking:**
+- **Checklist:** Serena memory `alex_remediation_checklist_2026jan`
+- **Plan:** `/home/hhh/.claude/plans/elegant-marinating-summit.md`
+
+### The Golden Rules
+
+1. **NO code changes without reading the plan and checklist first**
+2. **LazyWitness.fs is the template** - All witnesses follow its ~20-line pattern
+3. **XParsec throughout** - Elements, Patterns, AND Witnesses all use XParsec
+4. **Codata principle** - Witnesses observe and return, never build or compute
+5. **Gap emergence** - If transform logic needed, return `TRError` and fix in FNCS
+6. **Incremental validation** - Compile + test after EACH witness refactoring
+
+### Architecture Overview
+
+```
+Elements/    (module internal)  →  Atomic MLIR ops with XParsec state threading
+Patterns/    (public)           →  Composable elision templates (~50 lines each)
+Witnesses/   (public)           →  Thin observers (~20 lines each)
+```
+
+**Type-Level Firewall:** Elements are `module internal` - witnesses physically CANNOT import them.
+
+---
+
 ## CRITICAL: Consult Serena Memories at Architectural Decision Points
 
 > **When encountering issues "downstream" in the pipeline, ALWAYS consult Serena memories on architecture BEFORE attempting fixes.**

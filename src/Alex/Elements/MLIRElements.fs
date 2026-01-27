@@ -14,32 +14,32 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 
 // Elements use XParsec state for platform/type context
 
-/// Emit ExtractValue with XParsec state threading
-let pEmitExtractValue (ssa: SSA) (value: SSA) (indices: int list) : PSGParser<MLIROp> =
+/// ExtractValue with XParsec state threading
+let pExtractValue (ssa: SSA) (value: SSA) (indices: int list) : PSGParser<MLIROp> =
     parser {
         let! state = getUserState
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
         return MLIROp.LLVMOp (LLVMOp.ExtractValue (ssa, value, indices, ty))
     }
 
-/// Emit InsertValue with XParsec state threading
-let pEmitInsertValue (ssa: SSA) (struct_: SSA) (value: SSA) (indices: int list) : PSGParser<MLIROp> =
+/// InsertValue with XParsec state threading
+let pInsertValue (ssa: SSA) (struct_: SSA) (value: SSA) (indices: int list) : PSGParser<MLIROp> =
     parser {
         let! state = getUserState
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
         return MLIROp.LLVMOp (LLVMOp.InsertValue (ssa, struct_, value, indices, ty))
     }
 
-/// Emit Undef with XParsec state threading
-let pEmitUndef (ssa: SSA) : PSGParser<MLIROp> =
+/// Undef with XParsec state threading
+let pUndef (ssa: SSA) : PSGParser<MLIROp> =
     parser {
         let! state = getUserState
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
         return MLIROp.LLVMOp (LLVMOp.Undef (ssa, ty))
     }
 
-/// Emit ConstI with XParsec state threading
-let pEmitConstI (ssa: SSA) (value: int64) : PSGParser<MLIROp> =
+/// ConstI with XParsec state threading
+let pConstI (ssa: SSA) (value: int64) : PSGParser<MLIROp> =
     parser {
         let! state = getUserState
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type

@@ -9,8 +9,27 @@
 /// (freestanding vs console, syscall vs libc) are resolved here.
 module PSGElaboration.PlatformConfig
 
-open Alex.Bindings.PlatformTypes
 open Alex.Dialects.Core.Types
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PLATFORM TYPES (Authoritative definitions)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Target operating system family
+type OSFamily =
+    | Linux
+    | Windows
+    | MacOS
+    | FreeBSD
+
+/// Target CPU architecture
+type Architecture =
+    | X86_64
+    | ARM64
+    | ARM32_Thumb
+    | RISCV64
+    | RISCV32
+    | WASM32
 
 // ═══════════════════════════════════════════════════════════════════════════
 // RUNTIME MODE
