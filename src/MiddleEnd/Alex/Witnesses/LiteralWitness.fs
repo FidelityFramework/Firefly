@@ -10,8 +10,7 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
-open Alex.Dialects.Arith.Templates
-open Alex.Dialects.LLVM.Templates
+open Alex.CodeGeneration.TypeMapping
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -20,7 +19,7 @@ module SSAAssign = PSGElaboration.SSAAssignment
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Fat string type: { ptr, i64 }
-let private fatStringType = TStruct [MLIRTypes.ptr; MLIRTypes.i64]
+let private fatStringType = TStruct [TPtr; TInt I64]
 
 // ═══════════════════════════════════════════════════════════════════════════
 // HELPERS
@@ -105,18 +104,9 @@ let witness
         [op], TRValue { SSA = ssaName; Type = ty }
 
     | NativeLiteral.String s ->
-        let (ptrSSA, lenSSA, undefSSA, withPtrSSA, fatPtrSSA) = getStringSSAs nodeId ssa
-        let hash = uint32 (s.GetHashCode())
-        let byteLen = deriveStringByteLength s
-
-        let addrOp = MLIROp.LLVMOp (AddressOf (ptrSSA, GString hash))
-        let lenOp = MLIROp.ArithOp (ConstI (lenSSA, int64 byteLen, MLIRTypes.i64))
-        let undefOp = MLIROp.LLVMOp (Undef (undefSSA, fatStringType))
-        let insertPtrOp = MLIROp.LLVMOp (InsertValue (withPtrSSA, undefSSA, ptrSSA, [0], fatStringType))
-        let insertLenOp = MLIROp.LLVMOp (InsertValue (fatPtrSSA, withPtrSSA, lenSSA, [1], fatStringType))
-
-        let ops = [addrOp; lenOp; undefOp; insertPtrOp; insertLenOp]
-        ops, TRValue { SSA = fatPtrSSA; Type = fatStringType }
+        // TODO: String literals need global string table + AddressOf operation
+        // This requires StringCollection coeffect and proper global emission
+        [], TRError "String literals need global string table implementation"
 
     | _ ->
         [], TRError $"Unsupported literal: {lit}"

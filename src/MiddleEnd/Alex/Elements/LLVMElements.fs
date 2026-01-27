@@ -47,7 +47,7 @@ let pStructGEP (ssa: SSA) (ptr: SSA) (fieldIndex: int) : PSGParser<MLIROp> =
     parser {
         let! state = getUserState
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        let structTy = state.Current.Type  // The struct type being indexed
+        let structTy = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type  // The struct type being indexed
         return MLIROp.LLVMOp (LLVMOp.StructGEP (ssa, ptr, fieldIndex, structTy, ty))
     }
 
@@ -141,4 +141,56 @@ let pBlock (label: string) (ops: MLIROp list) : PSGParser<MLIROp> =
 let pRegion (blocks: MLIROp list) : PSGParser<MLIROp> =
     parser {
         return MLIROp.Region blocks
+    }
+
+// ═══════════════════════════════════════════════════════════
+// BITWISE OPERATIONS (LLVM dialect)
+// ═══════════════════════════════════════════════════════════
+
+/// Emit And (bitwise and)
+let pAndI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.LLVMOp (LLVMOp.And (ssa, lhs, rhs, ty))
+    }
+
+/// Emit Or (bitwise or)
+let pOrI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.LLVMOp (LLVMOp.Or (ssa, lhs, rhs, ty))
+    }
+
+/// Emit Xor (bitwise xor)
+let pXorI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.LLVMOp (LLVMOp.Xor (ssa, lhs, rhs, ty))
+    }
+
+/// Emit Shl (shift left)
+let pShLI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.LLVMOp (LLVMOp.Shl (ssa, lhs, rhs, ty))
+    }
+
+/// Emit LShr (logical shift right - unsigned)
+let pShRUI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.LLVMOp (LLVMOp.LShr (ssa, lhs, rhs, ty))
+    }
+
+/// Emit AShr (arithmetic shift right - signed)
+let pShRSI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.LLVMOp (LLVMOp.AShr (ssa, lhs, rhs, ty))
     }

@@ -213,8 +213,8 @@ type PlatformModel = {
     NeedsStartWrapper: bool
 }
 
-/// Build PlatformModel from FNCS PlatformContext
-let fromPlatformContext (ctx: FSharp.Native.Compiler.NativeTypedTree.NativeTypes.PlatformContext) (mode: RuntimeMode) : PlatformModel =
+/// Build PlatformResolutionResult from FNCS PlatformContext
+let fromPlatformContext (ctx: FSharp.Native.Compiler.NativeTypedTree.NativeTypes.PlatformContext) (mode: RuntimeMode) : PlatformResolutionResult =
     // Parse platform ID to extract OS and architecture
     // Format is typically "Linux_x86_64", "Windows_ARM64", etc.
     let (os, arch) =
@@ -231,12 +231,7 @@ let fromPlatformContext (ctx: FSharp.Native.Compiler.NativeTypedTree.NativeTypes
         TargetArch = arch
         RuntimeMode = mode
         PlatformWordType = platformWordType arch
-        // Quotations: For now, use placeholder empty quotations
-        // TODO: Load actual quotations from PlatformLibraryPath when available
-        PlatformDescriptor = <@ obj() @>
-        SyscallConvention = <@ obj() @>
-        SyscallNumbers = <@ Map.empty<string, int> @>
-        // Recognition function from PlatformPatterns
-        Recognize = PlatformPatterns.recognizePlatformOperation
+        // TODO: Populate Bindings from actual platform binding resolution
+        Bindings = Map.empty  // Will be populated by binding resolution pass
         NeedsStartWrapper = (mode = Freestanding)
     }

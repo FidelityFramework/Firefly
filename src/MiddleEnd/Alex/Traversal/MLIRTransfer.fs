@@ -1,22 +1,15 @@
-/// MLIRTransfer - Thin fold from SemanticGraph to MLIR via Four Pillars
-///
-/// FOUR PILLARS ARCHITECTURE:
-/// 1. XParsec - Pattern match PSG node structure
-/// 2. Patterns - Composable MLIR elision templates
-/// 3. Zipper - Bidirectional PSG navigation
-/// 4. Templates - Type-safe MLIR construction (Elements)
+/// MLIRTransfer - Thin fold from SemanticGraph to MLIR
 ///
 /// This file ONLY orchestrates: fold PSG structure, dispatch to witnesses.
 /// Witnesses use XParsec + Patterns + Elements to elide PSG → MLIR.
-///
-/// NO CallDispatch. NO Bindings. EVER.
-/// Those bypass FNCS PSG formation and are architectural violations.
+
 module Alex.Traversal.MLIRTransfer
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
+open Alex.Traversal.PSGZipper
 open PSGElaboration.PlatformConfig
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -280,14 +273,20 @@ let transfer
     | None ->
         Error (sprintf "Entry node %d not found" (NodeId.value entryNodeId))
     | Some _ ->
-        let acc = MLIRAccumulator.empty ()
-        let ctx = {
-            Graph = graph
-            Coeffects = coeffects
-            Accumulator = acc
-        }
+        // Create zipper ONCE at entry point (Huet zipper pattern)
+        match PSGZipper.create graph entryNodeId with
+        | None ->
+            Error (sprintf "Could not create zipper for entry node %d" (NodeId.value entryNodeId))
+        | Some zipper ->
+            let acc = MLIRAccumulator.empty ()
+            let ctx = {
+                Graph = graph
+                Coeffects = coeffects
+                Accumulator = acc
+                Zipper = zipper            // Navigation state (created ONCE)
+            }
 
-        let output = visitNode ctx entryNodeId acc
+            let output = visitNode ctx entryNodeId acc
 
         MLIRAccumulator.addTopLevelOps output.InlineOps acc
         MLIRAccumulator.addTopLevelOps output.TopLevelOps acc

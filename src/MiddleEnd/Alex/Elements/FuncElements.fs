@@ -20,7 +20,7 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 // ═══════════════════════════════════════════════════════════
 
 let pFuncDef (name: string) (args: (SSA * MLIRType) list) (retTy: MLIRType)
-                 (body: Region) (visibility: FuncVisibility) : PSGParser<MLIROp> =
+                 (body: MLIROp list) (visibility: FuncVisibility) : PSGParser<MLIROp> =
     parser {
         return MLIROp.FuncOp (FuncOp.FuncDef (name, args, retTy, body, visibility))
     }

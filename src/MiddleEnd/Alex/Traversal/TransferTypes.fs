@@ -37,7 +37,7 @@ module YieldStateIndices = PSGElaboration.YieldStateIndices
 /// Pre-computed coeffects - computed ONCE before traversal, NEVER modified
 type TransferCoeffects = {
     SSA: SSAAssign.SSAAssignment
-    Platform: PlatformModel
+    Platform: PlatformResolutionResult
     Mutability: MutAnalysis.MutabilityAnalysisResult
     PatternBindings: PatternAnalysis.PatternBindingAnalysisResult
     Strings: StringCollect.StringTable
@@ -168,6 +168,7 @@ type WitnessContext = {
     Coeffects: TransferCoeffects
     Accumulator: MLIRAccumulator
     Graph: SemanticGraph
+    Zipper: PSGZipper              // Navigation state (created ONCE by fold)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

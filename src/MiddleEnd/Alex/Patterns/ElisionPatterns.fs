@@ -4,9 +4,12 @@
 /// Patterns compose Elements (internal) into semantic operations.
 module Alex.Patterns.ElisionPatterns
 
-open XParsec.Combinators
+open XParsec
+open XParsec.Parsers     // fail, preturn
+open XParsec.Combinators // parser { }, >>=, <|>
 open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
+open Alex.Traversal.TransferTypes
 open Alex.Elements.MLIRElements
 open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
@@ -16,6 +19,24 @@ open Alex.Elements.FuncElements
 open Alex.Elements.IndexElements
 open Alex.Elements.VectorElements
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+
+// ═══════════════════════════════════════════════════════════
+// XParsec HELPERS
+// ═══════════════════════════════════════════════════════════
+
+/// Create parser failure with error message
+let pfail msg : PSGParser<'a> = fail (Message msg)
+
+/// Sequence a list of parsers into a parser of a list
+let rec sequence (parsers: PSGParser<'a> list) : PSGParser<'a list> =
+    match parsers with
+    | [] -> preturn []
+    | p :: ps ->
+        parser {
+            let! x = p
+            let! xs = sequence ps
+            return x :: xs
+        }
 
 // ═══════════════════════════════════════════════════════════
 // MEMORY PATTERNS
@@ -38,17 +59,17 @@ let pFieldSet (structPtr: SSA) (fieldIndex: int) (value: SSA) (gepSSA: SSA) : PS
     }
 
 /// Array element access via GEP + Load
-let pArrayAccess (arrayPtr: SSA) (index: SSA) (gepSSA: SSA) (loadSSA: SSA) : PSGParser<MLIROp list> =
+let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) (loadSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! gepOp = pGEP gepSSA arrayPtr [index]
+        let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
         let! loadOp = pLoad loadSSA gepSSA
         return [gepOp; loadOp]
     }
 
 /// Array element set via GEP + Store
-let pArraySet (arrayPtr: SSA) (index: SSA) (value: SSA) (gepSSA: SSA) : PSGParser<MLIROp list> =
+let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gepSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! gepOp = pGEP gepSSA arrayPtr [index]
+        let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
         let! storeOp = pStore value gepSSA
         return [gepOp; storeOp]
     }
@@ -161,7 +182,8 @@ let pClosureCall (closureSSA: SSA) (captureCount: int) (args: Val list)
             |> sequence
 
         // Call with captures prepended to args
-        let captureVals = extractSSAs.[1..] |> List.map (fun ssa -> { SSA = ssa; Type = None })
+        // TODO: Get capture types from ClosureLayoutCoeffect instead of placeholder
+        let captureVals = extractSSAs.[1..] |> List.map (fun ssa -> { SSA = ssa; Type = TInt I64 })
         let allArgs = captureVals @ args
         let! callOp = pIndirectCall resultSSA codePtrSSA (allArgs |> List.map (fun v -> v.SSA))
 
@@ -505,7 +527,7 @@ let pOptionIsSome (optionSSA: SSA) (tagSSA: SSA) (resultSSA: SSA) : PSGParser<ML
     parser {
         let! extractTagOp = pExtractValue tagSSA optionSSA [0]
         let! oneConstOp = pConstI resultSSA 1L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.EQ tagSSA resultSSA
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA resultSSA
         return [extractTagOp; oneConstOp; cmpOp]
     }
 
@@ -526,7 +548,7 @@ let pListIsEmpty (listSSA: SSA) (tagSSA: SSA) (resultSSA: SSA) : PSGParser<MLIRO
     parser {
         let! extractTagOp = pExtractValue tagSSA listSSA [0]
         let! zeroConstOp = pConstI resultSSA 0L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.EQ tagSSA resultSSA
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA resultSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
@@ -551,7 +573,7 @@ let pMapKeyCompare (mapNodeSSA: SSA) (searchKey: SSA) (keySSA: SSA) (resultSSA: 
         // Extract key from node (index 1, after tag at index 0)
         let! extractKeyOp = pExtractValue keySSA mapNodeSSA [1]
         // Compare search key with node key
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.EQ searchKey keySSA
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq searchKey keySSA
         return [extractKeyOp; cmpOp]
     }
 
@@ -582,7 +604,7 @@ let pSetElementCompare (setNodeSSA: SSA) (searchElem: SSA) (elemSSA: SSA) (resul
         // Extract element from node (index 1, after tag at index 0)
         let! extractElemOp = pExtractValue elemSSA setNodeSSA [1]
         // Compare search element with node element
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.EQ searchElem elemSSA
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq searchElem elemSSA
         return [extractElemOp; cmpOp]
     }
 
@@ -614,7 +636,7 @@ let pResultIsOk (resultSSA: SSA) (tagSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp 
     parser {
         let! extractTagOp = pExtractValue tagSSA resultSSA [0]
         let! zeroConstOp = pConstI cmpSSA 0L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.EQ tagSSA cmpSSA
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA cmpSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
@@ -623,7 +645,7 @@ let pResultIsError (resultSSA: SSA) (tagSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIR
     parser {
         let! extractTagOp = pExtractValue tagSSA resultSSA [0]
         let! oneConstOp = pConstI cmpSSA 1L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.EQ tagSSA cmpSSA
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA cmpSSA
         return [extractTagOp; oneConstOp; cmpOp]
     }
 
@@ -656,4 +678,36 @@ let pStringConstruct (ptr: SSA) (length: SSA) (ssas: SSA list) : PSGParser<MLIRO
         let! insertPtrOp = pInsertValue ssas.[1] ssas.[0] ptr [0]
         let! insertLenOp = pInsertValue ssas.[2] ssas.[1] length [1]
         return [undefOp; insertPtrOp; insertLenOp]
+    }
+
+// ═══════════════════════════════════════════════════════════
+// ARITHMETIC PATTERNS (stub implementations for ArithWitness)
+// ═══════════════════════════════════════════════════════════
+
+/// Binary arithmetic operations (+, -, *, /, %)
+/// TODO: Implement full PSG intrinsic matching and SSA extraction
+let pBinaryArith : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        return! pfail "pBinaryArith: Pattern implementation needed (match intrinsic, extract operands, emit arith ops)"
+    }
+
+/// Comparison operations (<, <=, >, >=, ==, !=)
+/// TODO: Implement full PSG intrinsic matching and SSA extraction
+let pComparison : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        return! pfail "pComparison: Pattern implementation needed (match intrinsic, extract operands, emit CmpI/CmpF)"
+    }
+
+/// Bitwise operations (&, |, ^, <<, >>)
+/// TODO: Implement full PSG intrinsic matching and SSA extraction
+let pBitwise : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        return! pfail "pBitwise: Pattern implementation needed (match intrinsic, extract operands, emit And/Or/Xor/Shl/LShr/AShr)"
+    }
+
+/// Unary operations (-, not, ~)
+/// TODO: Implement full PSG intrinsic matching and SSA extraction
+let pUnary : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        return! pfail "pUnary: Pattern implementation needed (match intrinsic, extract operand, emit SubI or Xor)"
     }

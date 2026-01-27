@@ -12,36 +12,24 @@ open Alex.XParsec.PSGCombinators
 
 /// Witness binary arithmetic operation (addition, subtraction, multiplication, division, modulo)
 let witnessBinaryArith (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match PSGZipper.create ctx.Graph node.Id with
-    | None -> WitnessOutput.error "Could not create zipper for binary arithmetic"
-    | Some zipper ->
-        match tryMatch pBinaryArith ctx.Graph node zipper ctx.Coeffects.Platform with
-        | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-        | None -> WitnessOutput.error "Binary arithmetic pattern match failed"
+    match tryMatch pBinaryArith ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+    | None -> WitnessOutput.error "Binary arithmetic pattern match failed"
 
 /// Witness comparison operation (<, <=, >, >=, ==, !=)
 let witnessComparison (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match PSGZipper.create ctx.Graph node.Id with
-    | None -> WitnessOutput.error "Could not create zipper for comparison"
-    | Some zipper ->
-        match tryMatch pComparison ctx.Graph node zipper ctx.Coeffects.Platform with
-        | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-        | None -> WitnessOutput.error "Comparison pattern match failed"
+    match tryMatch pComparison ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+    | None -> WitnessOutput.error "Comparison pattern match failed"
 
 /// Witness bitwise operation (&, |, ^, <<, >>)
 let witnessBitwise (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match PSGZipper.create ctx.Graph node.Id with
-    | None -> WitnessOutput.error "Could not create zipper for bitwise operation"
-    | Some zipper ->
-        match tryMatch pBitwise ctx.Graph node zipper ctx.Coeffects.Platform with
-        | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-        | None -> WitnessOutput.error "Bitwise operation pattern match failed"
+    match tryMatch pBitwise ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+    | None -> WitnessOutput.error "Bitwise operation pattern match failed"
 
 /// Witness unary operation (-, not, ~)
 let witnessUnary (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match PSGZipper.create ctx.Graph node.Id with
-    | None -> WitnessOutput.error "Could not create zipper for unary operation"
-    | Some zipper ->
-        match tryMatch pUnary ctx.Graph node zipper ctx.Coeffects.Platform with
-        | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-        | None -> WitnessOutput.error "Unary operation pattern match failed"
+    match tryMatch pUnary ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    | Some (ops, result) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+    | None -> WitnessOutput.error "Unary operation pattern match failed"

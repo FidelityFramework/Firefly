@@ -112,32 +112,76 @@ type FCmpPred =
     // False/True (always)
     | AlwaysFalse | AlwaysTrue
 
+/// Index comparison predicates (for index.cmp)
+type IndexCmpPred =
+    | Eq | Ne                       // Equal, Not equal
+    | Slt | Sle | Sgt | Sge         // Signed comparisons
+    | Ult | Ule | Ugt | Uge         // Unsigned comparisons
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MEMORY ORDERING AND VISIBILITY
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Atomic ordering for memory operations (LLVM atomic semantics)
+type AtomicOrdering =
+    | NotAtomic                     // Non-atomic operation
+    | Unordered                     // Lowest level of atomicity
+    | Monotonic                     // Acquire/release semantics
+    | Acquire                       // Acquire barrier
+    | Release                       // Release barrier
+    | AcquireRelease                // Both acquire and release
+    | SequentiallyConsistent        // Strongest ordering
+
+/// Function visibility for external linking
+type FuncVisibility =
+    | Public                        // Visible to all modules
+    | Private                       // Visible only within module
+    | Internal                      // Visible within compilation unit
+
 // ═══════════════════════════════════════════════════════════════════════════
 // MLIR OPERATIONS (for type-safe MLIR construction)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// LLVM dialect operations
 type LLVMOp =
-    | Load of SSA * SSA * MLIRType                          // result, ptr, type
-    | Store of SSA * SSA                                     // value, ptr
-    | GEP of SSA * SSA * int list * MLIRType                // result, ptr, indices, type
-    | Alloca of SSA * MLIRType * int                        // result, type, count
-    | Call of SSA * string * (SSA * MLIRType) list * MLIRType  // result, callee, args, retType
-    | ExtractValue of SSA * SSA * int list * MLIRType       // result, struct, indices, type
-    | InsertValue of SSA * SSA * SSA * int list * MLIRType  // result, struct, value, indices, type
-    | Undef of SSA * MLIRType                               // result, type
-    | BitCast of SSA * SSA * MLIRType * MLIRType            // result, value, srcType, destType
-    | IntToPtr of SSA * SSA * MLIRType                      // result, value, ptrType
-    | PtrToInt of SSA * SSA * MLIRType                      // result, ptr, intType
-    | Branch of string                                       // label
-    | CondBranch of SSA * string * string                   // cond, trueLabel, falseLabel
-    | Phi of SSA * (SSA * string) list * MLIRType           // result, predecessors, type
-    | InlineAsm of string * string * bool * SSA * SSA list  // template, constraints, sideEffects, result, args
+    // Memory operations
+    | Load of SSA * SSA * MLIRType * AtomicOrdering                     // result, ptr, type, ordering
+    | Store of SSA * SSA * MLIRType * AtomicOrdering                    // value, ptr, type, ordering
+    | GEP of SSA * SSA * (SSA * MLIRType) list * MLIRType * bool option // result, ptr, indices, type, inbounds
+    | StructGEP of SSA * SSA * int * MLIRType * MLIRType                // result, ptr, fieldIndex, structType, resultType
+    | Alloca of SSA * MLIRType * int option                             // result, type, count
+    // Pointer conversions
+    | BitCast of SSA * SSA * MLIRType                                   // result, value, destType
+    | IntToPtr of SSA * SSA * MLIRType                                  // result, value, ptrType
+    | PtrToInt of SSA * SSA * MLIRType                                  // result, ptr, intType
+    // Calls
+    | Call of SSA * string * SSA list * MLIRType                        // result, callee, args, retType
+    | IndirectCall of SSA * SSA * SSA list * MLIRType                   // result, funcPtr, args, retType
+    | Return of SSA option                                              // value
+    // Control flow
+    | Branch of string                                                   // label
+    | CondBranch of SSA * string * string                               // cond, trueLabel, falseLabel
+    | Phi of SSA * (SSA * string) list * MLIRType                       // result, predecessors, type
+    // Struct operations
+    | ExtractValue of SSA * SSA * int list * MLIRType                   // result, struct, indices, type
+    | InsertValue of SSA * SSA * SSA * int list * MLIRType              // result, struct, value, indices, type
+    | Undef of SSA * MLIRType                                           // result, type
+    // Bitwise operations
+    | And of SSA * SSA * SSA * MLIRType                                 // result, lhs, rhs, type
+    | Or of SSA * SSA * SSA * MLIRType                                  // result, lhs, rhs, type
+    | Xor of SSA * SSA * SSA * MLIRType                                 // result, lhs, rhs, type
+    | Shl of SSA * SSA * SSA * MLIRType                                 // result, lhs, rhs, type (shift left)
+    | LShr of SSA * SSA * SSA * MLIRType                                // result, lhs, rhs, type (logical shift right)
+    | AShr of SSA * SSA * SSA * MLIRType                                // result, lhs, rhs, type (arithmetic shift right)
+    // Other
+    | InlineAsm of string * string * bool * SSA * SSA list              // template, constraints, sideEffects, result, args
 
 /// Arithmetic dialect operations
 type ArithOp =
+    // Constants
     | ConstI of SSA * int64 * MLIRType                      // result, value, type
     | ConstF of SSA * float * MLIRType                      // result, value, type
+    // Integer arithmetic
     | AddI of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
     | SubI of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
     | MulI of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
@@ -145,18 +189,83 @@ type ArithOp =
     | DivUI of SSA * SSA * SSA * MLIRType                   // result, lhs, rhs, type (unsigned)
     | RemSI of SSA * SSA * SSA * MLIRType                   // result, lhs, rhs, type (signed)
     | RemUI of SSA * SSA * SSA * MLIRType                   // result, lhs, rhs, type (unsigned)
-    | CmpI of SSA * string * SSA * SSA * MLIRType           // result, predicate, lhs, rhs, type
+    | CmpI of SSA * ICmpPred * SSA * SSA * MLIRType         // result, predicate, lhs, rhs, type
+    // Float arithmetic
     | AddF of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
     | SubF of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
     | MulF of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
     | DivF of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
-    | CmpF of SSA * string * SSA * SSA * MLIRType           // result, predicate, lhs, rhs, type
+    | CmpF of SSA * FCmpPred * SSA * SSA * MLIRType         // result, predicate, lhs, rhs, type
+    // Type conversions
     | ExtSI of SSA * SSA * MLIRType * MLIRType              // result, value, srcType, destType
     | ExtUI of SSA * SSA * MLIRType * MLIRType              // result, value, srcType, destType
     | TruncI of SSA * SSA * MLIRType * MLIRType             // result, value, srcType, destType
     | SIToFP of SSA * SSA * MLIRType * MLIRType             // result, value, srcType, destType
     | FPToSI of SSA * SSA * MLIRType * MLIRType             // result, value, srcType, destType
+    // Other
     | Select of SSA * SSA * SSA * SSA * MLIRType            // result, cond, trueVal, falseVal, type
+
+/// Index dialect operations
+type IndexOp =
+    | IndexConst of SSA * int64                       // result, value
+    | IndexBoolConst of SSA * bool                    // result, value
+    | IndexAdd of SSA * SSA * SSA                     // result, lhs, rhs
+    | IndexSub of SSA * SSA * SSA                     // result, lhs, rhs
+    | IndexMul of SSA * SSA * SSA                     // result, lhs, rhs
+    | IndexDivS of SSA * SSA * SSA                    // result, lhs, rhs (signed)
+    | IndexDivU of SSA * SSA * SSA                    // result, lhs, rhs (unsigned)
+    | IndexCeilDivS of SSA * SSA * SSA                // result, lhs, rhs (signed ceiling)
+    | IndexCeilDivU of SSA * SSA * SSA                // result, lhs, rhs (unsigned ceiling)
+    | IndexFloorDivS of SSA * SSA * SSA               // result, lhs, rhs (signed floor)
+    | IndexRemS of SSA * SSA * SSA                    // result, lhs, rhs (signed)
+    | IndexRemU of SSA * SSA * SSA                    // result, lhs, rhs (unsigned)
+    | IndexMaxS of SSA * SSA * SSA                    // result, lhs, rhs (signed)
+    | IndexMaxU of SSA * SSA * SSA                    // result, lhs, rhs (unsigned)
+    | IndexMinS of SSA * SSA * SSA                    // result, lhs, rhs (signed)
+    | IndexMinU of SSA * SSA * SSA                    // result, lhs, rhs (unsigned)
+    | IndexShl of SSA * SSA * SSA                     // result, lhs, rhs
+    | IndexShrS of SSA * SSA * SSA                    // result, lhs, rhs (signed)
+    | IndexShrU of SSA * SSA * SSA                    // result, lhs, rhs (unsigned)
+    | IndexAnd of SSA * SSA * SSA                     // result, lhs, rhs
+    | IndexOr of SSA * SSA * SSA                      // result, lhs, rhs
+    | IndexXor of SSA * SSA * SSA                     // result, lhs, rhs
+    | IndexCmp of SSA * IndexCmpPred * SSA * SSA      // result, predicate, lhs, rhs
+    | IndexCastS of SSA * SSA * MLIRType              // result, operand, destType (signed)
+    | IndexCastU of SSA * SSA * MLIRType              // result, operand, destType (unsigned)
+    | IndexSizeOf of SSA * MLIRType                   // result, type
+
+/// Vector dialect operations
+type VectorOp =
+    | Broadcast of SSA * SSA * MLIRType                                     // result, source, resultType
+    | Extract of SSA * SSA * int list                                       // result, vector, position
+    | Insert of SSA * SSA * SSA * int list                                  // result, source, dest, position
+    | ExtractStrided of SSA * SSA * int list * int list * int list          // result, vector, offsets, sizes, strides
+    | InsertStrided of SSA * SSA * SSA * int list * int list                // result, source, dest, offsets, strides
+    | ShapeCast of SSA * SSA * MLIRType                                     // result, source, resultType
+    | Transpose of SSA * SSA * int list                                     // result, vector, transp
+    | FlattenTranspose of SSA * SSA                                         // result, vector
+    | ReductionAdd of SSA * SSA * SSA option                                // result, vector, acc
+    | ReductionMul of SSA * SSA * SSA option                                // result, vector, acc
+    | ReductionAnd of SSA * SSA                                             // result, vector
+    | ReductionOr of SSA * SSA                                              // result, vector
+    | ReductionXor of SSA * SSA                                             // result, vector
+    | ReductionMinSI of SSA * SSA                                           // result, vector
+    | ReductionMinUI of SSA * SSA                                           // result, vector
+    | ReductionMaxSI of SSA * SSA                                           // result, vector
+    | ReductionMaxUI of SSA * SSA                                           // result, vector
+    | ReductionMinF of SSA * SSA                                            // result, vector
+    | ReductionMaxF of SSA * SSA                                            // result, vector
+    | FMA of SSA * SSA * SSA * SSA                                          // result, lhs, rhs, acc
+    | Splat of SSA * SSA * MLIRType                                         // result, value, resultType
+    | VectorLoad of SSA * SSA * SSA list                                    // result, basePtr, indices
+    | VectorStore of SSA * SSA * SSA list                                   // valueToStore, basePtr, indices
+    | MaskedLoad of SSA * SSA * SSA list * SSA * SSA                        // result, basePtr, indices, mask, passthru
+    | MaskedStore of SSA * SSA * SSA list * SSA                             // valueToStore, basePtr, indices, mask
+    | Gather of SSA * SSA * SSA * SSA * SSA * SSA                           // result, basePtr, indices, indexVec, mask, passthru
+    | Scatter of SSA * SSA * SSA * SSA * SSA                                // valueToStore, basePtr, indices, indexVec, mask
+    | CreateMask of SSA * SSA list                                          // result, operands
+    | ConstantMask of SSA * int list                                        // result, maskDimSizes
+    | Print of SSA * string option                                          // source, punctuation
 
 /// Top-level MLIR operation (all dialects) - forward declaration for mutual recursion
 type MLIROp =
@@ -165,14 +274,16 @@ type MLIROp =
     | SCFOp of SCFOp
     | CFOp of CFOp
     | FuncOp of FuncOp
+    | IndexOp of IndexOp
+    | VectorOp of VectorOp
     | Block of string * MLIROp list                                 // label, ops
     | Region of MLIROp list                                         // blocks
 
 /// Structured Control Flow (SCF) dialect operations
 and SCFOp =
-    | If of SSA * SSA * MLIRType * MLIROp list * MLIROp list  // result, cond, type, thenOps, elseOps
-    | While of SSA * MLIRType * MLIROp list * MLIROp list     // result, type, beforeOps, afterOps
-    | For of SSA * SSA * SSA * SSA * MLIRType * MLIROp list   // result, lb, ub, step, type, bodyOps
+    | If of SSA * MLIROp list * MLIROp list option            // cond, thenOps, elseOps
+    | While of MLIROp list * MLIROp list                      // condOps, bodyOps
+    | For of SSA * SSA * SSA * MLIROp list                    // lower, upper, step, bodyOps
     | Yield of SSA list                                       // values
     | Condition of SSA * SSA list                             // cond, args
 
@@ -185,6 +296,13 @@ and CFOp =
 
 /// Function dialect operations
 and FuncOp =
-    | FuncDecl of string * MLIRType list * MLIRType * MLIROp list  // name, paramTypes, retType, bodyOps
-    | ExternDecl of string * MLIRType list * MLIRType              // name, paramTypes, retType
-    | Return of SSA option * MLIRType option                       // value, type
+    // Function definition/declaration
+    | FuncDef of string * (SSA * MLIRType) list * MLIRType * MLIROp list * FuncVisibility  // name, args, retType, body, visibility
+    | FuncDecl of string * MLIRType list * MLIRType * FuncVisibility                       // name, paramTypes, retType, visibility (external decl)
+    | ExternDecl of string * MLIRType list * MLIRType                                      // name, paramTypes, retType (backward compat)
+    // Function calls
+    | FuncCall of SSA option * string * Val list * MLIRType                                // result, func, args, retType
+    | FuncCallIndirect of SSA option * SSA * Val list * MLIRType                           // result, callee, args, retType
+    | FuncConstant of SSA * string * MLIRType                                              // result, funcName, funcType
+    // Return
+    | Return of SSA option * MLIRType option                                               // value, type
