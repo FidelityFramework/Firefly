@@ -40,79 +40,81 @@
 
       <!-- Alex Dialects - Structured MLIR types (ZERO sprintf architecture) -->
       <!-- Core types and serialization - MUST come first -->
-      <Compile Include="Alex/Dialects/Core/Types.fs" />
-      <Compile Include="Alex/Dialects/Core/Serialize.fs" />
+      <Compile Include="MiddleEnd/Alex/Dialects/Core/Types.fs" />
+      <Compile Include="MiddleEnd/Alex/Dialects/Core/Serialize.fs" />
 
       <!-- Alex CodeGeneration - TypeMapping first (no deps, used by SSAAssignment) -->
-      <Compile Include="Alex/CodeGeneration/TypeMapping.fs" />
+      <Compile Include="MiddleEnd/Alex/CodeGeneration/TypeMapping.fs" />
 
       <!-- PSGElaboration - MLIR-aware coeffects (peer to Alex) -->
-      <Compile Include="PSGElaboration/Coeffects.fs" />
-      <Compile Include="PSGElaboration/SSAAssignment.fs" />
-      <Compile Include="PSGElaboration/YieldStateIndices.fs" />
-      <Compile Include="PSGElaboration/MutabilityAnalysis.fs" />
-      <Compile Include="PSGElaboration/StringCollection.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/Coeffects.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/SSAAssignment.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/YieldStateIndices.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/MutabilityAnalysis.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/StringCollection.fs" />
       <!-- Platform Config (depends on PlatformTypes) -->
-      <Compile Include="PSGElaboration/PlatformConfig.fs" />
-      <Compile Include="PSGElaboration/PlatformBindingResolution.fs" />
-      <Compile Include="PSGElaboration/PatternBindingAnalysis.fs" />
-      <Compile Include="PSGElaboration/CoeffectValidation.fs" />
-      <Compile Include="PSGElaboration/PreprocessingSerializer.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/PlatformConfig.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/PlatformPatterns.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/PlatformBindingResolution.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/PatternBindingAnalysis.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/CoeffectValidation.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/PreprocessingSerializer.fs" />
 
       <!-- Alex Traversal - PSGZipper: Pure Huet zipper for navigation -->
-      <Compile Include="Alex/Traversal/PSGZipper.fs" />
+      <Compile Include="MiddleEnd/Alex/Traversal/PSGZipper.fs" />
 
       <!-- Alex Traversal - TransferTypes: Types witnesses receive (ctx: WitnessContext) -->
-      <Compile Include="Alex/Traversal/TransferTypes.fs" />
+      <Compile Include="MiddleEnd/Alex/Traversal/TransferTypes.fs" />
 
       <!-- Alex CodeGeneration - TypeSizing uses TypeMapping (moved earlier) -->
-      <Compile Include="Alex/CodeGeneration/TypeSizing.fs" />
+      <Compile Include="MiddleEnd/Alex/CodeGeneration/TypeSizing.fs" />
 
       <!-- Alex Patterns - Active patterns for semantic classification -->
-      <Compile Include="Alex/Patterns/SemanticPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/SemanticPatterns.fs" />
 
       <!-- Alex XParsec - Composable PSG pattern matchers -->
-      <Compile Include="Alex/XParsec/PSGCombinators.fs" />
+      <Compile Include="MiddleEnd/Alex/XParsec/PSGCombinators.fs" />
 
       <!-- Alex Elements - Atomic MLIR ops (internal, XParsec-based) -->
-      <Compile Include="Alex/Elements/MLIRElements.fs" />
-      <Compile Include="Alex/Elements/LLVMElements.fs" />
-      <Compile Include="Alex/Elements/ArithElements.fs" />
-      <Compile Include="Alex/Elements/SCFElements.fs" />
-      <Compile Include="Alex/Elements/CFElements.fs" />
-      <Compile Include="Alex/Elements/FuncElements.fs" />
-      <Compile Include="Alex/Elements/IndexElements.fs" />
-      <Compile Include="Alex/Elements/VectorElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/MLIRElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/LLVMElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/ArithElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/SCFElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/CFElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/FuncElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/IndexElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/VectorElements.fs" />
 
       <!-- Alex Elision Patterns - Composable MLIR templates (public, XParsec-based) -->
-      <Compile Include="Alex/Patterns/ElisionPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/ElisionPatterns.fs" />
 
       <!-- Alex Witnesses - Category-based MLIR generation -->
-      <Compile Include="Alex/Witnesses/LiteralWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/LiteralWitness.fs" />
       <!-- Factored Witnesses -->
-      <Compile Include="Alex/Witnesses/ArithOps.fs" />
-      <Compile Include="Alex/Witnesses/FormatOps.fs" />
-      <Compile Include="Alex/Witnesses/SyscallOps.fs" />
-      <Compile Include="Alex/Witnesses/LazyWitness.fs" />
-      <Compile Include="Alex/Witnesses/SeqWitness.fs" />
-      <Compile Include="Alex/Witnesses/SeqOpWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/ArithOps.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/FormatOps.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/SyscallOps.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/PlatformWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/LazyWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/SeqWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/SeqOpWitness.fs" />
       <!-- PRD-13a: Core Collections Witnesses -->
-      <Compile Include="Alex/Witnesses/ListWitness.fs" />
-      <Compile Include="Alex/Witnesses/MapWitness.fs" />
-      <Compile Include="Alex/Witnesses/SetWitness.fs" />
-      <Compile Include="Alex/Witnesses/OptionWitness.fs" />
-      <Compile Include="Alex/Witnesses/ControlFlowWitness.fs" />
-      <Compile Include="Alex/Witnesses/MemoryWitness.fs" />
-      <Compile Include="Alex/Witnesses/LambdaWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/ListWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/MapWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/SetWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/OptionWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/ControlFlowWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/MemoryWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/LambdaWitness.fs" />
 
       <!-- Alex Traversal - MLIR Transfer via Zipper + XParsec (pull model) -->
-      <Compile Include="Alex/Traversal/MLIRTransfer.fs" />
+      <Compile Include="MiddleEnd/Alex/Traversal/MLIRTransfer.fs" />
 
       <!-- Alex Pipeline Types -->
-      <Compile Include="Alex/Pipeline/CompilationTypes.fs" />
+      <Compile Include="MiddleEnd/Alex/Pipeline/CompilationTypes.fs" />
 
       <!-- Alex Pipeline Orchestration -->
-      <Compile Include="Alex/Pipeline/CompilationOrchestrator.fs" />
+      <Compile Include="MiddleEnd/Alex/Pipeline/CompilationOrchestrator.fs" />
 
       <!-- CLI Infrastructure -->
       <Compile Include="CLI/Diagnostics/EnvironmentInfo.fs" />
