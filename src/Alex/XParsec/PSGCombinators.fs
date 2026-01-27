@@ -1,16 +1,23 @@
-/// PSG Combinators - XParsec-style pattern matching for SemanticGraph nodes
+/// PSG Combinators - XParsec-based pattern matching for SemanticGraph nodes
 ///
-/// This module provides composable parsers for recognizing PSG node patterns
-/// and emitting MLIR fragments. The combinators interlock to form coherent
-/// MLIR expressions from PSG structure.
 ///
-/// Key insight: XParsec works on sequential input. We adapt it to work on
-/// PSG children sequences, enabling pattern recognition like:
-/// - Binary operations: App(App(op, lhs), rhs)
-/// - Pipe chains: x |> f |> g
-/// - Curried applications: f a b c
+/// XParsec provides:
+/// - Parser<'Parsed, 'T, 'State, 'Input, 'InputSlice> type
+/// - >>=, |>>, .>>, >>., <|>, parser { } - all standard combinators
+/// - getUserState, setUserState, updateUserState - state threading
+/// - Reader.ofString - creates cursor with custom state
+///
+/// We use XParsec for PSG graph navigation by:
+/// 1. Threading PSGParserState through XParsec's state mechanism
+/// 2. Using empty string as dummy input (PSG doesn't consume characters)
+/// 3. Navigating by updating state.Current, not consuming input
+///
+
 module Alex.XParsec.PSGCombinators
 
+open XParsec
+open XParsec.Parsers     // preturn, fail, getUserState, setUserState, updateUserState
+open XParsec.Combinators // >>=, |>>, .>>, >>., <|>, parser { }
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
@@ -20,13 +27,8 @@ open Alex.Dialects.Core.Types
 open PSGElaboration.PlatformConfig
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CORE TYPES
+// PSG PARSER STATE
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Result of pattern matching on PSG nodes
-type PSGMatchResult<'T> =
-    | Matched of 'T
-    | NoMatch of reason: string
 
 /// Parser state threaded through pattern matching
 ///
@@ -49,6 +51,23 @@ type PSGParserState = {
     /// This is a coeffect - already computed, just look it up
     Platform: PlatformResolutionResult
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PSG PARSER TYPE (5 type parameters - using XParsec's Parser directly)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// PSG parser type - uses XParsec's Parser with custom state
+///
+/// PSG parsers don't parse characters - they navigate a graph structure.
+/// We use empty string as dummy input, threading PSGParserState through XParsec.
+///
+/// Type parameters:
+/// - 'T: Parsed result type
+/// - char: Element type (dummy - we don't consume characters)
+/// - PSGParserState: Our custom state
+/// - ReadableString: Input type (always empty string)
+/// - ReadableStringSlice: Sliceable input type
+type PSGParser<'T> = Parser<'T, char, PSGParserState, ReadableString, ReadableStringSlice>
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PLATFORM-AWARE TYPE RESOLUTION
@@ -86,97 +105,136 @@ let nativeIntType (state: PSGParserState) : MLIRType =
 let mapNTUKindForPlatform (state: PSGParserState) (kind: NTUKind) : MLIRType =
     Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType state.Platform.TargetArch kind
 
-/// A PSG parser that attempts to match a pattern and produce a result
-type PSGParser<'T> = PSGParserState -> PSGMatchResult<'T> * PSGParserState
-
 // ═══════════════════════════════════════════════════════════════════════════
-// PRIMITIVE PARSERS
+// BASIC PSG OPERATIONS (use XParsec's state threading)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Always succeeds with the given value
-let preturn (value: 'T) : PSGParser<'T> =
-    fun state -> Matched value, state
+/// Get current PSG node from state
+let getCurrentNode : PSGParser<SemanticNode> =
+    getUserState |>> (fun state -> state.Current)
 
-/// Always fails with the given reason
-let pfail (reason: string) : PSGParser<'T> =
-    fun state -> NoMatch reason, state
+/// Get current graph from state
+let getGraph : PSGParser<SemanticGraph> =
+    getUserState |>> (fun state -> state.Graph)
+
+/// Get platform info from state
+let getPlatform : PSGParser<PlatformResolutionResult> =
+    getUserState |>> (fun state -> state.Platform)
+
+/// Set current node in state
+let setCurrentNode (node: SemanticNode) : PSGParser<unit> =
+    updateUserState (fun state -> { state with Current = node })
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRIMITIVE PARSERS (pattern match on current node)
+// ═══════════════════════════════════════════════════════════════════════════
 
 /// Match the current node's kind
 let pKind (expected: SemanticKind) : PSGParser<SemanticNode> =
-    fun state ->
-        if state.Current.Kind = expected then
-            Matched state.Current, state
+    parser {
+        let! node = getCurrentNode
+        if node.Kind = expected then
+            return node
         else
-            NoMatch (sprintf "Expected %A but got %A" expected state.Current.Kind), state
+            return! fail (Message (sprintf "Expected %A but got %A" expected node.Kind))
+    }
 
 /// Match any node (always succeeds with current node)
 let pAny : PSGParser<SemanticNode> =
-    fun state -> Matched state.Current, state
+    getCurrentNode
 
 /// Match a Literal node
 let pLiteral : PSGParser<NativeLiteral> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.Literal lit -> Matched lit, state
-        | _ -> NoMatch "Expected Literal", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.Literal lit -> return lit
+        | _ -> return! fail (Message "Expected Literal")
+    }
 
 /// Match a VarRef node (defId is optional)
 let pVarRef : PSGParser<string * NodeId option> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.VarRef (name, defIdOpt) -> Matched (name, defIdOpt), state
-        | _ -> NoMatch "Expected VarRef", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.VarRef (name, defIdOpt) -> return (name, defIdOpt)
+        | _ -> return! fail (Message "Expected VarRef")
+    }
 
 /// Match an Application node
 let pApplication : PSGParser<NodeId * NodeId list> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.Application (funcId, argIds) -> Matched (funcId, argIds), state
-        | _ -> NoMatch "Expected Application", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.Application (funcId, argIds) -> return (funcId, argIds)
+        | _ -> return! fail (Message "Expected Application")
+    }
 
 /// Match an Intrinsic node
 let pIntrinsic : PSGParser<IntrinsicInfo> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.Intrinsic info -> Matched info, state
-        | _ -> NoMatch "Expected Intrinsic", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.Intrinsic info -> return info
+        | _ -> return! fail (Message "Expected Intrinsic")
+    }
 
 /// Match a PlatformBinding node
 let pPlatformBinding : PSGParser<string> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.PlatformBinding entryPoint -> Matched entryPoint, state
-        | _ -> NoMatch "Expected PlatformBinding", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.PlatformBinding entryPoint -> return entryPoint
+        | _ -> return! fail (Message "Expected PlatformBinding")
+    }
 
 /// Match a Binding node
 let pBinding : PSGParser<string * bool * bool * bool> =
-    fun state ->
-        match state.Current.Kind with
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
         | SemanticKind.Binding (name, isMut, isRec, isEntry) ->
-            Matched (name, isMut, isRec, isEntry), state
-        | _ -> NoMatch "Expected Binding", state
+            return (name, isMut, isRec, isEntry)
+        | _ -> return! fail (Message "Expected Binding")
+    }
 
 /// Match a Lambda node (params are name*type*nodeId tuples for SSA assignment)
 let pLambda : PSGParser<(string * FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NativeType * NodeId) list * NodeId> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.Lambda (params', bodyId, _captures, _, _) -> Matched (params', bodyId), state
-        | _ -> NoMatch "Expected Lambda", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.Lambda (params', bodyId, _captures, _, _) -> return (params', bodyId)
+        | _ -> return! fail (Message "Expected Lambda")
+    }
 
 /// Match an IfThenElse node
 let pIfThenElse : PSGParser<NodeId * NodeId * NodeId option> =
-    fun state ->
-        match state.Current.Kind with
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
         | SemanticKind.IfThenElse (guard, thenB, elseOpt) ->
-            Matched (guard, thenB, elseOpt), state
-        | _ -> NoMatch "Expected IfThenElse", state
+            return (guard, thenB, elseOpt)
+        | _ -> return! fail (Message "Expected IfThenElse")
+    }
 
 /// Match a WhileLoop node
 let pWhileLoop : PSGParser<NodeId * NodeId> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.WhileLoop (guard, body) -> Matched (guard, body), state
-        | _ -> NoMatch "Expected WhileLoop", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.WhileLoop (guard, body) -> return (guard, body)
+        | _ -> return! fail (Message "Expected WhileLoop")
+    }
+
+/// Match a ForLoop node
+let pForLoop : PSGParser<string * NodeId * NodeId * bool * NodeId> =
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.ForLoop (var, start, finish, isUp, body) ->
+            return (var, start, finish, isUp, body)
+        | _ -> return! fail (Message "Expected ForLoop")
+    }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // DISCRIMINATED UNION PARSERS (January 2026)
@@ -185,163 +243,84 @@ let pWhileLoop : PSGParser<NodeId * NodeId> =
 /// Match a DUGetTag node - extracts tag from DU value
 /// Returns: (duValueNodeId, duType)
 let pDUGetTag : PSGParser<NodeId * NativeType> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.DUGetTag (duValueId, duType) -> Matched (duValueId, duType), state
-        | _ -> NoMatch "Expected DUGetTag", state
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.DUGetTag (duValueId, duType) -> return (duValueId, duType)
+        | _ -> return! fail (Message "Expected DUGetTag")
+    }
 
 /// Match a DUEliminate node - type-safe payload extraction via case eliminator
 /// Returns: (duValueNodeId, caseIndex, caseName, payloadType)
 let pDUEliminate : PSGParser<NodeId * int * string * NativeType> =
-    fun state ->
-        match state.Current.Kind with
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
         | SemanticKind.DUEliminate (duValueId, caseIndex, caseName, payloadType) ->
-            Matched (duValueId, caseIndex, caseName, payloadType), state
-        | _ -> NoMatch "Expected DUEliminate", state
+            return (duValueId, caseIndex, caseName, payloadType)
+        | _ -> return! fail (Message "Expected DUEliminate")
+    }
 
 /// Match a DUConstruct node - constructs DU value in arena
 /// Returns: (caseName, caseIndex, payloadOpt, arenaHintOpt)
 let pDUConstruct : PSGParser<string * int * NodeId option * NodeId option> =
-    fun state ->
-        match state.Current.Kind with
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
         | SemanticKind.DUConstruct (caseName, caseIndex, payload, arenaHint) ->
-            Matched (caseName, caseIndex, payload, arenaHint), state
-        | _ -> NoMatch "Expected DUConstruct", state
-
-/// Match a ForLoop node
-let pForLoop : PSGParser<string * NodeId * NodeId * bool * NodeId> =
-    fun state ->
-        match state.Current.Kind with
-        | SemanticKind.ForLoop (var, start, finish, isUp, body) ->
-            Matched (var, start, finish, isUp, body), state
-        | _ -> NoMatch "Expected ForLoop", state
+            return (caseName, caseIndex, payload, arenaHint)
+        | _ -> return! fail (Message "Expected DUConstruct")
+    }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// COMBINATORS
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Bind: if p succeeds, run binder on result
-let bind (p: PSGParser<'A>) (binder: 'A -> PSGParser<'B>) : PSGParser<'B> =
-    fun state ->
-        match p state with
-        | Matched a, state' -> binder a state'
-        | NoMatch reason, state' -> NoMatch reason, state'
-
-/// Infix bind operator
-let (>>=) p binder = bind p binder
-
-/// Map: transform successful result
-let map (f: 'A -> 'B) (p: PSGParser<'A>) : PSGParser<'B> =
-    fun state ->
-        match p state with
-        | Matched a, state' -> Matched (f a), state'
-        | NoMatch reason, state' -> NoMatch reason, state'
-
-/// Infix map operator
-let (|>>) p f = map f p
-
-/// Sequence: run both parsers, return second result
-let (>>.) (p1: PSGParser<'A>) (p2: PSGParser<'B>) : PSGParser<'B> =
-    fun state ->
-        match p1 state with
-        | Matched _, state' -> p2 state'
-        | NoMatch reason, state' -> NoMatch reason, state'
-
-/// Sequence: run both parsers, return first result
-let (.>>) (p1: PSGParser<'A>) (p2: PSGParser<'B>) : PSGParser<'A> =
-    fun state ->
-        match p1 state with
-        | Matched a, state' ->
-            match p2 state' with
-            | Matched _, state'' -> Matched a, state''
-            | NoMatch reason, state'' -> NoMatch reason, state''
-        | NoMatch reason, state' -> NoMatch reason, state'
-
-/// Sequence: run both parsers, return both results
-let (.>>.) (p1: PSGParser<'A>) (p2: PSGParser<'B>) : PSGParser<'A * 'B> =
-    fun state ->
-        match p1 state with
-        | Matched a, state' ->
-            match p2 state' with
-            | Matched b, state'' -> Matched (a, b), state''
-            | NoMatch reason, state'' -> NoMatch reason, state''
-        | NoMatch reason, state' -> NoMatch reason, state'
-
-/// Choice: try first parser, if fails try second
-let (<|>) (p1: PSGParser<'A>) (p2: PSGParser<'A>) : PSGParser<'A> =
-    fun state ->
-        match p1 state with
-        | Matched a, state' -> Matched a, state'
-        | NoMatch _, _ -> p2 state  // Reset to original state
-
-/// Optional: match zero or one
-let opt (p: PSGParser<'A>) : PSGParser<'A option> =
-    fun state ->
-        match p state with
-        | Matched a, state' -> Matched (Some a), state'
-        | NoMatch _, _ -> Matched None, state
-
-/// Satisfy: match current node if predicate holds
-let satisfy (predicate: SemanticNode -> bool) : PSGParser<SemanticNode> =
-    fun state ->
-        if predicate state.Current then
-            Matched state.Current, state
-        else
-            NoMatch "Predicate not satisfied", state
-
-/// Satisfy with extractor: match and extract if predicate holds
-let satisfyMap (f: SemanticNode -> 'T option) : PSGParser<'T> =
-    fun state ->
-        match f state.Current with
-        | Some v -> Matched v, state
-        | None -> NoMatch "SatisfyMap returned None", state
-
-// ═══════════════════════════════════════════════════════════════════════════
-// NAVIGATION COMBINATORS
+// NAVIGATION COMBINATORS (use XParsec's state threading)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Focus on a child node by ID
 let focusChild (childId: NodeId) : PSGParser<SemanticNode> =
-    fun state ->
+    parser {
+        let! state = getUserState
         match SemanticGraph.tryGetNode childId state.Graph with
         | Some childNode ->
-            let state' = { state with Current = childNode }
-            Matched childNode, state'
+            do! setCurrentNode childNode
+            return childNode
         | None ->
-            NoMatch (sprintf "Child node %A not found" childId), state
+            return! fail (Message (sprintf "Child node %A not found" childId))
+    }
 
 /// Run parser on a specific child node, then restore focus
 let onChild (childId: NodeId) (p: PSGParser<'T>) : PSGParser<'T> =
-    fun state ->
+    parser {
+        let! state = getUserState
         match SemanticGraph.tryGetNode childId state.Graph with
         | Some childNode ->
-            let childState = { state with Current = childNode }
-            match p childState with
-            | Matched v, childState' ->
-                // Restore original current but keep zipper changes
-                Matched v, { childState' with Current = state.Current }
-            | NoMatch reason, _ -> NoMatch reason, state
+            // Save current position
+            let savedCurrent = state.Current
+            // Navigate to child
+            do! setCurrentNode childNode
+            // Run child parser
+            let! result = p
+            // Restore position
+            do! setCurrentNode savedCurrent
+            return result
         | None ->
-            NoMatch (sprintf "Child node %A not found" childId), state
+            return! fail (Message (sprintf "Child node %A not found" childId))
+    }
 
 /// Run parser on each child and collect results
 let onChildren (childIds: NodeId list) (p: PSGParser<'T>) : PSGParser<'T list> =
-    fun state ->
-        let rec loop ids acc currentState =
-            match ids with
-            | [] -> Matched (List.rev acc), currentState
-            | id :: rest ->
-                match SemanticGraph.tryGetNode id state.Graph with
-                | Some childNode ->
-                    let childState = { currentState with Current = childNode }
-                    match p childState with
-                    | Matched v, childState' ->
-                        loop rest (v :: acc) { childState' with Current = state.Current }
-                    | NoMatch reason, _ ->
-                        NoMatch reason, state
-                | None ->
-                    NoMatch (sprintf "Child node %A not found" id), state
-        loop childIds [] state
+    parser {
+        let! results =
+            childIds
+            |> List.map (fun cid -> onChild cid p)
+            |> List.fold (fun accParser nextParser ->
+                parser {
+                    let! acc = accParser
+                    let! next = nextParser
+                    return acc @ [next]
+                }) (preturn [])
+        return results
+    }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // INTRINSIC CLASSIFICATION PATTERNS
@@ -349,15 +328,23 @@ let onChildren (childIds: NodeId list) (p: PSGParser<'T>) : PSGParser<'T list> =
 
 /// Match an intrinsic by module
 let pIntrinsicModule (expectedModule: IntrinsicModule) : PSGParser<IntrinsicInfo> =
-    pIntrinsic >>= fun info ->
-        if info.Module = expectedModule then preturn info
-        else pfail (sprintf "Expected module %A but got %A" expectedModule info.Module)
+    parser {
+        let! info = pIntrinsic
+        if info.Module = expectedModule then
+            return info
+        else
+            return! fail (Message (sprintf "Expected module %A but got %A" expectedModule info.Module))
+    }
 
 /// Match an intrinsic by full name pattern
 let pIntrinsicNamed (fullName: string) : PSGParser<IntrinsicInfo> =
-    pIntrinsic >>= fun info ->
-        if info.FullName = fullName then preturn info
-        else pfail (sprintf "Expected %s but got %s" fullName info.FullName)
+    parser {
+        let! info = pIntrinsic
+        if info.FullName = fullName then
+            return info
+        else
+            return! fail (Message (sprintf "Expected %s but got %s" fullName info.FullName))
+    }
 
 /// Classify intrinsic by category for emission dispatch
 type EmissionCategory =
@@ -406,35 +393,53 @@ let pClassifiedIntrinsic : PSGParser<IntrinsicInfo * EmissionCategory> =
     pIntrinsic |>> fun info -> (info, classifyIntrinsic info)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// COMPUTATION EXPRESSION
+// LAZY VALUE PARSERS (PRD-14, January 2026)
 // ═══════════════════════════════════════════════════════════════════════════
 
-type PSGParserBuilder() =
-    member _.Bind(p, f) = bind p f
-    member _.Return(x) = preturn x
-    member _.ReturnFrom(p) = p
-    member _.Zero() = preturn ()
-    member _.Combine(p1, p2) = p1 >>. p2
-    member _.Delay(f) = fun state -> f () state
+/// Match a LazyExpr node - lazy value construction
+/// Returns: (bodyId, captures)
+let pLazyExpr : PSGParser<NodeId * CaptureInfo list> =
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.LazyExpr (bodyId, captures) ->
+            return (bodyId, captures)
+        | _ ->
+            return! fail (Message "Expected LazyExpr node")
+    }
 
-let psg = PSGParserBuilder()
+/// Match a LazyForce node - force lazy evaluation
+/// Returns: lazyValueNodeId
+let pLazyForce : PSGParser<NodeId> =
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.LazyForce lazyId ->
+            return lazyId
+        | _ ->
+            return! fail (Message "Expected LazyForce node")
+    }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// RUNNER
+// RUNNER (create Reader with empty string and custom state)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Run a parser on a node with platform context
 /// Platform info flows through state for type resolution
+///
+/// CRITICAL: Uses Reader.ofString with EMPTY STRING.
+/// PSG parsers don't consume characters - they navigate graph structure.
 let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
     let state = { Graph = graph; Zipper = zipper; Current = node; Platform = platform }
-    parser state
+    let reader = Reader.ofString "" state  // Empty string - we don't parse characters
+    parser reader
 
 /// Try to match a pattern, returning option
 /// Platform info flows through state for type resolution
 let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
     match runParser parser graph node zipper platform with
-    | Matched v, state' -> Some (v, state'.Zipper)
-    | NoMatch _, _ -> None
+    | Ok success -> Some (success.Parsed, zipper)
+    | Error _ -> None
 
 /// Create initial parser state from zipper
 /// Platform must be passed explicitly (coeffect, not part of zipper)
@@ -450,4 +455,5 @@ let stateFromZipper (zipper: PSGZipper) (node: SemanticNode) (platform: Platform
 /// Platform must be passed explicitly (coeffect, not part of zipper)
 let runParserWithZipper (parser: PSGParser<'T>) (zipper: PSGZipper) (node: SemanticNode) (platform: PlatformResolutionResult) =
     let state = stateFromZipper zipper node platform
-    parser state
+    let reader = Reader.ofString "" state
+    parser reader
