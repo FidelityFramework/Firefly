@@ -60,6 +60,10 @@
       <!-- Alex Traversal - TransferTypes: Types witnesses receive (ctx: WitnessContext) -->
       <Compile Include="MiddleEnd/Alex/Traversal/TransferTypes.fs" />
 
+      <!-- Alex Traversal - Parallel Nanopasses (one witness = one nanopass, IcedTasks) -->
+      <Compile Include="MiddleEnd/Alex/Traversal/NanopassArchitecture.fs" />
+      <Compile Include="MiddleEnd/Alex/Traversal/ParallelNanopass.fs" />
+
       <!-- Alex CodeGeneration - TypeSizing uses TypeMapping (moved earlier) -->
       <Compile Include="MiddleEnd/Alex/CodeGeneration/TypeSizing.fs" />
 

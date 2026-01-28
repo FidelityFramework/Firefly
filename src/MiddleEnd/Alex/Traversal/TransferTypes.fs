@@ -153,6 +153,10 @@ module WitnessOutput =
     let inline' ops result = { InlineOps = ops; TopLevelOps = []; Result = result }
     let value v = { InlineOps = []; TopLevelOps = []; Result = TRValue v }
     let error msg = { InlineOps = []; TopLevelOps = []; Result = TRError msg }
+
+    /// Skip this node (not handled by this nanopass)
+    let skip = empty
+
     let withTopLevel topOps output = { output with TopLevelOps = topOps @ output.TopLevelOps }
     let combine (a: WitnessOutput) (b: WitnessOutput) =
         { InlineOps = a.InlineOps @ b.InlineOps
