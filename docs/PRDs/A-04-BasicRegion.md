@@ -125,8 +125,9 @@ let witnessRegionCreate z pagesSSA =
     // Calculate size
     emit $"  %%size = arith.muli %%{pagesSSA}, 4096 : i64"
 
-    // mmap
-    emit $"  %%base = llvm.call @mmap(ptr null, %%size, i32 3, i32 34, i32 -1, i64 0)"
+    // mmap (addr=0 means OS chooses address)
+    emit "  %addr_zero = llvm.mlir.zero : !llvm.ptr"
+    emit $"  %%base = llvm.call @mmap(%%addr_zero, %%size, i32 3, i32 34, i32 -1, i64 0)"
 
     // Allocate Region struct
     emit $"  %%{regionSSA} = llvm.alloca 1 x !region_type"
@@ -212,8 +213,9 @@ let insertScopeExits (graph: SemanticGraph) =
 ```mlir
 // let region = Region.create 4
 %size = arith.muli %pages, %c4096 : i64
+%addr_zero = llvm.mlir.zero : !llvm.ptr  // OS chooses address
 %base = llvm.call @mmap(
-    ptr null,     // addr hint
+    %addr_zero,   // addr (0 = OS chooses)
     %size,        // length
     i32 3,        // PROT_READ | PROT_WRITE
     i32 34,       // MAP_PRIVATE | MAP_ANONYMOUS

@@ -136,9 +136,10 @@ let witnessMailboxProcessorStart z behaviorClosureSSA =
     emit "  %behavior_ptr = llvm.getelementptr %actor[0, 2]"
     emit $"  llvm.store %%{behaviorClosureSSA}, %%behavior_ptr"
 
-    // 4. Create worker thread
+    // 4. Create worker thread (attr=0 means default attributes)
     emit "  %thread_ptr = llvm.getelementptr %actor[0, 1]"
-    emit $"  llvm.call @pthread_create(%%thread_ptr, ptr null, @actor_loop, %%{actorSSA})"
+    emit "  %attr_zero = llvm.mlir.zero : !llvm.ptr"
+    emit $"  llvm.call @pthread_create(%%thread_ptr, %%attr_zero, @actor_loop, %%{actorSSA})"
 
     TRValue { SSA = actorSSA; Type = TMailboxProcessor msgType }
 ```
@@ -195,7 +196,9 @@ let emitActorLoop z actorSSA =
     emit "  %env = llvm.extractvalue %behavior[1]"
     emit "  llvm.call %code(%env, %inbox)"
 
-    emit "  llvm.return %null"
+    // pthread requires ptr return (0 = no meaningful value)
+    emit "  %ret_zero = llvm.mlir.zero : !llvm.ptr"
+    emit "  llvm.return %ret_zero"
     emit "}"
 ```
 
@@ -209,12 +212,13 @@ let witnessInboxReceive z inboxSSA =
     emit "  %mutex = llvm.getelementptr %inbox[0, 2]"
     emit "  llvm.call @pthread_mutex_lock(%mutex)"
 
-    // Wait while empty
+    // Wait while empty (message queue is pointer-based, 0 = empty)
     emit "  llvm.br ^check"
     emit "^check:"
     emit "  %head_ptr = llvm.getelementptr %inbox[0, 0]"
     emit "  %head = llvm.load %head_ptr"
-    emit "  %is_empty = llvm.icmp eq %head, %null"
+    emit "  %zero = llvm.mlir.zero : !llvm.ptr"
+    emit "  %is_empty = llvm.icmp eq %head, %zero"
     emit "  llvm.cond_br %is_empty, ^wait, ^dequeue"
 
     emit "^wait:"
@@ -271,9 +275,10 @@ llvm.call @queue_init(%queue)
 %behavior_slot = llvm.getelementptr %actor[0, 2]
 llvm.store %behavior_closure, %behavior_slot
 
-// Create thread
+// Create thread (attr=0 means default attributes)
 %thread_slot = llvm.getelementptr %actor[0, 1]
-llvm.call @pthread_create(%thread_slot, %null, @actor_loop, %actor)
+%attr_zero = llvm.mlir.zero : !llvm.ptr
+llvm.call @pthread_create(%thread_slot, %attr_zero, @actor_loop, %actor)
 ```
 
 ## 6. Validation

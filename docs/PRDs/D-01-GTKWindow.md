@@ -31,8 +31,8 @@ gtk_window_set_default_size(window, 400, 300)
 ### 2.3 Signal Connection
 
 ```fsharp
-// Connect callback for window close
-g_signal_connect(window, "destroy", (fun _ -> gtk_main_quit()), null)
+// Connect callback for window close (user_data=0 means no data)
+g_signal_connect(window, "destroy", (fun _ -> gtk_main_quit()), NativePtr.zero)
 ```
 
 ### 2.4 Main Loop
@@ -158,11 +158,13 @@ llvm.call @gtk_window_set_default_size(%window, %c400, %c300) : (!llvm.ptr, i32,
 ### 5.3 Signal Connection
 
 ```mlir
-// g_signal_connect(window, "destroy", quit_callback, null)
+// g_signal_connect(window, "destroy", quit_callback, 0)
+// user_data=0 means no data, destroy_notify=0 means no cleanup function
 %destroy_str = llvm.mlir.addressof @str_destroy : !llvm.ptr
 %callback = llvm.mlir.addressof @on_destroy : !llvm.ptr
-%null = llvm.mlir.null : !llvm.ptr
-llvm.call @g_signal_connect_data(%window, %destroy_str, %callback, %null, %null, %c0)
+%user_data_zero = llvm.mlir.zero : !llvm.ptr
+%destroy_notify_zero = llvm.mlir.zero : !llvm.ptr
+llvm.call @g_signal_connect_data(%window, %destroy_str, %callback, %user_data_zero, %destroy_notify_zero, %c0)
 
 // Callback function
 llvm.func @on_destroy(%widget: !llvm.ptr, %data: !llvm.ptr) {
@@ -221,8 +223,8 @@ let main _ =
     gtk_window_set_title(window, "Fidelity GTK")
     gtk_window_set_default_size(window, 400, 300)
 
-    // Connect destroy signal
-    g_signal_connect_data(window, "destroy", NativePtr.toVoidPtr onDestroy, NativePtr.nullPtr, NativePtr.nullPtr, 0)
+    // Connect destroy signal (user_data=0 means no data, destroy_notify=0 means no cleanup)
+    g_signal_connect_data(window, "destroy", NativePtr.toVoidPtr onDestroy, NativePtr.zero, NativePtr.zero, 0)
 
     gtk_widget_show(window)
 

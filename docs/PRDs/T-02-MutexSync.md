@@ -125,8 +125,9 @@ let witnessMutexCreate z =
     // Allocate mutex storage
     emit $"  %%{mutexSSA} = llvm.alloca 40 x i8"
 
-    // Initialize
-    emit $"  llvm.call @pthread_mutex_init(%%{mutexSSA}, ptr null)"
+    // Initialize (attr=0 means default attributes)
+    emit "  %attr_zero = llvm.mlir.zero : !llvm.ptr"
+    emit $"  llvm.call @pthread_mutex_init(%%{mutexSSA}, %%attr_zero)"
 
     TRValue { SSA = mutexSSA; Type = TMutex }
 ```

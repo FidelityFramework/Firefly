@@ -140,7 +140,7 @@ This document catalogs every major F# language feature against FNCS (F# Native C
 | List construction `[1; 2; 3]` | ✅ | |
 | Cons operator `::` | ✅ | |
 | List pattern matching | ✅ | |
-| `List.empty` | ✅ | Primitive - null pointer |
+| `List.empty` | ✅ | Primitive - flat closure (zero captures) |
 | `List.head`, `List.tail` | ✅ | Primitives |
 | `List.isEmpty` | ✅ | Primitive |
 | `List.map`, `List.filter` | ✅ | Decompose to primitives |

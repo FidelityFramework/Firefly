@@ -56,17 +56,17 @@ let private literalExpansionCost (lit: NativeLiteral) : int =
 ///     - N SSAs: insertvalue for each capture at [1..N]
 ///   Heap allocation (5):
 ///     - 5 SSAs: posPtrSSA, posSSA, heapBaseSSA, resultPtrSSA, newPosSSA
-///   Size computation (4):
-///     - 4 SSAs: nullPtrSSA, gepSSA, sizeSSA, oneSSA
+///   Size computation (3):
+///     - 3 SSAs: gepSSA, sizeSSA, oneSSA (size computed at compile time, no null GEP trick)
 ///   Uniform pair construction (3):
 ///     - 3 SSAs: pairUndefSSA, pairWithCodeSSA, closureResultSSA
-///   Total: N + 15 SSAs
+///   Total: N + 14 SSAs
 let private computeLambdaSSACost (captures: CaptureInfo list) : int =
     let n = List.length captures
     if n = 0 then
         0  // Simple function - no closure struct needed
     else
-        n + 15  // flat struct (n+3) + heap (5) + size (4) + pair (3)
+        n + 14  // flat struct (n+3) + heap (5) + size (3) + pair (3)
 
 /// Minimal NativeType to MLIRType mapping for capture slots
 /// This is a subset of TypeMapping.mapNativeType, inlined here to avoid
@@ -193,16 +193,15 @@ let private buildClosureLayout
     let heapResultPtrSSA = ssas.[n + 6]
     let heapNewPosSSA = ssas.[n + 7]
 
-    // Size computation (N+8 to N+11)
-    let sizeNullPtrSSA = ssas.[n + 8]
-    let sizeGepSSA = ssas.[n + 9]
-    let sizeSSA = ssas.[n + 10]
-    let sizeOneSSA = ssas.[n + 11]
+    // Size computation (N+8 to N+10) - no null GEP trick, size computed at compile time
+    let sizeGepSSA = ssas.[n + 8]
+    let sizeSSA = ssas.[n + 9]
+    let sizeOneSSA = ssas.[n + 10]
 
-    // Uniform pair construction (N+12 to N+14)
-    let pairUndefSSA = ssas.[n + 12]
-    let pairWithCodeSSA = ssas.[n + 13]
-    let closureResultSSA = ssas.[n + 14]
+    // Uniform pair construction (N+11 to N+13)
+    let pairUndefSSA = ssas.[n + 11]
+    let pairWithCodeSSA = ssas.[n + 12]
+    let closureResultSSA = ssas.[n + 13]
 
     // Build capture slots (structural info only - no SSAs for extraction)
     // Extraction SSAs are derived at emission time from SlotIndex
@@ -258,7 +257,6 @@ let private buildClosureLayout
         HeapBaseSSA = heapBaseSSA
         HeapResultPtrSSA = heapResultPtrSSA
         HeapNewPosSSA = heapNewPosSSA
-        SizeNullPtrSSA = sizeNullPtrSSA
         SizeGepSSA = sizeGepSSA
         SizeSSA = sizeSSA
         SizeOneSSA = sizeOneSSA
@@ -280,15 +278,15 @@ let private buildClosureLayout
 ///   ssas[1]           = tag constant
 ///   ssas[2]           = insertvalue tag at [0]
 ///   ssas[3]           = insertvalue payload at [1]
-///   ssas[4..7]        = size computation (nullPtr, const1, gep, ptrtoint)
-///   ssas[8..12]       = arena allocation (posPtrSSA, posSSA, baseSSA, resultPtrSSA, newPosSSA)
+///   ssas[4..6]        = size computation (const1, gep, size from compile-time)
+///   ssas[7..11]       = arena allocation (posPtrSSA, posSSA, baseSSA, resultPtrSSA, newPosSSA)
 ///
-/// SSA layout for nullary DU (12 SSAs total):
+/// SSA layout for nullary DU (11 SSAs total):
 ///   ssas[0]           = undef case struct
 ///   ssas[1]           = tag constant
 ///   ssas[2]           = insertvalue tag at [0]
-///   ssas[3..6]        = size computation
-///   ssas[7..11]       = arena allocation
+///   ssas[3..5]        = size computation
+///   ssas[6..10]       = arena allocation
 let private buildDULayout
     (arch: Architecture)
     (graph: SemanticGraph)
@@ -312,14 +310,13 @@ let private buildDULayout
         else
             None, 3
 
-    // Size computation (4 SSAs)
-    let sizeNullPtrSSA = ssas.[sizeOffset]
-    let sizeOneSSA = ssas.[sizeOffset + 1]
-    let sizeGepSSA = ssas.[sizeOffset + 2]
-    let sizeSSA = ssas.[sizeOffset + 3]
+    // Size computation (3 SSAs - no null GEP trick, size computed at compile time)
+    let sizeOneSSA = ssas.[sizeOffset]
+    let sizeGepSSA = ssas.[sizeOffset + 1]
+    let sizeSSA = ssas.[sizeOffset + 2]
 
     // Arena allocation (5 SSAs)
-    let arenaOffset = sizeOffset + 4
+    let arenaOffset = sizeOffset + 3
     let heapPosPtrSSA = ssas.[arenaOffset]
     let heapPosSSA = ssas.[arenaOffset + 1]
     let heapBaseSSA = ssas.[arenaOffset + 2]
@@ -347,7 +344,6 @@ let private buildDULayout
         TagConstSSA = tagConstSSA
         WithTagSSA = withTagSSA
         WithPayloadSSA = withPayloadSSA
-        SizeNullPtrSSA = sizeNullPtrSSA
         SizeOneSSA = sizeOneSSA
         SizeGepSSA = sizeGepSSA
         SizeSSA = sizeSSA
@@ -490,8 +486,8 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.Seq, _ -> 15             // default for other Seq ops
                 
                 // PRD-13a: List operations
-                | IntrinsicModule.List, "empty" -> 1           // null pointer
-                | IntrinsicModule.List, "isEmpty" -> 2         // null + icmp
+                | IntrinsicModule.List, "empty" -> 1           // flat closure (Undef)
+                | IntrinsicModule.List, "isEmpty" -> 2         // Baker decomposes to structural check
                 | IntrinsicModule.List, "head" -> 2            // GEP + load
                 | IntrinsicModule.List, "tail" -> 2            // GEP + load
                 | IntrinsicModule.List, "cons" -> 4            // const + alloca + 2 stores
@@ -504,8 +500,8 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.List, _ -> 15                // default for other List ops
                 
                 // PRD-13a: Map operations
-                | IntrinsicModule.Map, "empty" -> 1            // null pointer
-                | IntrinsicModule.Map, "isEmpty" -> 2          // null + icmp
+                | IntrinsicModule.Map, "empty" -> 1            // flat closure (Undef)
+                | IntrinsicModule.Map, "isEmpty" -> 2          // Baker decomposes to structural check
                 | IntrinsicModule.Map, "tryFind" -> 20         // tree traversal
                 | IntrinsicModule.Map, "find" -> 18            // tree traversal (may fail)
                 | IntrinsicModule.Map, "add" -> 25             // tree traversal + rebalance
@@ -519,8 +515,8 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.Map, _ -> 20                 // default for other Map ops
                 
                 // PRD-13a: Set operations
-                | IntrinsicModule.Set, "empty" -> 1            // null pointer
-                | IntrinsicModule.Set, "isEmpty" -> 2          // null + icmp
+                | IntrinsicModule.Set, "empty" -> 1            // flat closure (Undef)
+                | IntrinsicModule.Set, "isEmpty" -> 2          // Baker decomposes to structural check
                 | IntrinsicModule.Set, "contains" -> 15        // tree traversal
                 | IntrinsicModule.Set, "add" -> 20             // tree traversal + rebalance
                 | IntrinsicModule.Set, "remove" -> 20          // tree traversal + rebalance
@@ -629,16 +625,16 @@ let private needsDUArenaAllocation (duType: NativeType) : bool =
 ///
 /// For heterogeneous DUs (Result): arena allocation (flat closure model)
 /// - Struct construction: 3-4 SSAs (undef + tagConst + withTag [+ withPayload])
-/// - Size computation: 4 SSAs (nullPtr + const1 + gep + ptrtoint)
+/// - Size computation: 1 SSA (compile-time size from layout type)
 /// - Arena allocation: 5 SSAs (posPtrSSA + posSSA + baseSSA + resultPtrSSA + newPosSSA)
-/// - Total: 12-13 SSAs
+/// - Total: 9-10 SSAs
 let private computeDUConstructSSACost (arch: Architecture) (graph: SemanticGraph) (duType: NativeType) (payloadOpt: NodeId option) : int =
     if needsDUArenaAllocation duType then
         // Arena allocation path (flat closure model)
-        // Struct: 3-4, Size: 4, Arena: 5 = 12-13 total
+        // Struct: 3-4, Size: 1, Arena: 5 = 9-10 total
         match payloadOpt with
-        | None -> 12   // Nullary: 3 struct + 4 size + 5 arena
-        | Some _ -> 13 // With payload: 4 struct + 4 size + 5 arena
+        | None -> 9    // Nullary: 3 struct + 1 size + 5 arena
+        | Some _ -> 10 // With payload: 4 struct + 1 size + 5 arena
     else
         // Inline struct path (existing behavior for Option)
         match payloadOpt with
@@ -759,7 +755,7 @@ let private nodeExpansionCost (arch: Architecture) (graph: SemanticGraph) (node:
     // These appear in entry point elaboration and other structural expansions
     | SemanticKind.Intrinsic info ->
         match info.Module, info.Operation with
-        | IntrinsicModule.Sys, "emptyStringArray" -> 5  // nullPtr + const0 + undef + insertvalue*2
+        | IntrinsicModule.Sys, "emptyStringArray" -> 5  // zeroPtr + const0 + undef + insertvalue*2
         | IntrinsicModule.Sys, "exit" -> 16             // syscall with full register setup
         | _ -> 1  // Default for standalone intrinsics
     | _ -> 1

@@ -48,14 +48,14 @@ Following FNCS principles:
 F# lists are immutable singly-linked lists with structural sharing.
 
 ```
-// Cons cell layout
-ListCell<T> = {
-    head: T
-    tail: ptr<ListCell<T>>  // null = end of list
-}
+// List as flat closure
+// Empty: { code_ptr }
+// Cons:  { code_ptr, head: T, tail: List<T> }
 
-// List is a pointer to first cell (or null for empty)
-List<T> = ptr<ListCell<T>>
+List<T> = FlatClosure<T>
+  where FlatClosure has:
+    - code_ptr: function pointer for list operations
+    - captures: 0 for empty, 2 for cons (head + tail)
 ```
 
 **Note**: Unlike .NET's two-pointer FSharpList (for IEnumerable), native lists are single-pointer cons cells. This is the classic ML/Lisp representation.
@@ -65,17 +65,14 @@ List<T> = ptr<ListCell<T>>
 Maps are immutable balanced binary search trees (AVL or Red-Black).
 
 ```
-// Map node layout
-MapNode<K, V> = {
-    key: K
-    value: V
-    left: ptr<MapNode<K, V>>   // null = no left child
-    right: ptr<MapNode<K, V>>  // null = no right child
-    height: i32                 // For AVL balancing
-}
+// Map as flat closure (AVL tree implementation via Baker decomposition)
+// Empty: { code_ptr }
+// Node:  { code_ptr, key: K, value: V, left: Map<K,V>, right: Map<K,V>, height: i32 }
 
-// Map is a pointer to root (or null for empty)
-Map<K, V> = ptr<MapNode<K, V>>
+Map<K, V> = FlatClosure<K, V>
+  where FlatClosure has:
+    - code_ptr: function pointer for map operations
+    - captures: 0 for empty, 5 for node (key, value, left, right, height)
 ```
 
 **Key Constraint**: Keys must support comparison (`IComparable` in BCL terms). In FNCS, this is expressed via SRTP: `'K when 'K : comparison`.
@@ -85,16 +82,14 @@ Map<K, V> = ptr<MapNode<K, V>>
 Sets are immutable balanced binary search trees (same structure as Map without values).
 
 ```
-// Set node layout
-SetNode<T> = {
-    value: T
-    left: ptr<SetNode<T>>
-    right: ptr<SetNode<T>>
-    height: i32
-}
+// Set as flat closure (AVL tree implementation via Baker decomposition)
+// Empty: { code_ptr }
+// Node:  { code_ptr, value: T, left: Set<T>, right: Set<T>, height: i32 }
 
-// Set is a pointer to root (or null for empty)
-Set<T> = ptr<SetNode<T>>
+Set<T> = FlatClosure<T>
+  where FlatClosure has:
+    - code_ptr: function pointer for set operations
+    - captures: 0 for empty, 4 for node (value, left, right, height)
 ```
 
 ### 2.4 NTUKind Extensions
@@ -324,7 +319,7 @@ llvm.func @range_stepped_to_array(%start: i32, %step: i32, %finish: i32) -> !arr
 
 | Intrinsic | Signature | Purpose |
 |-----------|-----------|---------|
-| `List.empty` | `List<'T>` | Empty list (null pointer) |
+| `List.empty` | `List<'T>` | Empty list (flat closure with zero captures) |
 | `List.isEmpty` | `List<'T> -> bool` | Check if list is empty |
 | `List.head` | `List<'T> -> 'T` | Get first element (fails on empty) |
 | `List.tail` | `List<'T> -> List<'T>` | Get rest of list (fails on empty) |
@@ -349,7 +344,7 @@ llvm.func @range_stepped_to_array(%start: i32, %step: i32, %finish: i32) -> !arr
 
 | Intrinsic | Signature | Purpose |
 |-----------|-----------|---------|
-| `Map.empty` | `Map<'K, 'V>` | Empty map (null pointer) |
+| `Map.empty` | `Map<'K, 'V>` | Empty map (flat closure with zero captures) |
 | `Map.isEmpty` | `Map<'K, 'V> -> bool` | Check if map is empty |
 | `Map.add` | `'K -> 'V -> Map<'K, 'V> -> Map<'K, 'V>` | Add/replace key-value |
 | `Map.remove` | `'K -> Map<'K, 'V> -> Map<'K, 'V>` | Remove key |
@@ -369,7 +364,7 @@ llvm.func @range_stepped_to_array(%start: i32, %step: i32, %finish: i32) -> !arr
 
 | Intrinsic | Signature | Purpose |
 |-----------|-----------|---------|
-| `Set.empty` | `Set<'T>` | Empty set (null pointer) |
+| `Set.empty` | `Set<'T>` | Empty set (flat closure with zero captures) |
 | `Set.isEmpty` | `Set<'T> -> bool` | Check if set is empty |
 | `Set.add` | `'T -> Set<'T> -> Set<'T>` | Add element |
 | `Set.remove` | `'T -> Set<'T> -> Set<'T>` | Remove element |
@@ -587,9 +582,8 @@ llvm.store %existing_list, %tail_ptr : !llvm.ptr
 
 **List.head**:
 ```mlir
-// Check for null (empty list) - debug builds only
-// Extract head from cons cell
-%head_ptr = llvm.getelementptr %list[0, 0] : !llvm.ptr
+// Extract head from cons closure (capture index 0 after code_ptr)
+%head = llvm.extractvalue %list[1] : !llvm.struct<(ptr, T, ptr)>
 %head = llvm.load %head_ptr : !element_type
 ```
 
@@ -603,8 +597,9 @@ llvm.func @map_tryFind(%map: !llvm.ptr, %key: !key_type) -> !option_value_type {
     llvm.br ^loop
 
 ^loop:
-    %is_null = llvm.icmp eq %current, %null : !llvm.ptr
-    llvm.cond_br %is_null, ^not_found, ^check
+    // Check if empty via Baker-decomposed isEmpty operation
+    %is_empty = func.call @list_isEmpty(%current) : (!llvm.struct) -> i1
+    llvm.cond_br %is_empty, ^not_found, ^check
 
 ^check:
     %node_key_ptr = llvm.getelementptr %current[0, 0] : !llvm.ptr
@@ -682,11 +677,12 @@ let zs = List.tail xs   // No allocation! Just pointer to second cell
 ```
 
 ```
-xs: [1] -> [2] -> [3] -> null
-     ^
-ys: [0] -+
+xs: Cons(1, Cons(2, Cons(3, Empty)))
+         ^
+ys: Cons(0, xs)  // Structural sharing
 
-zs:      [2] -> [3] -> null  (same as xs.tail)
+zs: Cons(2, Cons(3, Empty))  // Same as xs.tail
+    (All are flat closures with appropriate captures)
 ```
 
 ## 7. Files to Modify
@@ -913,8 +909,8 @@ These cannot decompose further - they ARE the primitives:
 | Module | Primitives | MLIR Emission |
 |--------|-----------|---------------|
 | **List** | `empty`, `cons`, `head`, `tail`, `isEmpty` | Direct struct ops |
-| **Map** | `empty`, `isEmpty` | Null check |
-| **Set** | `empty`, `isEmpty` | Null check |
+| **Map** | `empty`, `isEmpty` | Flat closure check |
+| **Set** | `empty`, `isEmpty` | Flat closure check |
 | **Option** | `None`, `Some`, `isSome`, `isNone` | Tag check |
 
 #### 13.2.2 Decomposable Operations (FNCS Provides Functional Structure)
@@ -948,10 +944,11 @@ Create Alex witnesses for fundamental operations:
 
 **File: `Alex/Witnesses/ListWitness.fs`**
 ```fsharp
-/// Witness List.empty - returns null pointer
+/// Witness List.empty - returns flat closure with zero captures
 let witnessListEmpty (z: PSGZipper) (elemTy: MLIRType) : MLIROp list * Val =
-    let result = z.FreshSSA TPtr
-    [ LLVMOp.NullPtr result ], { SSA = result; Type = TPtr }
+    let closureType = TStruct [TPtr]  // { code_ptr }
+    let result = z.FreshSSA closureType
+    [ LLVMOp.Undef (result, closureType) ], { SSA = result; Type = closureType }
 
 /// Witness List.cons - allocate cons cell, store head and tail
 let witnessListCons (z: PSGZipper) (headVal: Val) (tailVal: Val) : MLIROp list * Val =
@@ -966,8 +963,10 @@ let witnessListHead (z: PSGZipper) (listVal: Val) (elemTy: MLIRType) : MLIROp li
 let witnessListTail (z: PSGZipper) (listVal: Val) : MLIROp list * Val =
     ...
 
-/// Witness List.isEmpty - null check
+/// Witness List.isEmpty - Baker decomposes to structure check
 let witnessListIsEmpty (z: PSGZipper) (listVal: Val) : MLIROp list * Val =
+    // Baker decomposes isEmpty to appropriate structural check
+    // Witness the decomposed structure that Baker provides
     ...
 ```
 

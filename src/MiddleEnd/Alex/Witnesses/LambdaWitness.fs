@@ -28,9 +28,11 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
+open Alex.Dialects.Core.Serialize
 open Alex.Traversal.PSGZipper
 open Alex.Traversal.TransferTypes
 open Alex.CodeGeneration.TypeMapping
+open Alex.CodeGeneration.TypeSizing
 open PSGElaboration.Coeffects
 open PSGElaboration.SSAAssignment
 
@@ -124,13 +126,10 @@ let private buildClosureConstruction
         |> List.concat
 
     // 3. Allocate in Global Arena (avoiding stack lifetime issues)
-    // Calculate size using GEP null trick - all SSAs from ClosureLayout
-    let nullOp = MLIROp.LLVMOp (NullPtr layout.SizeNullPtrSSA)
-    // Generate constant 1 for GEP index
-    let oneOp = MLIROp.ArithOp (ArithOp.ConstI (layout.SizeOneSSA, 1L, MLIRTypes.i32))
-    // GEP null[1] gives pointer to address == sizeof(type)
-    let sizeGepOp = MLIROp.LLVMOp (GEP (layout.SizeGepSSA, layout.SizeNullPtrSSA, [(layout.SizeOneSSA, MLIRTypes.i32)], layout.ClosureStructType))
-    let ptrToIntOp = MLIROp.LLVMOp (PtrToInt (layout.SizeSSA, layout.SizeGepSSA, MLIRTypes.i64))
+    // Compute size from layout.ClosureStructType (already determined by FNCS/PSGElaboration)
+    let typeString = Serialize.typeToString layout.ClosureStructType
+    let sizeBytes = TypeSizing.computeSize typeString
+    let sizeOp = MLIROp.ArithOp (ArithOp.ConstI (layout.SizeSSA, sizeBytes, MLIRTypes.i64))
 
     // Allocate using ClosureLayout SSAs
     let allocOps, envPtrSSA = allocateInClosureArena layout
@@ -149,7 +148,7 @@ let private buildClosureConstruction
     ]
 
     [codeAddrOp; flatUndefOp; flatWithCodeOp] @ flatOps @
-    [nullOp; oneOp; sizeGepOp; ptrToIntOp] @ allocOps @ [storeOp] @ buildPairOps
+    [sizeOp] @ allocOps @ [storeOp] @ buildPairOps
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CAPTURE EXTRACTION (Inside Closure Function)

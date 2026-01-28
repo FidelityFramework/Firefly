@@ -9,8 +9,8 @@
 /// - All allocations from arena (or global arena pre-PRD-20)
 ///
 /// PRIMITIVE OPERATIONS (Alex witnesses directly):
-/// - empty: returns null pointer
-/// - isEmpty: null check
+/// - empty: flat closure with zero captures { code_ptr }
+/// - isEmpty: Baker decomposes to structural check
 /// - head: GEP to field 0, load
 /// - tail: GEP to field 1, load
 /// - cons: arena alloc + store head + store tail
@@ -56,34 +56,30 @@ let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA li
 // PRIMITIVE WITNESSES
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Witness List.empty<'T> - returns null pointer
-/// SSA cost: 1
+/// Witness List.empty<'T> - returns flat closure with zero captures
+/// SSA cost: 1 (Undef)
 let witnessEmpty
     (nodeId: NodeId)
     (ssa: SSAAssign.SSAAssignment)
     : MLIROp list * TransferResult =
-    
-    let resultSSA = requireSSA nodeId ssa
-    let op = MLIROp.LLVMOp (LLVMOp.NullPtr resultSSA)
-    [op], TRValue { SSA = resultSSA; Type = TPtr }
 
-/// Witness List.isEmpty - null pointer check
-/// SSA cost: 2 (null constant + icmp)
+    let resultSSA = requireSSA nodeId ssa
+    // Flat closure: { code_ptr }
+    let closureType = TStruct [TPtr]
+    let op = MLIROp.LLVMOp (LLVMOp.Undef (resultSSA, closureType))
+    [op], TRValue { SSA = resultSSA; Type = closureType }
+
+/// Witness List.isEmpty - Baker decomposes to structural check
+/// SSA cost: Depends on Baker's decomposition
 let witnessIsEmpty
     (nodeId: NodeId)
     (ssa: SSAAssign.SSAAssignment)
     (listVal: Val)
     : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let nullSSA = ssas.[0]
-    let resultSSA = ssas.[1]
-    
-    let ops = [
-        MLIROp.LLVMOp (LLVMOp.NullPtr nullSSA)
-        MLIROp.LLVMOp (LLVMOp.ICmp (resultSSA, ICmpPred.Eq, listVal.SSA, nullSSA))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = MLIRTypes.i1 }
+
+    // isEmpty is decomposed by Baker into structural checks
+    // Witness what Baker produces, not the high-level operation
+    [], TRError "List.isEmpty requires Baker decomposition to structural check"
 
 /// Witness List.head - extract first element (assumes non-empty)
 /// SSA cost: 2 (GEP + load)

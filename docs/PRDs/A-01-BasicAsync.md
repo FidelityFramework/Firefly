@@ -190,7 +190,10 @@ When suspension points exist (A-02), the structure becomes:
 llvm.func @async_body(%frame: !llvm.ptr) -> !llvm.ptr
     attributes {presplitcoroutine} {
 entry:
-    %id = llvm.call @llvm.coro.id(i32 0, ptr null, ptr null, ptr null)
+    %zero1 = llvm.mlir.zero : !llvm.ptr
+    %zero2 = llvm.mlir.zero : !llvm.ptr
+    %zero3 = llvm.mlir.zero : !llvm.ptr
+    %id = llvm.call @llvm.coro.id(i32 0, ptr %zero1, ptr %zero2, ptr %zero3)
     %need_alloc = llvm.call @llvm.coro.alloc(token %id)
     llvm.cond_br %need_alloc, ^alloc, ^begin
 

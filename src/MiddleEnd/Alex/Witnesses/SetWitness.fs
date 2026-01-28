@@ -9,8 +9,8 @@
 /// - Structural sharing: subtrees reused on insert/remove
 ///
 /// PRIMITIVE OPERATIONS (Alex witnesses directly):
-/// - empty: returns null pointer
-/// - isEmpty: null check
+/// - empty: flat closure with zero captures { code_ptr }
+/// - isEmpty: Baker decomposes to structural check
 ///
 /// DECOMPOSABLE OPERATIONS (FNCS saturation):
 /// - add, remove, contains - tree traversal with comparison
@@ -55,34 +55,30 @@ let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA li
 // PRIMITIVE WITNESSES
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Witness Set.empty<'T> - returns null pointer
-/// SSA cost: 1
+/// Witness Set.empty<'T> - returns flat closure with zero captures
+/// SSA cost: 1 (Undef)
 let witnessEmpty
     (nodeId: NodeId)
     (ssa: SSAAssign.SSAAssignment)
     : MLIROp list * TransferResult =
-    
-    let resultSSA = requireSSA nodeId ssa
-    let op = MLIROp.LLVMOp (LLVMOp.NullPtr resultSSA)
-    [op], TRValue { SSA = resultSSA; Type = TPtr }
 
-/// Witness Set.isEmpty - null pointer check
-/// SSA cost: 2 (null constant + icmp)
+    let resultSSA = requireSSA nodeId ssa
+    // Flat closure: { code_ptr }
+    let closureType = TStruct [TPtr]
+    let op = MLIROp.LLVMOp (LLVMOp.Undef (resultSSA, closureType))
+    [op], TRValue { SSA = resultSSA; Type = closureType }
+
+/// Witness Set.isEmpty - Baker decomposes to structural check
+/// SSA cost: Depends on Baker's decomposition
 let witnessIsEmpty
     (nodeId: NodeId)
     (ssa: SSAAssign.SSAAssignment)
     (setVal: Val)
     : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let nullSSA = ssas.[0]
-    let resultSSA = ssas.[1]
-    
-    let ops = [
-        MLIROp.LLVMOp (LLVMOp.NullPtr nullSSA)
-        MLIROp.LLVMOp (LLVMOp.ICmp (resultSSA, ICmpPred.Eq, setVal.SSA, nullSSA))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = MLIRTypes.i1 }
+
+    // isEmpty is decomposed by Baker into structural checks
+    // Witness what Baker produces, not the high-level operation
+    [], TRError "Set.isEmpty requires Baker decomposition to structural check"
 
 /// Witness Set.contains - check if element exists
 /// Requires tree traversal with comparison

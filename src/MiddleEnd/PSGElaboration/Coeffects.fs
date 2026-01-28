@@ -97,8 +97,8 @@ type ClosureLayout = {
     HeapResultPtrSSA: SSA
     HeapNewPosSSA: SSA
 
-    /// SSAs for size computation (4 SSAs)
-    SizeNullPtrSSA: SSA
+    /// SSAs for size computation (3 SSAs - compile-time size, no null GEP trick)
+    /// Size is computed from ClosureStructType at compile time
     SizeGepSSA: SSA
     SizeSSA: SSA
     SizeOneSSA: SSA
@@ -187,15 +187,13 @@ type DULayout = {
     WithPayloadSSA: SSA option
 
     // ─────────────────────────────────────────────────────────────────────────
-    // SIZE COMPUTATION SSAs
+    // SIZE COMPUTATION SSAs (compile-time size, no null GEP trick)
     // ─────────────────────────────────────────────────────────────────────────
-    /// SSA for null pointer (GEP base for size computation)
-    SizeNullPtrSSA: SSA
-    /// SSA for constant 1 (GEP index)
+    /// SSA for constant 1 (if needed)
     SizeOneSSA: SSA
-    /// SSA for GEP null[1] result
+    /// SSA for GEP result (if needed)
     SizeGepSSA: SSA
-    /// SSA for ptrtoint (size in bytes)
+    /// SSA for size in bytes (computed from CaseStructType at compile time)
     SizeSSA: SSA
 
     // ─────────────────────────────────────────────────────────────────────────

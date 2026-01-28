@@ -107,7 +107,7 @@ let threadEntryWrapper (arg: nativeptr<byte>) : nativeptr<byte> =
     let result = handle.Closure.CodePtr(handle.Closure.EnvPtr)
     // Store result
     NativePtr.write handle.ResultSlot result
-    NativePtr.nullPtr
+    NativePtr.zero  // pthread requires ptr return (0 = no meaningful value)
 ```
 
 ### 4.3 Thread.create Witness
@@ -128,9 +128,10 @@ let witnessThreadCreate z closureSSA =
     emit $"  %%result_slot_ptr = llvm.getelementptr %%{handleSSA}[0, 1]"
     emit $"  llvm.store %%result_slot, %%result_slot_ptr"
 
-    // pthread_create
+    // pthread_create (attr=0 means default attributes)
     emit $"  %%os_handle_ptr = llvm.getelementptr %%{handleSSA}[0, 0]"
-    emit $"  llvm.call @pthread_create(%%os_handle_ptr, ptr null, @thread_entry, %%{handleSSA})"
+    emit $"  %%attr_zero = llvm.mlir.zero : !llvm.ptr"
+    emit $"  llvm.call @pthread_create(%%os_handle_ptr, %%attr_zero, @thread_entry, %%{handleSSA})"
 
     TRValue { SSA = handleSSA; Type = TThread resultType }
 ```
@@ -145,8 +146,9 @@ let witnessThreadJoin z handleSSA =
     emit $"  %%os_handle_ptr = llvm.getelementptr %%{handleSSA}[0, 0]"
     emit "  %os_handle = llvm.load %os_handle_ptr : i64"
 
-    // pthread_join
-    emit "  llvm.call @pthread_join(%os_handle, ptr null)"
+    // pthread_join (retval=0 means don't retrieve thread return value)
+    emit "  %retval_zero = llvm.mlir.zero : !llvm.ptr"
+    emit "  llvm.call @pthread_join(%os_handle, %retval_zero)"
 
     // Read result
     emit $"  %%result_slot_ptr = llvm.getelementptr %%{handleSSA}[0, 1]"
@@ -186,7 +188,9 @@ llvm.func @thread_entry(%arg: !llvm.ptr) -> !llvm.ptr {
     %result_slot = llvm.load %result_slot_ptr : !llvm.ptr
     llvm.store %result, %result_slot
 
-    llvm.return %null : !llvm.ptr
+    // pthread requires ptr return (0 = no meaningful value)
+    %ret_zero = llvm.mlir.zero : !llvm.ptr
+    llvm.return %ret_zero : !llvm.ptr
 }
 ```
 
@@ -205,9 +209,10 @@ llvm.store %myFunc_closure, %closure_slot
 %result_ptr = llvm.getelementptr %handle[0, 1]
 llvm.store %result_slot, %result_ptr
 
-// Create thread
+// Create thread (attr=0 means default attributes)
 %os_handle_ptr = llvm.getelementptr %handle[0, 0]
-llvm.call @pthread_create(%os_handle_ptr, %null, @thread_entry, %handle)
+%attr_zero = llvm.mlir.zero : !llvm.ptr
+llvm.call @pthread_create(%os_handle_ptr, %attr_zero, @thread_entry, %handle)
 ```
 
 ## 6. Validation

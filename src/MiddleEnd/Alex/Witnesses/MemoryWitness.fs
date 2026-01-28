@@ -17,9 +17,11 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
+open Alex.Dialects.Core.Serialize
 open Alex.Traversal.PSGZipper
 open Alex.Traversal.TransferTypes
 open Alex.CodeGeneration.TypeMapping
+open Alex.CodeGeneration.TypeSizing
 
 module SSAAssignment = PSGElaboration.SSAAssignment
 
@@ -819,12 +821,11 @@ let witnessDUConstruct
             | _ ->
                 failwithf "DULayout payload mismatch for case %s" caseName
 
-        // 2. Compute size using GEP null trick (all SSAs from layout)
+        // 2. Compute size from layout.CaseStructType (already determined by FNCS/PSGElaboration)
+        let typeString = Serialize.typeToString layout.CaseStructType
+        let sizeBytes = TypeSizing.computeSize typeString
         let sizeOps = [
-            MLIROp.LLVMOp (LLVMOp.NullPtr layout.SizeNullPtrSSA)
-            MLIROp.ArithOp (ArithOp.ConstI (layout.SizeOneSSA, 1L, MLIRTypes.i32))
-            MLIROp.LLVMOp (LLVMOp.GEP (layout.SizeGepSSA, layout.SizeNullPtrSSA, [(layout.SizeOneSSA, MLIRTypes.i32)], layout.CaseStructType))
-            MLIROp.LLVMOp (LLVMOp.PtrToInt (layout.SizeSSA, layout.SizeGepSSA, MLIRTypes.i64))
+            MLIROp.ArithOp (ArithOp.ConstI (layout.SizeSSA, sizeBytes, MLIRTypes.i64))
         ]
 
         // 3. Allocate from closure_heap arena (bump allocation)
