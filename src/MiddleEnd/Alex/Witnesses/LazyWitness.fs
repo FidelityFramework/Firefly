@@ -11,8 +11,8 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
-open Alex.Traversal.PSGZipper
 open Alex.XParsec.PSGCombinators
+open Alex.Patterns.ElisionPatterns
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
@@ -20,27 +20,20 @@ open Alex.XParsec.PSGCombinators
 
 /// Witness Lazy operations - category-selective (handles only Lazy nodes)
 let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match node.Kind with
-    // LazyExpr - construct Lazy<'T> value
-    | "LazyExpr" ->
-        match tryMatch pLazyExpr ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-        | Some ((bodyId, captures), _) ->
-            // TODO: Call Pattern to build lazy struct
-            WitnessOutput.error "LazyExpr matched via XParsec - Pattern integration next"
-        | None ->
-            WitnessOutput.error "LazyExpr XParsec pattern match failed"
-
-    // LazyForce - force evaluation of Lazy<'T>
-    | "LazyForce" ->
+    // Try LazyExpr pattern
+    match tryMatch pLazyExpr ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    | Some ((bodyId, captures), _) ->
+        // TODO: Integrate with pLazyStruct pattern
+        WitnessOutput.error "LazyExpr matched - Pattern integration needed"
+    | None ->
+        // Try LazyForce pattern
         match tryMatch pLazyForce ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
         | Some (lazyNodeId, _) ->
-            // TODO: Call Pattern to force lazy
-            WitnessOutput.error "LazyForce matched via XParsec - Pattern integration next"
+            // TODO: Integrate with pLazyForce pattern
+            WitnessOutput.error "LazyForce matched - Pattern integration needed"
         | None ->
-            WitnessOutput.error "LazyForce XParsec pattern match failed"
-
-    // Skip all other nodes (not Lazy-related)
-    | _ -> WitnessOutput.skip
+            // Not a lazy node - skip
+            WitnessOutput.skip
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NANOPASS REGISTRATION (Public)

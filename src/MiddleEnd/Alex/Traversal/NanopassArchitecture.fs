@@ -39,11 +39,12 @@ let rec private visitAllNodes
     : unit =
 
     // Check if already visited
-    if MLIRAccumulator.isVisited (NodeId.value currentNode.Id) accumulator then
+    let nodeIdVal = match currentNode.Id with | FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types.NodeId id -> id
+    if MLIRAccumulator.isVisited nodeIdVal accumulator then
         ()
     else
         // Mark as visited
-        MLIRAccumulator.markVisited (NodeId.value currentNode.Id) accumulator
+        MLIRAccumulator.markVisited nodeIdVal accumulator
 
         // Focus zipper on this node
         match PSGZipper.focusOn currentNode.Id visitedCtx.Zipper with
@@ -55,14 +56,14 @@ let rec private visitAllNodes
             // Witness this node (may skip if not relevant to this nanopass)
             let output = witness focusedCtx currentNode
 
-            // Add operations to accumulator
-            MLIRAccumulator.addInlineOps output.InlineOps accumulator
+            // Add operations to accumulator (both inline and top-level go into TopLevelOps)
+            MLIRAccumulator.addTopLevelOps output.InlineOps accumulator
             MLIRAccumulator.addTopLevelOps output.TopLevelOps accumulator
 
             // Bind result if value
             match output.Result with
             | TRValue v ->
-                MLIRAccumulator.bindNode (NodeId.value currentNode.Id) v.SSA v.Type accumulator
+                MLIRAccumulator.bindNode nodeIdVal v.SSA v.Type accumulator
             | TRVoid -> ()
             | TRError msg ->
                 MLIRAccumulator.addError msg accumulator
@@ -108,16 +109,12 @@ let runNanopass
 // OVERLAY MERGE (Associative)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Merge/overlay two accumul ators from parallel nanopasses
+/// Merge/overlay two accumulators from parallel nanopasses
 /// MUST be associative: merge (merge a b) c = merge a (merge b c)
 let overlayAccumulators (acc1: MLIRAccumulator) (acc2: MLIRAccumulator) : MLIRAccumulator =
     let merged = MLIRAccumulator.empty()
 
-    // Merge inline ops (order may vary, but all are included)
-    MLIRAccumulator.addInlineOps acc1.InlineOps merged
-    MLIRAccumulator.addInlineOps acc2.InlineOps merged
-
-    // Merge top-level ops (functions are order-independent)
+    // Merge top-level ops (order may vary, but all are included)
     MLIRAccumulator.addTopLevelOps acc1.TopLevelOps merged
     MLIRAccumulator.addTopLevelOps acc2.TopLevelOps merged
 

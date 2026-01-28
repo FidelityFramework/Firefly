@@ -45,3 +45,11 @@ let pConstI (ssa: SSA) (value: int64) : PSGParser<MLIROp> =
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
         return MLIROp.ArithOp (ArithOp.ConstI (ssa, value, ty))
     }
+
+/// ConstF with XParsec state threading
+let pConstF (ssa: SSA) (value: float) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.ConstF (ssa, value, ty))
+    }

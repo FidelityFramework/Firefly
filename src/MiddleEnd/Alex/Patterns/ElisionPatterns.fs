@@ -650,6 +650,56 @@ let pResultIsError (resultSSA: SSA) (tagSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIR
     }
 
 // ═══════════════════════════════════════════════════════════
+// LITERAL PATTERNS
+// ═══════════════════════════════════════════════════════════
+
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+
+/// Build literal: Match literal from PSG and emit constant MLIR
+let pBuildLiteral (lit: NativeLiteral) (ssa: SSA) (arch: Architecture) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        match lit with
+        | NativeLiteral.Unit ->
+            let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUunit
+            let! op = pConstI ssa 0L
+            return ([op], TRValue { SSA = ssa; Type = ty })
+
+        | NativeLiteral.Bool b ->
+            let value = if b then 1L else 0L
+            let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUbool
+            let! op = pConstI ssa value
+            return ([op], TRValue { SSA = ssa; Type = ty })
+
+        | NativeLiteral.Int (n, kind) ->
+            let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
+            let! op = pConstI ssa n
+            return ([op], TRValue { SSA = ssa; Type = ty })
+
+        | NativeLiteral.UInt (n, kind) ->
+            let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
+            let! op = pConstI ssa (int64 n)
+            return ([op], TRValue { SSA = ssa; Type = ty })
+
+        | NativeLiteral.Char c ->
+            let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUchar
+            let! op = pConstI ssa (int64 c)
+            return ([op], TRValue { SSA = ssa; Type = ty })
+
+        | NativeLiteral.Float (f, kind) ->
+            let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
+            let! op = pConstF ssa f
+            return ([op], TRValue { SSA = ssa; Type = ty })
+
+        | NativeLiteral.String _ ->
+            // String literals need global string table + AddressOf operation
+            // This requires StringCollection coeffect and proper global emission
+            return! pfail "String literals need global string table implementation (FNCS elaboration required)"
+
+        | _ ->
+            return! pfail $"Unsupported literal: {lit}"
+    }
+
+// ═══════════════════════════════════════════════════════════
 // STRING PATTERNS
 // ═══════════════════════════════════════════════════════════
 
