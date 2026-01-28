@@ -34,9 +34,13 @@ let rec visitNode (ctx: WitnessContext) (nodeId: NodeId) (acc: MLIRAccumulator) 
     | false ->
         MLIRAccumulator.markVisited (NodeId.value nodeId) acc
 
-        match SemanticGraph.tryGetNode nodeId ctx.Graph with
-        | None -> WitnessOutput.error (sprintf "Node %d not found" (NodeId.value nodeId))
-        | Some node ->
+        // Focus zipper on this node for witnesses to navigate from
+        match PSGZipper.focusOn nodeId ctx.Zipper with
+        | None -> WitnessOutput.error (sprintf "Node %d not found in graph" (NodeId.value nodeId))
+        | Some zipper ->
+            let ctx = { ctx with Zipper = zipper }  // Shadow with focused zipper
+            let node = PSGZipper.focus zipper
+
             match node.Kind with
 
             // ═════════════════════════════════════════════════════════════════
