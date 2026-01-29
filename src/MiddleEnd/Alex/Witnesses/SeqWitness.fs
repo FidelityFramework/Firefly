@@ -57,8 +57,13 @@ let private witnessSeq (ctx: WitnessContext) (node: SemanticNode) : WitnessOutpu
 
             match MLIRAccumulator.recallNode bodyId ctx.Accumulator with
             | None -> WitnessOutput.error "SeqExpr: Body not yet witnessed"
-            | Some (codePtr, _) ->
-                match tryMatch (pBuildSeqStruct codePtr captureVals internalState ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            | Some (codePtr, codePtrTy) ->
+                // Get Seq<T> type from node, extract current type T from struct field [1]
+                let seqTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+                let currentTy = match seqTy with
+                                | TStruct (_::ct::_) -> ct  // {state: i32, current: T, ...}
+                                | _ -> TPtr  // fallback
+                match tryMatch (pBuildSeqStruct currentTy codePtrTy codePtr captureVals internalState ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "SeqExpr pattern emission failed"
 

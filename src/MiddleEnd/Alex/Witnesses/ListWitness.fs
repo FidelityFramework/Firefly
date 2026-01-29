@@ -26,7 +26,8 @@ let private witnessEmpty (ctx: WitnessContext) (node: SemanticNode) : WitnessOut
     | Some resultSSA ->
         let arch = ctx.Coeffects.Platform.TargetArch
         let codePtr = resultSSA
-        match tryMatch (pFlatClosure codePtr [] [resultSSA]) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+        let codePtrTy = TPtr
+        match tryMatch (pFlatClosure codePtr codePtrTy [] [resultSSA]) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
         | Some (ops, _) ->
             let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
             { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = mlirType } }
@@ -77,7 +78,8 @@ let private witnessCons (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
         else
             let arch = ctx.Coeffects.Platform.TargetArch
             let codePtr = ssas.[0]
-            match tryMatch (pFlatClosure codePtr childVals ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            let codePtrTy = TPtr
+            match tryMatch (pFlatClosure codePtr codePtrTy childVals ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
             | Some (ops, _) ->
                 let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
                 { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = mlirType } }

@@ -57,8 +57,10 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                             | None -> []
                         | None -> []
 
-                    match tryMatch (pDUCase tag payload ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = TPtr } }
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let duTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+                    match tryMatch (pDUCase tag payload ssas duTy) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = duTy } }
                     | None -> WitnessOutput.error "DUConstruct pattern emission failed"
 
             | None -> WitnessOutput.skip

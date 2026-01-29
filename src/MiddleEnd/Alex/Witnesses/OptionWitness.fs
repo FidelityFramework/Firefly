@@ -33,8 +33,9 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                 match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (valSSA, valType) ->
                     let value = { SSA = valSSA; Type = valType }
-                    match tryMatch (pOptionSome value ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = TStruct [TInt I8; valType] } }
+                    let optionTy = TStruct [TInt I8; valType]
+                    match tryMatch (pOptionSome value ssas optionTy) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = optionTy } }
                     | None -> WitnessOutput.error "Option.Some pattern emission failed"
                 | None -> WitnessOutput.error "Option.Some: Value not yet witnessed"
             | _ -> WitnessOutput.error "Option.Some: Invalid children or SSAs"
@@ -43,10 +44,10 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
             | None -> WitnessOutput.error "Option.None: No SSAs assigned"
             | Some ssas ->
-                match tryMatch (pOptionNone ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                let arch = ctx.Coeffects.Platform.TargetArch
+                let optionType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+                match tryMatch (pOptionNone ssas optionType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                 | Some (ops, _) ->
-                    let arch = ctx.Coeffects.Platform.TargetArch
-                    let optionType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
                     { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = optionType } }
                 | None -> WitnessOutput.error "Option.None pattern emission failed"
 
@@ -77,11 +78,11 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             | [childId], Some resultSSA ->
                 match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (optSSA, optType) ->
-                    match tryMatch (pOptionGet optSSA resultSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    let valueType = match optType with
+                                    | TStruct [_; vt] -> vt
+                                    | _ -> TPtr
+                    match tryMatch (pOptionGet optSSA resultSSA valueType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                     | Some (ops, _) ->
-                        let valueType = match optType with
-                                        | TStruct [_; vt] -> vt
-                                        | _ -> TPtr
                         { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = valueType } }
                     | None -> WitnessOutput.error "Option.get pattern emission failed"
                 | None -> WitnessOutput.error "Option.get: Option not yet witnessed"

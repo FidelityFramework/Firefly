@@ -5,9 +5,11 @@
 /// Overlays into cohesive MLIR graph
 module Alex.Traversal.ParallelNanopass
 
+open System.IO
+open System.Text.Json
 open IcedTasks
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
-open Alex.Dialects.Core.Types
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 
@@ -35,15 +37,14 @@ let runNanopassesParallel
     (coeffects: TransferCoeffects)
     : MLIRAccumulator list =
 
-    // Execute all nanopasses in parallel
-    // Results collected as they arrive (order doesn't matter - associative merge)
-    let parallelResults =
-        nanopasses
-        |> List.toArray
-        |> Array.Parallel.map (fun nanopass -> runNanopass nanopass graph coeffects)
-        |> Array.toList
-
-    parallelResults
+    // Fan out: Execute all nanopasses in parallel using IcedTasks coldTask
+    // ColdTask is unit -> Task<'T>, so we create them, then invoke all with Task.WhenAll
+    nanopasses
+    |> List.map (fun nanopass ->
+        coldTask { return runNanopass nanopass graph coeffects })
+    |> List.map (fun ct -> ct())  // Invoke all coldTasks to start them
+    |> fun tasks -> System.Threading.Tasks.Task.WhenAll(tasks).GetAwaiter().GetResult()
+    |> List.ofArray
 
 /// Run multiple nanopasses sequentially (for debugging/validation)
 let runNanopassesSequential
@@ -104,9 +105,6 @@ let defaultConfig = {
 // NANOPASS RESULT SERIALIZATION (for -k flag debugging)
 // ═══════════════════════════════════════════════════════════════════════════
 
-open System.IO
-open System.Text.Json
-
 /// Serialize a nanopass result to JSON for debugging
 let private serializeNanopassResult (intermediatesDir: string) (nanopass: Nanopass) (accumulator: MLIRAccumulator) : unit =
     let fileName = sprintf "07_%s_witness.json" (nanopass.Name.ToLower())
@@ -116,7 +114,7 @@ let private serializeNanopassResult (intermediatesDir: string) (nanopass: Nanopa
         NanopassName = nanopass.Name
         OperationCount = List.length accumulator.TopLevelOps
         ErrorCount = List.length accumulator.Errors
-        VisitedNodes = accumulator.Visited |> Set.toList |> List.map (fun (NodeId id) -> id)
+        VisitedNodes = accumulator.Visited |> Set.toList |> List.map (fun nodeId -> NodeId.value nodeId)
         Errors = accumulator.Errors
         Operations = accumulator.TopLevelOps |> List.map (fun op -> sprintf "%A" op)
     |}

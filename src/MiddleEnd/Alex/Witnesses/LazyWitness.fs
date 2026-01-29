@@ -38,8 +38,13 @@ let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
 
             match MLIRAccumulator.recallNode bodyId ctx.Accumulator with
             | None -> WitnessOutput.error "LazyExpr: Body not yet witnessed"
-            | Some (codePtr, _) ->
-                match tryMatch (pBuildLazyStruct codePtr captures ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            | Some (codePtr, codePtrTy) ->
+                // Get Lazy<T> type from node, extract value type T from struct field [1]
+                let lazyTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+                let valueTy = match lazyTy with
+                              | TStruct (_::vt::_) -> vt  // {computed: i1, value: T, ...}
+                              | _ -> TPtr  // fallback
+                match tryMatch (pBuildLazyStruct valueTy codePtrTy codePtr captures ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "LazyExpr pattern emission failed"
 
@@ -49,14 +54,19 @@ let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
         | Some (lazyNodeId, _) ->
             match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
             | None -> WitnessOutput.error "LazyForce: No SSAs assigned"
-            | Some ssas ->
+            | Some ssas when ssas.Length >= 4 ->
                 let arch = ctx.Coeffects.Platform.TargetArch
                 match MLIRAccumulator.recallNode lazyNodeId ctx.Accumulator with
                 | None -> WitnessOutput.error "LazyForce: Lazy value not yet witnessed"
-                | Some (lazySSA, _) ->
-                    match tryMatch (pBuildLazyForce lazySSA ssas.[3] ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                | Some (lazySSA, lazyTy) ->
+                    // LazyForce SSAs: [0]=code_ptr, [1]=const1, [2]=alloca, [3]=result
+                    let resultSSA = ssas.[3]
+                    let intermediateSsas = [ssas.[0]; ssas.[1]; ssas.[2]]
+                    let resultTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+                    match tryMatch (pBuildLazyForce lazySSA lazyTy resultSSA resultTy intermediateSsas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error "LazyForce pattern emission failed"
+            | Some ssas -> WitnessOutput.error $"LazyForce: Expected 4 SSAs, got {ssas.Length}"
 
         | None -> WitnessOutput.skip
 

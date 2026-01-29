@@ -84,7 +84,9 @@ let pRecordStruct (fields: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
         if ssas.Length <> fields.Length + 1 then
             return! pfail $"pRecordStruct: Expected {fields.Length + 1} SSAs, got {ssas.Length}"
 
-        let! undefOp = pUndef ssas.[0]
+        // Compute struct type from field types
+        let structTy = TStruct (fields |> List.map (fun f -> f.Type))
+        let! undefOp = pUndef ssas.[0] structTy
 
         let! insertOps =
             fields
@@ -92,7 +94,7 @@ let pRecordStruct (fields: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
                 parser {
                     let targetSSA = ssas.[i+1]
                     let sourceSSA = if i = 0 then ssas.[0] else ssas.[i]
-                    return! pInsertValue targetSSA sourceSSA field.SSA [i]
+                    return! pInsertValue targetSSA sourceSSA field.SSA [i] structTy
                 })
             |> sequence
 
@@ -104,17 +106,18 @@ let pTupleStruct (elements: Val list) (ssas: SSA list) : PSGParser<MLIROp list> 
     pRecordStruct elements ssas  // Same implementation, different semantic context
 
 /// DU case construction: tag field (index 0) + payload fields
-let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
+let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
     parser {
         if ssas.Length < 2 + payload.Length then
             return! pfail $"pDUCase: Expected at least {2 + payload.Length} SSAs, got {ssas.Length}"
 
         // Create undef struct
-        let! undefOp = pUndef ssas.[0]
+        let! undefOp = pUndef ssas.[0] ty
 
         // Insert tag at index 0
-        let! tagConstOp = pConstI ssas.[1] tag
-        let! insertTagOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0]
+        let tagTy = TInt I8  // DU tags are always i8
+        let! tagConstOp = pConstI ssas.[1] tag tagTy
+        let! insertTagOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0] ty
 
         // Insert payload fields starting at index 1
         let! payloadOps =
@@ -123,7 +126,7 @@ let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) : PSGParser<MLIROp
                 parser {
                     let targetSSA = ssas.[3 + i]
                     let sourceSSA = if i = 0 then ssas.[2] else ssas.[2 + i]
-                    return! pInsertValue targetSSA sourceSSA field.SSA [i + 1]
+                    return! pInsertValue targetSSA sourceSSA field.SSA [i + 1] ty
                 })
             |> sequence
 
@@ -135,16 +138,19 @@ let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) : PSGParser<MLIROp
 // ═══════════════════════════════════════════════════════════
 
 /// Flat closure struct: code_ptr field + capture fields
-let pFlatClosure (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
+let pFlatClosure (codePtr: SSA) (codePtrTy: MLIRType) (captures: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
         if ssas.Length < 2 + captures.Length then
             return! pfail $"pFlatClosure: Expected at least {2 + captures.Length} SSAs, got {ssas.Length}"
 
+        // Compute closure type: {code_ptr: ptr, capture0, capture1, ...}
+        let closureTy = TStruct (codePtrTy :: (captures |> List.map (fun cap -> cap.Type)))
+
         // Create undef struct
-        let! undefOp = pUndef ssas.[0]
+        let! undefOp = pUndef ssas.[0] closureTy
 
         // Insert code_ptr at index 0
-        let! insertCodeOp = pInsertValue ssas.[1] ssas.[0] codePtr [0]
+        let! insertCodeOp = pInsertValue ssas.[1] ssas.[0] codePtr [0] closureTy
 
         // Insert captures starting at index 1
         let! captureOps =
@@ -153,7 +159,7 @@ let pFlatClosure (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParse
                 parser {
                     let targetSSA = ssas.[2 + i]
                     let sourceSSA = if i = 0 then ssas.[1] else ssas.[1 + i]
-                    return! pInsertValue targetSSA sourceSSA cap.SSA [i + 1]
+                    return! pInsertValue targetSSA sourceSSA cap.SSA [i + 1] closureTy
                 })
             |> sequence
 
@@ -161,31 +167,30 @@ let pFlatClosure (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParse
     }
 
 /// Closure call: extract code_ptr, extract captures, call
-let pClosureCall (closureSSA: SSA) (captureCount: int) (args: Val list)
-                 (extractSSAs: SSA list) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pClosureCall (closureSSA: SSA) (closureTy: MLIRType) (captureTypes: MLIRType list) 
+                 (args: Val list) (extractSSAs: SSA list) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
+        let captureCount = captureTypes.Length
         if extractSSAs.Length <> captureCount + 1 then
             return! pfail $"pClosureCall: Expected {captureCount + 1} extract SSAs, got {extractSSAs.Length}"
 
-        // Extract code_ptr from index 0
+        // Extract code_ptr from index 0 (first field is always ptr type)
         let codePtrSSA = extractSSAs.[0]
-        let! extractCodeOp = pExtractValue codePtrSSA closureSSA [0]
+        let codePtrTy = match closureTy with TStruct (ty :: _) -> ty | _ -> TPtr
+        let! extractCodeOp = pExtractValue codePtrSSA closureSSA [0] codePtrTy
 
         // Extract captures from indices 1..captureCount
         let! extractCaptureOps =
-            [0 .. captureCount - 1]
-            |> List.map (fun i ->
+            captureTypes
+            |> List.mapi (fun i capTy ->
                 parser {
                     let capSSA = extractSSAs.[i + 1]
-                    return! pExtractValue capSSA closureSSA [i + 1]
+                    return! pExtractValue capSSA closureSSA [i + 1] capTy
                 })
             |> sequence
 
         // Call with captures prepended to args
-        // Note: Capture types come from ClosureLayout coeffect (PSGElaboration provides this)
-        // Gap: Need to thread ClosureLayout through pattern parameters to get actual capture types
-        // For now using placeholder types - witnesses should pass correct types from coeffects
-        let captureVals = extractSSAs.[1..] |> List.map (fun ssa -> { SSA = ssa; Type = TInt I64 })
+        let captureVals = List.zip (extractSSAs.[1..]) captureTypes |> List.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
         let allArgs = captureVals @ args
         let! callOp = pIndirectCall resultSSA codePtrSSA (allArgs |> List.map (fun v -> v.SSA))
 
@@ -197,20 +202,24 @@ let pClosureCall (closureSSA: SSA) (captureCount: int) (args: Val list)
 // ═══════════════════════════════════════════════════════════
 
 /// Lazy struct: {computed: i1, value: T, code_ptr, captures...}
-let pLazyStruct (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
+let pLazyStruct (valueTy: MLIRType) (codePtrTy: MLIRType) (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
         if ssas.Length < 4 + captures.Length then
             return! pfail $"pLazyStruct: Expected at least {4 + captures.Length} SSAs, got {ssas.Length}"
 
+        // Compute lazy type: {computed: i1, value: T, code_ptr: ptr, captures...}
+        let lazyTy = TStruct ([TInt I1; valueTy; codePtrTy] @ (captures |> List.map (fun cap -> cap.Type)))
+
         // Create undef struct
-        let! undefOp = pUndef ssas.[0]
+        let! undefOp = pUndef ssas.[0] lazyTy
 
         // Insert computed = false at index 0
-        let! falseConstOp = pConstI ssas.[1] 0L  // i1 false = 0
-        let! insertComputedOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0]
+        let computedTy = TInt I1
+        let! falseConstOp = pConstI ssas.[1] 0L computedTy
+        let! insertComputedOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0] lazyTy
 
         // Insert code_ptr at index 2
-        let! insertCodeOp = pInsertValue ssas.[3] ssas.[2] codePtr [2]
+        let! insertCodeOp = pInsertValue ssas.[3] ssas.[2] codePtr [2] lazyTy
 
         // Insert captures starting at index 3
         let! captureOps =
@@ -219,7 +228,7 @@ let pLazyStruct (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParser
                 parser {
                     let targetSSA = ssas.[4 + i]
                     let sourceSSA = ssas.[3 + i]
-                    return! pInsertValue targetSSA sourceSSA cap.SSA [i + 3]
+                    return! pInsertValue targetSSA sourceSSA cap.SSA [i + 3] lazyTy
                 })
             |> sequence
 
@@ -228,19 +237,18 @@ let pLazyStruct (codePtr: SSA) (captures: Val list) (ssas: SSA list) : PSGParser
 
 /// Build lazy struct: High-level pattern for witnesses
 /// Combines pLazyStruct with proper result construction
-let pBuildLazyStruct (codePtr: SSA) (captures: Val list) (ssas: SSA list) (arch: Architecture)
+let pBuildLazyStruct (valueTy: MLIRType) (codePtrTy: MLIRType) (codePtr: SSA) (captures: Val list) 
+                     (ssas: SSA list) (arch: Architecture)
                      : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Call low-level pattern to build struct
-        let! ops = pLazyStruct codePtr captures ssas
+        let! ops = pLazyStruct valueTy codePtrTy codePtr captures ssas
 
         // Final SSA is the last one (after all insertions)
         let finalSSA = ssas.[3 + captures.Length]
 
-        // Get the lazy type - it's a struct with {computed: i1, value: T, code_ptr, captures...}
-        let! state = getUserState
-        let lazyType = state.Current.Type
-        let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch lazyType
+        // Lazy type is {computed: i1, value: T, code_ptr, captures...}
+        let mlirType = TStruct ([TInt I1; valueTy; codePtrTy] @ (captures |> List.map (fun cap -> cap.Type)))
 
         return (ops, TRValue { SSA = finalSSA; Type = mlirType })
     }
@@ -259,7 +267,8 @@ let pBuildLazyStruct (codePtr: SSA) (captures: Val list) (ssas: SSA list) (arch:
 /// The thunk extracts captures internally using LazyLayout coeffect.
 ///
 /// Lazy struct: {computed: i1, value: T, code_ptr: ptr, capture0, capture1, ...}
-let pBuildLazyForce (lazySSA: SSA) (resultSSA: SSA) (ssas: SSA list) (arch: Architecture)
+let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy: MLIRType) 
+                    (ssas: SSA list) (arch: Architecture)
                     : PSGParser<MLIROp list * TransferResult> =
     parser {
         // SSAs: [0] = code_ptr, [1] = const 1, [2] = alloca'd ptr
@@ -270,24 +279,22 @@ let pBuildLazyForce (lazySSA: SSA) (resultSSA: SSA) (ssas: SSA list) (arch: Arch
         let constOneSSA = ssas.[1]
         let ptrSSA = ssas.[2]
 
-        // 1. Extract code_ptr from lazy struct [2]
-        let! extractCodePtrOp = pExtractValue codePtrSSA lazySSA [2]
+        // Extract code_ptr from lazy struct [2] - it's always a ptr type
+        let codePtrTy = TPtr
+        let! extractCodePtrOp = pExtractValue codePtrSSA lazySSA [2] codePtrTy
 
-        // 2. Alloca space for lazy struct (1 element)
-        let! constOneOp = pConstI constOneSSA 1L
+        // Alloca space for lazy struct (1 element)
+        let constOneTy = TInt I64
+        let! constOneOp = pConstI constOneSSA 1L constOneTy
         let! allocaOp = pAlloca ptrSSA (Some 1)
 
-        // 3. Store lazy struct to alloca'd space
+        // Store lazy struct to alloca'd space
         let! storeOp = pStore lazySSA ptrSSA
 
-        // 4. Call thunk with pointer -> result
+        // Call thunk with pointer -> result
         let! callOp = pIndirectCall resultSSA codePtrSSA [ptrSSA]
 
-        let! state = getUserState
-        let resultType = state.Current.Type
-        let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch resultType
-
-        return ([extractCodePtrOp; constOneOp; allocaOp; storeOp; callOp], TRValue { SSA = resultSSA; Type = mlirType })
+        return ([extractCodePtrOp; constOneOp; allocaOp; storeOp; callOp], TRValue { SSA = resultSSA; Type = resultTy })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -295,22 +302,28 @@ let pBuildLazyForce (lazySSA: SSA) (resultSSA: SSA) (ssas: SSA list) (arch: Arch
 // ═══════════════════════════════════════════════════════════
 
 /// Seq struct: {state: i32, current: T, code_ptr, captures..., internal_state...}
-let pSeqStruct (stateInit: int64) (codePtr: SSA) (captures: Val list)
-               (internalState: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
+let pSeqStruct (stateInit: int64) (currentTy: MLIRType) (codePtrTy: MLIRType) (codePtr: SSA) 
+               (captures: Val list) (internalState: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
         let minSSAs = 4 + captures.Length + internalState.Length
         if ssas.Length < minSSAs then
             return! pfail $"pSeqStruct: Expected at least {minSSAs} SSAs, got {ssas.Length}"
 
+        // Compute seq type: {state: i32, current: T, code_ptr: ptr, captures..., internal...}
+        let seqTy = TStruct ([TInt I32; currentTy; codePtrTy] 
+                             @ (captures |> List.map (fun cap -> cap.Type)) 
+                             @ (internalState |> List.map (fun st -> st.Type)))
+
         // Create undef struct
-        let! undefOp = pUndef ssas.[0]
+        let! undefOp = pUndef ssas.[0] seqTy
 
         // Insert state = stateInit at index 0
-        let! stateConstOp = pConstI ssas.[1] stateInit
-        let! insertStateOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0]
+        let stateTy = TInt I32
+        let! stateConstOp = pConstI ssas.[1] stateInit stateTy
+        let! insertStateOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0] seqTy
 
         // Insert code_ptr at index 2
-        let! insertCodeOp = pInsertValue ssas.[3] ssas.[2] codePtr [2]
+        let! insertCodeOp = pInsertValue ssas.[3] ssas.[2] codePtr [2] seqTy
 
         // Insert captures starting at index 3
         let captureBaseIdx = 3
@@ -320,7 +333,7 @@ let pSeqStruct (stateInit: int64) (codePtr: SSA) (captures: Val list)
                 parser {
                     let targetSSA = ssas.[4 + i]
                     let sourceSSA = ssas.[3 + i]
-                    return! pInsertValue targetSSA sourceSSA cap.SSA [captureBaseIdx + i]
+                    return! pInsertValue targetSSA sourceSSA cap.SSA [captureBaseIdx + i] seqTy
                 })
             |> sequence
 
@@ -332,7 +345,7 @@ let pSeqStruct (stateInit: int64) (codePtr: SSA) (captures: Val list)
                 parser {
                     let targetSSA = ssas.[4 + captures.Length + i]
                     let sourceSSA = ssas.[3 + captures.Length + i]
-                    return! pInsertValue targetSSA sourceSSA st.SSA [internalBaseIdx + i]
+                    return! pInsertValue targetSSA sourceSSA st.SSA [internalBaseIdx + i] seqTy
                 })
             |> sequence
 
@@ -341,40 +354,44 @@ let pSeqStruct (stateInit: int64) (codePtr: SSA) (captures: Val list)
     }
 
 /// Seq MoveNext: extract state, load captures/internal, call code_ptr, update state/current
-let pSeqMoveNext (seqSSA: SSA) (captureCount: int) (internalCount: int)
-                 (extractSSAs: SSA list) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pSeqMoveNext (seqSSA: SSA) (seqTy: MLIRType) (captureTypes: MLIRType list) 
+                 (internalTypes: MLIRType list) (extractSSAs: SSA list) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
+        let captureCount = captureTypes.Length
+        let internalCount = internalTypes.Length
         let expectedExtracts = 2 + captureCount + internalCount  // state, code_ptr, captures, internal
         if extractSSAs.Length < expectedExtracts then
             return! pfail $"pSeqMoveNext: Expected at least {expectedExtracts} extract SSAs, got {extractSSAs.Length}"
 
         // Extract state from index 0
         let stateSSA = extractSSAs.[0]
-        let! extractStateOp = pExtractValue stateSSA seqSSA [0]
+        let stateTy = TInt I32
+        let! extractStateOp = pExtractValue stateSSA seqSSA [0] stateTy
 
         // Extract code_ptr from index 2
         let codePtrSSA = extractSSAs.[1]
-        let! extractCodeOp = pExtractValue codePtrSSA seqSSA [2]
+        let codePtrTy = TPtr
+        let! extractCodeOp = pExtractValue codePtrSSA seqSSA [2] codePtrTy
 
         // Extract captures from indices 3..3+captureCount
         let captureBaseIdx = 3
         let! extractCaptureOps =
-            [0 .. captureCount - 1]
-            |> List.map (fun i ->
+            captureTypes
+            |> List.mapi (fun i capTy ->
                 parser {
                     let capSSA = extractSSAs.[2 + i]
-                    return! pExtractValue capSSA seqSSA [captureBaseIdx + i]
+                    return! pExtractValue capSSA seqSSA [captureBaseIdx + i] capTy
                 })
             |> sequence
 
         // Extract internal state
         let internalBaseIdx = captureBaseIdx + captureCount
         let! extractInternalOps =
-            [0 .. internalCount - 1]
-            |> List.map (fun i ->
+            internalTypes
+            |> List.mapi (fun i intTy ->
                 parser {
                     let intSSA = extractSSAs.[2 + captureCount + i]
-                    return! pExtractValue intSSA seqSSA [internalBaseIdx + i]
+                    return! pExtractValue intSSA seqSSA [internalBaseIdx + i] intTy
                 })
             |> sequence
 
@@ -393,21 +410,22 @@ let pSeqMoveNext (seqSSA: SSA) (captureCount: int) (internalCount: int)
 /// The body is the MoveNext lambda that was elaborated by FNCS saturation.
 /// Captures are the closed-over variables.
 /// Internal state fields come from the body lambda's mutable locals.
-let pBuildSeqStruct (codePtr: SSA) (captures: Val list) (internalState: Val list)
+let pBuildSeqStruct (currentTy: MLIRType) (codePtrTy: MLIRType) (codePtr: SSA) 
+                    (captures: Val list) (internalState: Val list)
                     (ssas: SSA list) (arch: Architecture)
                     : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Call low-level pattern to build struct
         // Initial state is 0 (unstarted)
-        let! ops = pSeqStruct 0L codePtr captures internalState ssas
+        let! ops = pSeqStruct 0L currentTy codePtrTy codePtr captures internalState ssas
 
         // Final SSA is the last one (after all insertions)
         let finalSSA = ssas.[3 + captures.Length + internalState.Length]
 
-        // Get the seq type - it's a struct with {state: i32, current: T, code_ptr, captures..., internal...}
-        let! state = getUserState
-        let seqType = state.Current.Type
-        let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch seqType
+        // Seq type is {state: i32, current: T, code_ptr: ptr, captures..., internal...}
+        let mlirType = TStruct ([TInt I32; currentTy; codePtrTy] 
+                                @ (captures |> List.map (fun cap -> cap.Type)) 
+                                @ (internalState |> List.map (fun st -> st.Type)))
 
         return (ops, TRValue { SSA = finalSSA; Type = mlirType })
     }
@@ -618,18 +636,19 @@ let pSelect (resultSSA: SSA) (cond: SSA) (trueVal: SSA) (falseVal: SSA) : PSGPar
 // ═══════════════════════════════════════════════════════════
 
 /// Option.Some: tag=1 + value
-let pOptionSome (value: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 1L [value] ssas
+let pOptionSome (value: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 1L [value] ssas ty
 
 /// Option.None: tag=0
-let pOptionNone (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas
+let pOptionNone (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 0L [] ssas ty
 
 /// Option.IsSome: extract tag, compare with 1
 let pOptionIsSome (optionSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! extractTagOp = pExtractValue tagSSA optionSSA [0]
-        let! oneConstOp = pConstI oneSSA 1L
+        let tagTy = TInt I8  // DU tags are always i8
+        let! extractTagOp = pExtractValue tagSSA optionSSA [0] tagTy
+        let! oneConstOp = pConstI oneSSA 1L tagTy
         let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA oneSSA
         return [extractTagOp; oneConstOp; cmpOp]
     }
@@ -637,16 +656,17 @@ let pOptionIsSome (optionSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (resultSSA: SSA) 
 /// Option.IsNone: extract tag, compare with 0
 let pOptionIsNone (optionSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! extractTagOp = pExtractValue tagSSA optionSSA [0]
-        let! zeroConstOp = pConstI zeroSSA 0L
+        let tagTy = TInt I8  // DU tags are always i8
+        let! extractTagOp = pExtractValue tagSSA optionSSA [0] tagTy
+        let! zeroConstOp = pConstI zeroSSA 0L tagTy
         let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
 /// Option.Get: extract value field (index 1)
-let pOptionGet (optionSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pOptionGet (optionSSA: SSA) (resultSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list> =
     parser {
-        let! extractOp = pExtractValue resultSSA optionSSA [1]
+        let! extractOp = pExtractValue resultSSA optionSSA [1] valueTy
         return [extractOp]
     }
 
@@ -655,18 +675,19 @@ let pOptionGet (optionSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
 // ═══════════════════════════════════════════════════════════
 
 /// List.Cons: tag=1 + head + tail
-let pListCons (head: Val) (tail: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 1L [head; tail] ssas
+let pListCons (head: Val) (tail: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 1L [head; tail] ssas ty
 
 /// List.Empty: tag=0
-let pListEmpty (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas
+let pListEmpty (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 0L [] ssas ty
 
 /// List.IsEmpty: extract tag, compare with 0
 let pListIsEmpty (listSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! extractTagOp = pExtractValue tagSSA listSSA [0]
-        let! zeroConstOp = pConstI zeroSSA 0L
+        let tagTy = TInt I8  // DU tags are always i8
+        let! extractTagOp = pExtractValue tagSSA listSSA [0] tagTy
+        let! zeroConstOp = pConstI zeroSSA 0L tagTy
         let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
@@ -676,31 +697,31 @@ let pListIsEmpty (listSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : 
 // ═══════════════════════════════════════════════════════════
 
 /// Map.Empty: empty tree structure (tag=0 for leaf node)
-let pMapEmpty (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas
+let pMapEmpty (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 0L [] ssas ty
 
 /// Map.Add: create new tree node with key, value, left, right subtrees
 /// Structure: tag=1, key, value, left_tree, right_tree
-let pMapAdd (key: Val) (value: Val) (left: Val) (right: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 1L [key; value; left; right] ssas
+let pMapAdd (key: Val) (value: Val) (left: Val) (right: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 1L [key; value; left; right] ssas ty
 
 /// Map.ContainsKey: tree traversal comparing keys
 /// This is a composite operation that would be implemented as a recursive function
 /// The pattern here just shows the key comparison at each node
-let pMapKeyCompare (mapNodeSSA: SSA) (searchKey: SSA) (keySSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pMapKeyCompare (mapNodeSSA: SSA) (searchKey: SSA) (keySSA: SSA) (keyTy: MLIRType) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         // Extract key from node (index 1, after tag at index 0)
-        let! extractKeyOp = pExtractValue keySSA mapNodeSSA [1]
+        let! extractKeyOp = pExtractValue keySSA mapNodeSSA [1] keyTy
         // Compare search key with node key
         let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq searchKey keySSA
         return [extractKeyOp; cmpOp]
     }
 
 /// Map.TryFind: similar to ContainsKey but returns Option<value>
-let pMapExtractValue (mapNodeSSA: SSA) (valueSSA: SSA) : PSGParser<MLIROp list> =
+let pMapExtractValue (mapNodeSSA: SSA) (valueSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list> =
     parser {
         // Extract value from node (index 2, after tag and key)
-        let! extractValueOp = pExtractValue valueSSA mapNodeSSA [2]
+        let! extractValueOp = pExtractValue valueSSA mapNodeSSA [2] valueTy
         return [extractValueOp]
     }
 
@@ -709,19 +730,19 @@ let pMapExtractValue (mapNodeSSA: SSA) (valueSSA: SSA) : PSGParser<MLIROp list> 
 // ═══════════════════════════════════════════════════════════
 
 /// Set.Empty: empty tree structure (tag=0 for leaf node)
-let pSetEmpty (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas
+let pSetEmpty (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 0L [] ssas ty
 
 /// Set.Add: create new tree node with element, left, right subtrees
 /// Structure: tag=1, element, left_tree, right_tree
-let pSetAdd (element: Val) (left: Val) (right: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 1L [element; left; right] ssas
+let pSetAdd (element: Val) (left: Val) (right: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 1L [element; left; right] ssas ty
 
 /// Set.Contains: tree traversal comparing elements
-let pSetElementCompare (setNodeSSA: SSA) (searchElem: SSA) (elemSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pSetElementCompare (setNodeSSA: SSA) (searchElem: SSA) (elemSSA: SSA) (elemTy: MLIRType) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         // Extract element from node (index 1, after tag at index 0)
-        let! extractElemOp = pExtractValue elemSSA setNodeSSA [1]
+        let! extractElemOp = pExtractValue elemSSA setNodeSSA [1] elemTy
         // Compare search element with node element
         let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq searchElem elemSSA
         return [extractElemOp; cmpOp]
@@ -729,12 +750,12 @@ let pSetElementCompare (setNodeSSA: SSA) (searchElem: SSA) (elemSSA: SSA) (resul
 
 /// Set.Union: combines two sets (implemented as tree merge operation)
 /// Pattern shows extraction of subtrees for recursive union
-let pSetExtractSubtrees (setNodeSSA: SSA) (leftSSA: SSA) (rightSSA: SSA) : PSGParser<MLIROp list> =
+let pSetExtractSubtrees (setNodeSSA: SSA) (leftSSA: SSA) (rightSSA: SSA) (subtreeTy: MLIRType) : PSGParser<MLIROp list> =
     parser {
         // Extract left subtree (index 2)
-        let! extractLeftOp = pExtractValue leftSSA setNodeSSA [2]
+        let! extractLeftOp = pExtractValue leftSSA setNodeSSA [2] subtreeTy
         // Extract right subtree (index 3)
-        let! extractRightOp = pExtractValue rightSSA setNodeSSA [3]
+        let! extractRightOp = pExtractValue rightSSA setNodeSSA [3] subtreeTy
         return [extractLeftOp; extractRightOp]
     }
 
@@ -743,18 +764,19 @@ let pSetExtractSubtrees (setNodeSSA: SSA) (leftSSA: SSA) (rightSSA: SSA) : PSGPa
 // ═══════════════════════════════════════════════════════════
 
 /// Result.Ok: tag=0 + value
-let pResultOk (value: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 0L [value] ssas
+let pResultOk (value: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 0L [value] ssas ty
 
 /// Result.Error: tag=1 + error
-let pResultError (error: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
-    pDUCase 1L [error] ssas
+let pResultError (error: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    pDUCase 1L [error] ssas ty
 
 /// Result.IsOk: extract tag, compare with 0
 let pResultIsOk (resultSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! extractTagOp = pExtractValue tagSSA resultSSA [0]
-        let! zeroConstOp = pConstI zeroSSA 0L
+        let tagTy = TInt I8  // DU tags are always i8
+        let! extractTagOp = pExtractValue tagSSA resultSSA [0] tagTy
+        let! zeroConstOp = pConstI zeroSSA 0L tagTy
         let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA zeroSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
@@ -762,8 +784,9 @@ let pResultIsOk (resultSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (cmpSSA: SSA) : PS
 /// Result.IsError: extract tag, compare with 1
 let pResultIsError (resultSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! extractTagOp = pExtractValue tagSSA resultSSA [0]
-        let! oneConstOp = pConstI oneSSA 1L
+        let tagTy = TInt I8  // DU tags are always i8
+        let! extractTagOp = pExtractValue tagSSA resultSSA [0] tagTy
+        let! oneConstOp = pConstI oneSSA 1L tagTy
         let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA oneSSA
         return [extractTagOp; oneConstOp; cmpOp]
     }
@@ -780,33 +803,33 @@ let pBuildLiteral (lit: NativeLiteral) (ssa: SSA) (arch: Architecture) : PSGPars
         match lit with
         | NativeLiteral.Unit ->
             let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUunit
-            let! op = pConstI ssa 0L
+            let! op = pConstI ssa 0L ty
             return ([op], TRValue { SSA = ssa; Type = ty })
 
         | NativeLiteral.Bool b ->
             let value = if b then 1L else 0L
             let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUbool
-            let! op = pConstI ssa value
+            let! op = pConstI ssa value ty
             return ([op], TRValue { SSA = ssa; Type = ty })
 
         | NativeLiteral.Int (n, kind) ->
             let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
-            let! op = pConstI ssa n
+            let! op = pConstI ssa n ty
             return ([op], TRValue { SSA = ssa; Type = ty })
 
         | NativeLiteral.UInt (n, kind) ->
             let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
-            let! op = pConstI ssa (int64 n)
+            let! op = pConstI ssa (int64 n) ty
             return ([op], TRValue { SSA = ssa; Type = ty })
 
         | NativeLiteral.Char c ->
             let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch NTUKind.NTUchar
-            let! op = pConstI ssa (int64 c)
+            let! op = pConstI ssa (int64 c) ty
             return ([op], TRValue { SSA = ssa; Type = ty })
 
         | NativeLiteral.Float (f, kind) ->
             let ty = Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType arch kind
-            let! op = pConstF ssa f
+            let! op = pConstF ssa f ty
             return ([op], TRValue { SSA = ssa; Type = ty })
 
         | NativeLiteral.String _ ->
@@ -825,28 +848,30 @@ let pBuildLiteral (lit: NativeLiteral) (ssa: SSA) (arch: Architecture) : PSGPars
 
 /// String as fat pointer: {ptr: nativeptr<byte>, length: int}
 /// Extract pointer field (index 0)
-let pStringGetPtr (stringSSA: SSA) (ptrSSA: SSA) : PSGParser<MLIROp list> =
+let pStringGetPtr (stringSSA: SSA) (ptrSSA: SSA) (ptrTy: MLIRType) : PSGParser<MLIROp list> =
     parser {
-        let! extractPtrOp = pExtractValue ptrSSA stringSSA [0]
+        let! extractPtrOp = pExtractValue ptrSSA stringSSA [0] ptrTy
         return [extractPtrOp]
     }
 
 /// Extract length field (index 1)
-let pStringGetLength (stringSSA: SSA) (lengthSSA: SSA) : PSGParser<MLIROp list> =
+let pStringGetLength (stringSSA: SSA) (lengthSSA: SSA) (lengthTy: MLIRType) : PSGParser<MLIROp list> =
     parser {
-        let! extractLenOp = pExtractValue lengthSSA stringSSA [1]
+        let! extractLenOp = pExtractValue lengthSSA stringSSA [1] lengthTy
         return [extractLenOp]
     }
 
 /// Construct string from pointer and length
-let pStringConstruct (ptr: SSA) (length: SSA) (ssas: SSA list) : PSGParser<MLIROp list> =
+let pStringConstruct (ptrTy: MLIRType) (lengthTy: MLIRType) (ptr: SSA) (length: SSA) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
         if ssas.Length < 3 then
             return! pfail $"pStringConstruct: Expected at least 3 SSAs, got {ssas.Length}"
 
-        let! undefOp = pUndef ssas.[0]
-        let! insertPtrOp = pInsertValue ssas.[1] ssas.[0] ptr [0]
-        let! insertLenOp = pInsertValue ssas.[2] ssas.[1] length [1]
+        // String type is {ptr: nativeptr<byte>, length: int}
+        let stringTy = TStruct [ptrTy; lengthTy]
+        let! undefOp = pUndef ssas.[0] stringTy
+        let! insertPtrOp = pInsertValue ssas.[1] ssas.[0] ptr [0] stringTy
+        let! insertLenOp = pInsertValue ssas.[2] ssas.[1] length [1] stringTy
         return [undefOp; insertPtrOp; insertLenOp]
     }
 

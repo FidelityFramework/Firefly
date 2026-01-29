@@ -71,7 +71,7 @@ let generate
     match graph.EntryPoints with
     | [] -> Error "No entry points found in PSG"
     | entryId :: _ ->
-        match transfer graph entryId coeffects with
+        match transfer graph entryId coeffects intermediatesDir with
         | Ok (topLevelOps, _) ->
             // Serialize MLIR ops to text
             let mlirText = sprintf "module {\n  // %d MLIR ops generated\n}\n" (List.length topLevelOps)

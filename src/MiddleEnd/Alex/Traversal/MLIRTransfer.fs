@@ -34,6 +34,7 @@ let transfer
     (graph: SemanticGraph)
     (entryNodeId: NodeId)
     (coeffects: TransferCoeffects)
+    (intermediatesDir: string option)
     : Result<MLIROp list * MLIROp list, string> =
 
     // Initialize witness registry (populates all migrated nanopasses)
@@ -52,7 +53,7 @@ let transfer
             DiscoveryThreshold = 10000     // Placeholder for future optimization
         }
 
-        let accumulator = executeNanopasses config globalRegistry graph coeffects
+        let accumulator = executeNanopasses config globalRegistry graph coeffects intermediatesDir
 
         // Check for errors accumulated during nanopass execution
         match accumulator.Errors with

@@ -76,8 +76,9 @@ let pFunctionDef (name: string) (params': (SSA * MLIRType) list) (retTy: MLIRTyp
 /// Extract captures from closure struct at function entry
 /// Arg 0 is env_ptr, load struct, extract captures at baseIndex + slotIndex
 /// SSAs: [0] = struct load, [1..N] = extracted captures
-let pExtractCaptures (baseIndex: int) (captureCount: int) (structType: MLIRType) (ssas: SSA list) : PSGParser<MLIROp list> =
+let pExtractCaptures (baseIndex: int) (captureTypes: MLIRType list) (structType: MLIRType) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
+        let captureCount = captureTypes.Length
         if ssas.Length < captureCount + 1 then
             return! pfail $"pExtractCaptures: Expected {captureCount + 1} SSAs, got {ssas.Length}"
 
@@ -89,12 +90,12 @@ let pExtractCaptures (baseIndex: int) (captureCount: int) (structType: MLIRType)
 
         // Extract each capture
         let! extractOps =
-            [0 .. captureCount - 1]
-            |> List.map (fun i ->
+            captureTypes
+            |> List.mapi (fun i capTy ->
                 parser {
                     let extractSSA = ssas.[i + 1]
                     let extractIndex = baseIndex + i
-                    let! extractOp = pExtractValue extractSSA structLoadSSA [extractIndex]
+                    let! extractOp = pExtractValue extractSSA structLoadSSA [extractIndex] capTy
                     return extractOp
                 })
             |> List.fold (fun acc p ->
@@ -129,7 +130,7 @@ let pBuildSimpleLambda (name: string) (params': (SSA * MLIRType) list) (retTy: M
 /// - inlineOps: closure struct construction (via pFlatClosure)
 /// - resultSSA: closure struct value
 let pBuildClosureLambda (name: string) (params': (SSA * MLIRType) list) (retTy: MLIRType)
-                        (bodyOps: MLIROp list) (codePtr: SSA) (captures: Val list)
+                        (bodyOps: MLIROp list) (codePtr: SSA) (codePtrTy: MLIRType) (captures: Val list)
                         (ssas: SSA list) : PSGParser<MLIROp list * MLIROp list * SSA> =
     parser {
         // Create function definition (with env_ptr as first parameter for captures)
@@ -138,7 +139,7 @@ let pBuildClosureLambda (name: string) (params': (SSA * MLIRType) list) (retTy: 
         let! funcDefOp = pFunctionDef name allParams retTy bodyOps true
 
         // Create closure struct (delegates to pFlatClosure from ElisionPatterns)
-        let! structOps = ElisionPatterns.pFlatClosure codePtr captures ssas
+        let! structOps = ElisionPatterns.pFlatClosure codePtr codePtrTy captures ssas
 
         return [funcDefOp], structOps, List.last ssas
     }

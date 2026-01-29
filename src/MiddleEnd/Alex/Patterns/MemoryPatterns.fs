@@ -37,9 +37,9 @@ let rec private sequence (parsers: PSGParser<'a> list) : PSGParser<'a list> =
 // ═══════════════════════════════════════════════════════════
 
 /// Extract single field from struct
-let pExtractField (structSSA: SSA) (fieldIndex: int) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pExtractField (structSSA: SSA) (fieldIndex: int) (resultSSA: SSA) (fieldTy: MLIRType) : PSGParser<MLIROp list> =
     parser {
-        let! extractOp = pExtractValue resultSSA structSSA [fieldIndex]
+        let! extractOp = pExtractValue resultSSA structSSA [fieldIndex] fieldTy
         return [extractOp]
     }
 
@@ -57,7 +57,8 @@ let pAllocaImmutable (valueSSA: SSA) (valueType: MLIRType) (ssas: SSA list) : PS
         let constOneSSA = ssas.[0]
         let allocaSSA = ssas.[1]
 
-        let! constOp = pConstI constOneSSA 1L
+        let constOneTy = TInt I64
+        let! constOp = pConstI constOneSSA 1L constOneTy
         let! allocaOp = pAlloca allocaSSA (Some 1)
         let! storeOp = pStore valueSSA allocaSSA
 
@@ -111,7 +112,8 @@ let pExtractDUTag (duSSA: SSA) (duType: MLIRType) (tagSSA: SSA) : PSGParser<MLIR
             return [loadOp]
         | _ ->
             // Inline struct DU: extract tag from field 0
-            let! extractOp = pExtractValue tagSSA duSSA [0]
+            let tagTy = TInt I8  // DU tags are always i8
+            let! extractOp = pExtractValue tagSSA duSSA [0] tagTy
             return [extractOp]
     }
 
@@ -131,7 +133,7 @@ let pExtractDUPayload (duSSA: SSA) (duType: MLIRType) (payloadIndex: int) (paylo
             | _ -> payloadType
 
         // Extract payload
-        let! extractOp = pExtractValue extractSSA duSSA [payloadIndex]
+        let! extractOp = pExtractValue extractSSA duSSA [payloadIndex] slotType
 
         // Convert if needed
         if slotType = payloadType then
@@ -162,7 +164,7 @@ let pRecordCopyWith (origSSA: SSA) (recordType: MLIRType) (updates: (int * SSA) 
             |> List.fold (fun accParser (targetSSA, (fieldIdx, valueSSA)) ->
                 parser {
                     let! (prevOps, prevSSA) = accParser
-                    let! insertOp = pInsertValue targetSSA prevSSA valueSSA [fieldIdx]
+                    let! insertOp = pInsertValue targetSSA prevSSA valueSSA [fieldIdx] recordType
                     return (prevOps @ [insertOp], targetSSA)
                 }
             ) (preturn ([], origSSA))
@@ -189,10 +191,12 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
         let allocaSSA = ssas.[1]
 
         // Allocate array
-        let! countOp = pConstI countSSA (int64 count)
+        let countTy = TInt I64
+        let! countOp = pConstI countSSA (int64 count) countTy
         let! allocaOp = pAlloca allocaSSA (Some count)
 
         // Store each element
+        let indexTy = TInt I64
         let! storeOpsList =
             elements
             |> List.indexed
@@ -200,7 +204,7 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
                 parser {
                     let idxSSA = ssas.[2 + i * 2]
                     let gepSSA = ssas.[2 + i * 2 + 1]
-                    let! idxOp = pConstI idxSSA (int64 i)
+                    let! idxOp = pConstI idxSSA (int64 i) indexTy
                     let! gepOp = pGEP gepSSA allocaSSA [(idxSSA, TInt I64)]
                     let! storeOp = pStore elem.SSA gepSSA
                     return [idxOp; gepOp; storeOp]
@@ -215,9 +219,9 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
         let resultSSA = ssas.[ssas.Length - 1]
         let arrayType = TStruct [TPtr; TInt I64]
 
-        let! undefOp = pUndef undefSSA
-        let! insertPtrOp = pInsertValue withPtrSSA undefSSA allocaSSA [0]
-        let! insertCountOp = pInsertValue resultSSA withPtrSSA countSSA [1]
+        let! undefOp = pUndef undefSSA arrayType
+        let! insertPtrOp = pInsertValue withPtrSSA undefSSA allocaSSA [0] arrayType
+        let! insertCountOp = pInsertValue resultSSA withPtrSSA countSSA [1] arrayType
 
         return [countOp; allocaOp] @ storeOps @ [undefOp; insertPtrOp; insertCountOp]
     }
