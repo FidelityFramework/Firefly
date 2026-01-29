@@ -41,7 +41,7 @@ The caller doesn't need to know which representation is used - both are called t
 call(closure, args...) = extractCodePtr(closure)(extractEnv(closure), args...)
 ```
 
-For functions without captures, the env pointer is a dummy (null or undefined) that the callee ignores.
+For functions without captures, the closure is a minimal flat closure `{ code_ptr }` with zero capture fields. There is no env pointer - the struct itself contains only the code pointer.
 
 ## 3. FNCS Layer Implementation
 

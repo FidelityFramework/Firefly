@@ -82,6 +82,8 @@
 
       <!-- Alex Elision Patterns - Composable MLIR templates (public, XParsec-based) -->
       <Compile Include="MiddleEnd/Alex/Patterns/ElisionPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/MemoryPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/ClosurePatterns.fs" />
 
       <!-- Alex Witnesses - Category-based MLIR generation -->
       <Compile Include="MiddleEnd/Alex/Witnesses/LiteralWitness.fs" />
@@ -106,8 +108,6 @@
       <!-- Alex Pipeline Types -->
       <Compile Include="MiddleEnd/Alex/Pipeline/CompilationTypes.fs" />
 
-      <!-- Alex Pipeline Orchestration -->
-      <Compile Include="MiddleEnd/Alex/Pipeline/CompilationOrchestrator.fs" />
 
       <!-- MiddleEnd - MLIR Optimization -->
       <Compile Include="MiddleEnd/MLIROpt/Lowering.fs" />
@@ -117,8 +117,12 @@
 
       <!-- Core - Deprecated Toolchain wrapper (AFTER MiddleEnd/BackEnd so it can delegate) -->
       <Compile Include="Core/Toolchain.fs" />
+      <!-- Core - Top-level Compilation Orchestration (AFTER all components) -->
+      <Compile Include="Core/CompilationOrchestrator.fs" />
+
 
       <!-- CLI Infrastructure -->
+      <Compile Include="CLI/Diagnostics/Types.fs" />
       <Compile Include="CLI/Diagnostics/EnvironmentInfo.fs" />
       <Compile Include="CLI/Diagnostics/ToolChainVerification.fs" />
       <Compile Include="CLI/Commands/VerifyCommand.fs" />

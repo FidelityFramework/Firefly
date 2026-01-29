@@ -1,53 +1,25 @@
-/// CompilationOrchestrator - THE single orchestrator for Firefly compilation
+/// CompilationOrchestrator - Top-level compiler pipeline coordination
 ///
-/// FNCS-based pipeline (January 2026 - unified project loading):
-///   1. Load project (.fidproj) via FNCS ProjectChecker
-///   2. Parse and type-check with FNCS (done by ProjectChecker)
-///   3. Generate MLIR via witness-based emission
-///   4. Lower MLIR → LLVM (Toolchain)
-///   5. Link LLVM → Native (Toolchain)
-module Alex.Pipeline.CompilationOrchestrator
+/// Orchestrates the full compilation pipeline:
+/// FrontEnd (FNCS) → MiddleEnd (Alex + MLIROpt) → BackEnd (LLVM)
+///
+/// This is the "adult supervision" layer that coordinates all phases.
+module Core.CompilationOrchestrator
 
-open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
-open System
 open System.IO
 open System.Reflection
-open Core.CompilerConfig
-open Core.Toolchain
-open Alex.Traversal.PSGZipper
-module SyscallBindings = Alex.Bindings.SyscallBindings
-module PlatformHelpers = Alex.Bindings.PlatformHelpers
-open Core.FNCS.Integration
-open Alex.Traversal.MLIRTransfer
-
-// FNCS Project module - unified project loading
 open FSharp.Native.Compiler.Project
 
-// FNCS Phase emission configuration
-module FNCSPhaseConfig = FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig
-
-// Import specific types to avoid shadowing Result.Error
-type FNCSDiagnosticSeverity = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Diagnostics.NativeDiagnosticSeverity
-module FNCSSemanticGraph = FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Version (from assembly - set in Firefly.fsproj <Version>)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Get compiler version from assembly attributes
-/// This reads from <Version> in Firefly.fsproj - NO hard-coded values
-let private getCompilerVersion () =
-    let assembly = Assembly.GetExecutingAssembly()
-    assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
-    |> Option.ofObj
-    |> Option.map (fun a -> a.InformationalVersion)
-    |> Option.defaultValue (assembly.GetName().Version.ToString())
+open MiddleEnd.MLIROpt.Lowering
+open BackEnd.LLVM.Codegen
+open Core.Timing
+open Core.CompilerConfig
+open FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Compilation options passed from CLI
 type CompilationOptions = {
     ProjectPath: string
     OutputPath: string option
@@ -59,310 +31,157 @@ type CompilationOptions = {
     ShowTiming: bool
 }
 
-/// Result of MLIR generation
-type MLIRGenerationResult = {
-    Content: string
-    HasErrors: bool
-    Errors: string list
-    CollectedFunctions: string list
+type CompilationContext = {
+    ProjectName: string
+    BuildDir: string
+    IntermediatesDir: string option
+    OutputPath: string
+    TargetTriple: string
+    OutputKind: Core.Types.Dialects.OutputKind
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Helper Functions
+// Phase 1: Load Project
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Convert FNCS OutputKind to Firefly OutputKind
-let private toFireflyOutputKind (kind: OutputKind) : Core.Types.Dialects.OutputKind =
-    match kind with
-    | OutputKind.Freestanding -> Core.Types.Dialects.OutputKind.Freestanding
-    | OutputKind.Console -> Core.Types.Dialects.OutputKind.Console
-    | OutputKind.Library -> Core.Types.Dialects.OutputKind.Console // Map to console for now
-    | OutputKind.Embedded -> Core.Types.Dialects.OutputKind.Freestanding // Map to freestanding
+let private loadProject (projectPath: string) : Result<ProjectCheckResult, string> =
+    timePhase "FNCS" "Project Loading & Type Checking" (fun () ->
+        ProjectChecker.checkProject projectPath)
 
-/// Determine target platform from triple
-let parsePlatform (triple: string) : TargetPlatform =
-    match TargetPlatform.parseTriple triple with
-    | Some platform -> platform
-    | None ->
-        // Fallback heuristics
-        if triple.Contains("linux") then
-            if triple.Contains("aarch64") || triple.Contains("arm64") then
-                { OS = Linux; Arch = ARM64; Triple = triple; Features = Set.empty }
-            else
-                TargetPlatform.linux_x86_64
-        elif triple.Contains("darwin") || triple.Contains("macos") then
-            if triple.Contains("x86_64") then
-                TargetPlatform.macos_x86_64
-            else
-                TargetPlatform.macos_arm64
-        elif triple.Contains("windows") then
-            TargetPlatform.windows_x86_64
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 2: Generate MLIR (STUB - needs coeffects integration)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let private generateMLIR (project: ProjectCheckResult) (ctx: CompilationContext) : Result<string, string> =
+    timePhase "MLIR" "MLIR Generation" (fun () ->
+        // TODO: Integrate with Alex.Traversal.MLIRTransfer
+        // 1. Compute coeffects from project.CheckResult.Graph
+        // 2. Call transfer(graph, entryNodeId, coeffects)
+        // 3. Emit MLIR text from returned ops
+        Error "MLIR transfer not yet integrated - needs coeffects computation")
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 3: Lower MLIR → LLVM
+// ═══════════════════════════════════════════════════════════════════════════
+
+let private lowerToLLVM (mlirPath: string) (llPath: string) : Result<unit, string> =
+    timePhase "MLIR-LOWER" "Lowering MLIR to LLVM IR" (fun () ->
+        lowerToLLVM mlirPath llPath)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 4: Link LLVM → Native
+// ═══════════════════════════════════════════════════════════════════════════
+
+let private linkToNative (llPath: string) (outputPath: string) (triple: string) (kind: Core.Types.Dialects.OutputKind) : Result<unit, string> =
+    timePhase "LINK" "Linking to native binary" (fun () ->
+        compileToNative llPath outputPath triple kind)
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Context Setup
+// ═══════════════════════════════════════════════════════════════════════════
+
+let private setupContext (options: CompilationOptions) (project: ProjectCheckResult) : CompilationContext =
+    let config = project.Options
+    let buildDir = Path.Combine(config.ProjectDirectory, "target")
+    Directory.CreateDirectory(buildDir) |> ignore
+
+    let intermediatesDir =
+        if options.KeepIntermediates || options.EmitMLIROnly || options.EmitLLVMOnly then
+            let dir = Path.Combine(buildDir, "intermediates")
+            Directory.CreateDirectory(dir) |> ignore
+            enableAllPhases dir
+            Some dir
         else
-            TargetPlatform.linux_x86_64
+            None
+
+    let outputKind =
+        match config.OutputKind with
+        | OutputKind.Freestanding -> Core.Types.Dialects.OutputKind.Freestanding
+        | OutputKind.Console -> Core.Types.Dialects.OutputKind.Console
+        | OutputKind.Library -> Core.Types.Dialects.OutputKind.Console
+        | OutputKind.Embedded -> Core.Types.Dialects.OutputKind.Freestanding
+
+    {
+        ProjectName = config.Name
+        BuildDir = buildDir
+        IntermediatesDir = intermediatesDir
+        OutputPath = options.OutputPath |> Option.defaultValue (Path.Combine(buildDir, config.OutputName |> Option.defaultValue config.Name))
+        TargetTriple = options.TargetTriple |> Option.defaultValue (getDefaultTarget())
+        OutputKind = outputKind
+    }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// MLIR Generation via FNCS ProjectChecker
+// Main Pipeline
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Generate MLIR from a project using FNCS ProjectChecker
-let generateMLIRFromFNCS (projectResult: ProjectCheckResult) (targetTriple: string) (isFreestanding: bool) (intermediatesDir: string option) : MLIRGenerationResult =
-    // Check for parse errors first
-    if not (Map.isEmpty projectResult.ParseErrors) then
-        let errors =
-            projectResult.ParseErrors
-            |> Map.toList
-            |> List.collect (fun (file, errs) ->
-                errs |> List.map (fun e -> sprintf "%s: %s" file e))
-        printfn "[FNCS] Parse errors found:"
-        for err in errors do
-            printfn "[FNCS]   %s" err
-        {
-            Content = ""
-            HasErrors = true
-            Errors = errors
-            CollectedFunctions = []
-        }
-    else
-        // Check for type checking errors
-        let checkErrors =
-            projectResult.CheckResult.Diagnostics
-            |> List.filter (fun d -> d.Severity = FNCSDiagnosticSeverity.Error)
-            |> List.map (fun d -> d.Message)
-
-        if not (List.isEmpty checkErrors) then
-            printfn "[FNCS] Type checking found %d error(s)" checkErrors.Length
-            for err in checkErrors do
-                printfn "[FNCS] ERROR: %s" err
-            {
-                Content = ""
-                HasErrors = true
-                Errors = checkErrors
-                CollectedFunctions = []
-            }
-        else
-            let graph = projectResult.CheckResult.Graph
-            let nodeCount = Map.count graph.Nodes
-            let entryCount = List.length graph.EntryPoints
-
-            // Generate MLIR via witness-based transfer (codata architecture)
-            // TODO: Need to compute coeffects before calling transfer
-            // let mlirContent, transferErrors = transferGraphWithDiagnostics graph isFreestanding intermediatesDir
-
-            {
-                Content = "(; MLIR transfer not yet integrated - needs coeffects ;)"
-                HasErrors = true
-                Errors = ["MLIR transfer not integrated with new architecture"]
-                CollectedFunctions = []
-            }
-
-/// Generate MLIR from a project - fallback to placeholder if FNCS fails
-let generateMLIR (projectResult: ProjectCheckResult) (targetTriple: string) (isFreestanding: bool) (intermediatesDir: string option) : MLIRGenerationResult =
-    try
-        generateMLIRFromFNCS projectResult targetTriple isFreestanding intermediatesDir
-    with ex ->
-        let mainContent = """module {
-  // Fallback - FNCS processing failed
-  llvm.func @main() -> i32 attributes {sym_visibility = "public"} {
-    %exit_code = arith.constant 0 : i64
-    %syscall_num = arith.constant 60 : i64
-    %result = llvm.inline_asm has_side_effects "syscall", "={rax},{rax},{rdi},~{rcx},~{r11},~{memory}" %syscall_num, %exit_code : (i64, i64) -> i64
-    llvm.unreachable
-  }
-}
-"""
-        {
-            Content = mainContent
-            HasErrors = true
-            Errors = [sprintf "FNCS exception: %s\nStack trace:\n%s" ex.Message ex.StackTrace]
-            CollectedFunctions = ["main"]
-        }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Main Compilation Entry Point
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Compile a project - THE single entry point for all compilation
 let compileProject (options: CompilationOptions) : int =
-    // Initialize platform bindings (syscalls, helpers)
-    PlatformHelpers.registerBindings()
-    SyscallBindings.registerBindings()
+    // Setup
+    setEnabled options.ShowTiming
+    if options.Verbose then enableVerboseMode()
 
-    // Enable timing if requested
-    Core.Timing.setEnabled options.ShowTiming
+    let version = Assembly.GetExecutingAssembly().GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+                  |> Option.ofObj
+                  |> Option.map (fun a -> a.InformationalVersion)
+                  |> Option.defaultValue "dev"
 
-    // Enable verbose mode if requested
-    if options.Verbose then
-        enableVerboseMode()
-
-    let version = getCompilerVersion()
-    printfn "Firefly Compiler v%s (FNCS)" version
-    printfn "=============================="
+    printfn "Firefly Compiler v%s" version
+    printfn "======================"
     printfn ""
 
-    // Enable FNCS phase emission if keeping intermediates
-    // Must be done BEFORE type checking to capture phases
-    if options.KeepIntermediates || options.EmitMLIROnly || options.EmitLLVMOnly then
+    // Setup intermediates directory BEFORE loading project (enables FNCS phase emission)
+    let needsIntermediates = options.KeepIntermediates || options.EmitMLIROnly || options.EmitLLVMOnly
+    if needsIntermediates then
         let projectDir = Path.GetDirectoryName(options.ProjectPath)
-        let buildDir = Path.Combine(projectDir, "target")
-        let intermediatesDir = Path.Combine(buildDir, "intermediates")
+        let intermediatesDir = Path.Combine(projectDir, "target", "intermediates")
         Directory.CreateDirectory(intermediatesDir) |> ignore
-        FNCSPhaseConfig.enableAllPhases intermediatesDir
+        enableAllPhases intermediatesDir
 
-    // Step 1: Load and check project via FNCS ProjectChecker
-    let projectResult =
-        Core.Timing.timePhase "FNCS" "Project Loading & Type Checking" (fun () ->
-            ProjectChecker.checkProject options.ProjectPath)
+    // Run pipeline
+    let result =
+        loadProject options.ProjectPath
+        |> Result.bind (fun project ->
+            let ctx = setupContext options project
+            
+            printfn "Project: %s" ctx.ProjectName
+            printfn "Target:  %s" ctx.TargetTriple
+            printfn "Output:  %s" ctx.OutputPath
+            printfn ""
 
-    match projectResult with
+            // Phase 2: Generate MLIR
+            generateMLIR project ctx
+            |> Result.bind (fun mlirContent ->
+                // Write MLIR
+                let mlirPath =
+                    match ctx.IntermediatesDir with
+                    | Some dir -> Path.Combine(dir, artifactFilename FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig.ArtifactId.Mlir)
+                    | None -> Path.Combine(Path.GetTempPath(), ctx.ProjectName + ".mlir")
+                File.WriteAllText(mlirPath, mlirContent)
+
+                if options.EmitMLIROnly then
+                    printfn "Stopped after MLIR generation (--emit-mlir)"
+                    Ok ()
+                else
+                    // Phase 3: Lower to LLVM
+                    let llPath =
+                        match ctx.IntermediatesDir with
+                        | Some dir -> Path.Combine(dir, artifactFilename FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig.ArtifactId.Llvm)
+                        | None -> Path.Combine(Path.GetTempPath(), ctx.ProjectName + ".ll")
+
+                    lowerToLLVM mlirPath llPath
+                    |> Result.bind (fun () ->
+                        if options.EmitLLVMOnly then
+                            printfn "Stopped after LLVM IR generation (--emit-llvm)"
+                            Ok ()
+                        else
+                            // Phase 4: Link to native
+                            linkToNative llPath ctx.OutputPath ctx.TargetTriple ctx.OutputKind
+                            |> Result.map (fun () ->
+                                printfn ""
+                                printfn "Compilation successful: %s" ctx.OutputPath))))
+
+    printSummary()
+    match result with
+    | Ok () -> 0
     | Error msg ->
         printfn "Error: %s" msg
         1
-
-    | Ok result ->
-        let config = result.Options
-        let projectDir = config.ProjectDirectory
-
-        let targetTriple =
-            options.TargetTriple
-            |> Option.defaultValue (getDefaultTarget())
-
-        // Build directory (default to "target" if not specified)
-        let buildDir = Path.Combine(projectDir, "target")
-        Directory.CreateDirectory(buildDir) |> ignore
-
-        let outputName = config.OutputName |> Option.defaultValue config.Name
-        let outputPath =
-            options.OutputPath
-            |> Option.defaultValue (Path.Combine(buildDir, outputName))
-
-        let outputKind = toFireflyOutputKind config.OutputKind
-
-        printfn "Project: %s" config.Name
-        printfn "Sources: %d files" (List.length result.SourceFiles)
-        printfn "Target:  %s" targetTriple
-        printfn "Output:  %s" outputPath
-        printfn ""
-
-        // Create intermediates directory if needed
-        let intermediatesDir =
-            if options.KeepIntermediates || options.EmitMLIROnly || options.EmitLLVMOnly then
-                let dir = Path.Combine(buildDir, "intermediates")
-                Directory.CreateDirectory(dir) |> ignore
-                Some dir
-            else
-                None
-
-        // Step 2: Generate MLIR via FNCS
-        let isFreestanding = (outputKind = Core.Types.Dialects.OutputKind.Freestanding)
-        let mlirResult =
-            Core.Timing.timePhase "MLIR" "MLIR Generation" (fun () ->
-                generateMLIR result targetTriple isFreestanding intermediatesDir)
-
-        if mlirResult.HasErrors then
-            printfn ""
-            printfn "[MLIR] Emission errors detected:"
-            for error in mlirResult.Errors do
-                printfn "  ERROR: %s" error
-            printfn ""
-
-        // Write MLIR if keeping intermediates
-        match intermediatesDir with
-        | Some dir ->
-            // Use ordinal naming scheme for pipeline visibility (artifact 07)
-            let mlirPath = Path.Combine(dir, FNCSPhaseConfig.artifactFilename FNCSPhaseConfig.ArtifactId.Mlir)
-            File.WriteAllText(mlirPath, mlirResult.Content)
-
-            if options.EmitMLIROnly then
-                printfn ""
-                if mlirResult.HasErrors then
-                    printfn "MLIR generation completed with errors (--emit-mlir)"
-                else
-                    printfn "Stopped after MLIR generation (--emit-mlir)"
-                Core.Timing.printSummary()
-                if mlirResult.HasErrors then 1 else 0
-            elif mlirResult.HasErrors then
-                printfn ""
-                printfn "Compilation failed due to emission errors."
-                Core.Timing.printSummary()
-                1
-            else
-                // Step 3: Lower MLIR → LLVM (via Toolchain)
-                // Use ordinal naming scheme for pipeline visibility (artifact 08)
-                let llPath = Path.Combine(dir, FNCSPhaseConfig.artifactFilename FNCSPhaseConfig.ArtifactId.Llvm)
-
-                let llvmResult =
-                    Core.Timing.timePhase "MLIR-LOWER" "Lowering MLIR to LLVM IR" (fun () ->
-                        lowerMLIRToLLVM mlirPath llPath)
-
-                match llvmResult with
-                | Error msg ->
-                    printfn "[LLVM] Error: %s" msg
-                    Core.Timing.printSummary()
-                    1
-                | Ok () ->
-                    if options.EmitLLVMOnly then
-                        printfn ""
-                        printfn "Stopped after LLVM IR generation (--emit-llvm)"
-                        Core.Timing.printSummary()
-                        0
-                    else
-                        // Step 4: Link LLVM → Native (via Toolchain)
-                        let linkResult =
-                            Core.Timing.timePhase "LINK" "Compiling to native binary" (fun () ->
-                                compileLLVMToNative llPath outputPath targetTriple outputKind)
-
-                        match linkResult with
-                        | Error msg ->
-                            printfn "[LINK] Error: %s" msg
-                            Core.Timing.printSummary()
-                            1
-                        | Ok () ->
-                            printfn ""
-                            printfn "Compilation successful: %s" outputPath
-                            Core.Timing.printSummary()
-                            0
-
-        | None ->
-            // No intermediates - use temp directory
-            if mlirResult.HasErrors then
-                printfn ""
-                printfn "Compilation failed due to emission errors."
-                printfn "Use -k to generate intermediate files for debugging."
-                Core.Timing.printSummary()
-                1
-            else
-                let tempDir = Path.Combine(Path.GetTempPath(), "firefly-" + Guid.NewGuid().ToString("N").[..7])
-                Directory.CreateDirectory(tempDir) |> ignore
-
-                let mlirPath = Path.Combine(tempDir, config.Name + ".mlir")
-                let llPath = Path.Combine(tempDir, config.Name + ".ll")
-
-                File.WriteAllText(mlirPath, mlirResult.Content)
-
-                let llvmResult =
-                    Core.Timing.timePhase "MLIR-LOWER" "Lowering MLIR to LLVM IR" (fun () ->
-                        lowerMLIRToLLVM mlirPath llPath)
-
-                match llvmResult with
-                | Error msg ->
-                    printfn "[LLVM] Error: %s" msg
-                    try Directory.Delete(tempDir, true) with _ -> ()
-                    Core.Timing.printSummary()
-                    1
-                | Ok () ->
-                    let linkResult =
-                        Core.Timing.timePhase "LINK" "Compiling to native binary" (fun () ->
-                            compileLLVMToNative llPath outputPath targetTriple outputKind)
-
-                    try Directory.Delete(tempDir, true) with _ -> ()
-
-                    match linkResult with
-                    | Error msg ->
-                        printfn "[LINK] Error: %s" msg
-                        Core.Timing.printSummary()
-                        1
-                    | Ok () ->
-                        printfn ""
-                        printfn "Compilation successful: %s" outputPath
-                        Core.Timing.printSummary()
-                        0

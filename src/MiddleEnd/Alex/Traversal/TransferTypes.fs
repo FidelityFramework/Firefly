@@ -53,7 +53,7 @@ type TransferCoeffects = {
 /// Scope for nested regions
 type AccumulatorScope = {
     VarAssoc: Map<string, SSA * MLIRType>
-    NodeAssoc: Map<int, SSA * MLIRType>
+    NodeAssoc: Map<NodeId, SSA * MLIRType>
     CapturedVars: Set<string>
     CapturedMuts: Set<string>
 }
@@ -62,7 +62,7 @@ type AccumulatorScope = {
 type MLIRAccumulator = {
     mutable TopLevelOps: MLIROp list
     mutable Errors: string list
-    mutable Visited: Set<int>
+    mutable Visited: Set<NodeId>
     mutable ScopeStack: AccumulatorScope list
     mutable CurrentScope: AccumulatorScope
 }
@@ -92,11 +92,11 @@ module MLIRAccumulator =
     let addError (err: string) (acc: MLIRAccumulator) =
         acc.Errors <- err :: acc.Errors
 
-    let markVisited (nodeIdVal: int) (acc: MLIRAccumulator) =
-        acc.Visited <- Set.add nodeIdVal acc.Visited
+    let markVisited (nodeId: NodeId) (acc: MLIRAccumulator) =
+        acc.Visited <- Set.add nodeId acc.Visited
 
-    let isVisited (nodeIdVal: int) (acc: MLIRAccumulator) =
-        Set.contains nodeIdVal acc.Visited
+    let isVisited (nodeId: NodeId) (acc: MLIRAccumulator) =
+        Set.contains nodeId acc.Visited
 
     let bindVar (name: string) (ssa: SSA) (ty: MLIRType) (acc: MLIRAccumulator) =
         acc.CurrentScope <- { acc.CurrentScope with VarAssoc = Map.add name (ssa, ty) acc.CurrentScope.VarAssoc }
@@ -104,11 +104,11 @@ module MLIRAccumulator =
     let recallVar (name: string) (acc: MLIRAccumulator) =
         Map.tryFind name acc.CurrentScope.VarAssoc
 
-    let bindNode (nodeIdVal: int) (ssa: SSA) (ty: MLIRType) (acc: MLIRAccumulator) =
-        acc.CurrentScope <- { acc.CurrentScope with NodeAssoc = Map.add nodeIdVal (ssa, ty) acc.CurrentScope.NodeAssoc }
+    let bindNode (nodeId: NodeId) (ssa: SSA) (ty: MLIRType) (acc: MLIRAccumulator) =
+        acc.CurrentScope <- { acc.CurrentScope with NodeAssoc = Map.add nodeId (ssa, ty) acc.CurrentScope.NodeAssoc }
 
-    let recallNode (nodeIdVal: int) (acc: MLIRAccumulator) =
-        Map.tryFind nodeIdVal acc.CurrentScope.NodeAssoc
+    let recallNode (nodeId: NodeId) (acc: MLIRAccumulator) =
+        Map.tryFind nodeId acc.CurrentScope.NodeAssoc
 
     let isCapturedVariable (name: string) (acc: MLIRAccumulator) =
         Set.contains name acc.CurrentScope.CapturedVars
@@ -157,7 +157,8 @@ module WitnessOutput =
     /// Skip this node (not handled by this nanopass)
     let skip = empty
 
-    let withTopLevel topOps output = { output with TopLevelOps = topOps @ output.TopLevelOps }
+    let withTopLevel topOps (output: WitnessOutput) : WitnessOutput = 
+        { output with TopLevelOps = topOps @ output.TopLevelOps }
     let combine (a: WitnessOutput) (b: WitnessOutput) =
         { InlineOps = a.InlineOps @ b.InlineOps
           TopLevelOps = a.TopLevelOps @ b.TopLevelOps

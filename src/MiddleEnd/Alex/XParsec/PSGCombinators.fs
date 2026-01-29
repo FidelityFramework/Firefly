@@ -206,6 +206,16 @@ let pLambda : PSGParser<(string * FSharp.Native.Compiler.NativeTypedTree.NativeT
         | _ -> return! fail (Message "Expected Lambda")
     }
 
+/// Match a Lambda node with captures
+/// Returns: (params, bodyId, captures)
+let pLambdaWithCaptures : PSGParser<(string * FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NativeType * NodeId) list * NodeId * CaptureInfo list> =
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.Lambda (params', bodyId, captures, _, _) -> return params', bodyId, captures
+        | _ -> return! fail (Message "Expected Lambda")
+    }
+
 /// Match an IfThenElse node
 let pIfThenElse : PSGParser<NodeId * NodeId * NodeId option> =
     parser {
@@ -484,3 +494,30 @@ let runParserWithZipper (parser: PSGParser<'T>) (zipper: PSGZipper) (node: Seman
     let state = stateFromZipper zipper node platform
     let reader = Reader.ofString "" state
     parser reader
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTE: Sub-graph witnessing infrastructure needed for control flow
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ARCHITECTURAL GAP: Control flow witnesses (IfThenElse, WhileLoop, ForLoop) need
+// infrastructure to recursively witness branch sub-graphs and collect their operations
+// for structured control flow regions.
+//
+// This combinator cannot be implemented here because:
+// 1. PSGCombinators is at the XParsec layer
+// 2. Witnessing requires WitnessContext/WitnessOutput from Traversal layer
+// 3. This would create a circular dependency
+//
+// SOLUTION: This infrastructure needs to live in:
+// - Option A: A new module in Traversal/ that provides sub-graph witnessing
+// - Option B: As a helper in NanopassArchitecture.fs where it can access witness types
+// - Option C: In each control flow witness itself as witness-specific logic
+//
+// The infrastructure needs to:
+// - Navigate to a sub-graph root using child edges
+// - Recursively witness all nodes in that sub-graph
+// - Collect all operations into a flat list
+// - Return that list for composition into control flow structures (SCF.If, SCF.While, etc.)
+//
+// Until this is resolved, ControlFlowWitness, LambdaWitness, and similar witnesses
+// that need sub-graph witnessing remain stubbed.

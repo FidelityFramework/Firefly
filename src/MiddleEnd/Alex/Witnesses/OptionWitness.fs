@@ -1,257 +1,103 @@
-/// OptionWitness - Witness Option operations to MLIR
+/// OptionWitness - Witness Option<'T> operations via XParsec
 ///
-/// PRD-13a: Core Collections - Option<'T>
+/// Uses XParsec combinators from PSGCombinators to match PSG structure,
+/// then delegates to Patterns for MLIR elision.
 ///
-/// ARCHITECTURAL PRINCIPLES:
-/// - Option is a discriminated union: {tag: i8, value: T}
-/// - None: tag = 0, value undefined
-/// - Some x: tag = 1, value = x
-/// - ValueOption uses same layout but may be stack-optimized
-///
-/// PRIMITIVE OPERATIONS (Alex witnesses directly):
-/// - None: construct with tag 0
-/// - Some: construct with tag 1 and value
-/// - isSome: tag == 1
-/// - isNone: tag == 0
-/// - get: extract value (assumes Some)
-///
-/// DECOMPOSABLE OPERATIONS (FNCS saturation):
-/// - map, bind, defaultValue, defaultWith - pattern match on tag
+/// NANOPASS: This witness handles ONLY Option intrinsic nodes.
+/// All other nodes return WitnessOutput.skip for other nanopasses to handle.
 module Alex.Witnesses.OptionWitness
 
-open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
+open Alex.Traversal.NanopassArchitecture
+open Alex.XParsec.PSGCombinators
+open Alex.Patterns.ElisionPatterns
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
 // ═══════════════════════════════════════════════════════════════════════════
-// TYPE HELPERS
+// CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Build the Option struct type for a value type
-/// Layout: {tag: i8, value: T}
-/// Tag values: 0 = None, 1 = Some
-let optionType (valueType: MLIRType) : MLIRType =
-    TStruct [TInt I8; valueType]
+/// Witness Option operations - category-selective (handles only Option intrinsic nodes)
+let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
+    match tryMatch pIntrinsic ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    | None -> WitnessOutput.skip
+    | Some (info, _) when info.Module <> IntrinsicModule.Option -> WitnessOutput.skip
+    | Some (info, _) ->
+        match info.Operation with
+        | "Some" ->
+            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+            | [childId], Some ssas ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (valSSA, valType) ->
+                    let value = { SSA = valSSA; Type = valType }
+                    match tryMatch (pOptionSome value ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = TStruct [TInt I8; valType] } }
+                    | None -> WitnessOutput.error "Option.Some pattern emission failed"
+                | None -> WitnessOutput.error "Option.Some: Value not yet witnessed"
+            | _ -> WitnessOutput.error "Option.Some: Invalid children or SSAs"
 
-/// None tag value
-let noneTag : int64 = 0L
+        | "None" ->
+            match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+            | None -> WitnessOutput.error "Option.None: No SSAs assigned"
+            | Some ssas ->
+                match tryMatch (pOptionNone ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                | Some (ops, _) ->
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let optionType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+                    { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = optionType } }
+                | None -> WitnessOutput.error "Option.None pattern emission failed"
 
-/// Some tag value
-let someTag : int64 = 1L
+        | "isSome" ->
+            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+            | [childId], Some ssas when ssas.Length >= 3 ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (optSSA, _) ->
+                    match tryMatch (pOptionIsSome optSSA ssas.[0] ssas.[1] ssas.[2]) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[2]; Type = TInt I1 } }
+                    | None -> WitnessOutput.error "Option.isSome pattern emission failed"
+                | None -> WitnessOutput.error "Option.isSome: Option not yet witnessed"
+            | _ -> WitnessOutput.error "Option.isSome: Invalid children or SSAs"
 
-// ═══════════════════════════════════════════════════════════════════════════
-// SSA HELPERS
-// ═══════════════════════════════════════════════════════════════════════════
+        | "isNone" ->
+            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+            | [childId], Some ssas when ssas.Length >= 3 ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (optSSA, _) ->
+                    match tryMatch (pOptionIsNone optSSA ssas.[0] ssas.[1] ssas.[2]) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[2]; Type = TInt I1 } }
+                    | None -> WitnessOutput.error "Option.isNone pattern emission failed"
+                | None -> WitnessOutput.error "Option.isNone: Option not yet witnessed"
+            | _ -> WitnessOutput.error "Option.isNone: Invalid children or SSAs"
 
-/// Get pre-assigned SSA for a node
-let private requireSSA (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA =
-    match SSAAssign.lookupSSA nodeId ssa with
-    | Some s -> s
-    | None -> failwithf "OptionWitness: No SSA for node %A" nodeId
+        | "get" ->
+            match node.Children, SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
+            | [childId], Some resultSSA ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (optSSA, optType) ->
+                    match tryMatch (pOptionGet optSSA resultSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    | Some (ops, _) ->
+                        let valueType = match optType with
+                                        | TStruct [_; vt] -> vt
+                                        | _ -> TPtr
+                        { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = valueType } }
+                    | None -> WitnessOutput.error "Option.get pattern emission failed"
+                | None -> WitnessOutput.error "Option.get: Option not yet witnessed"
+            | _ -> WitnessOutput.error "Option.get: Invalid children or SSAs"
 
-/// Get pre-assigned SSAs for a node
-let private requireSSAs (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA list =
-    match SSAAssign.lookupSSAs nodeId ssa with
-    | Some ssas -> ssas
-    | None -> failwithf "OptionWitness: No SSAs for node %A" nodeId
+        | "map" | "bind" | "defaultValue" | "defaultWith" ->
+            WitnessOutput.error $"Option.{info.Operation} requires Baker decomposition"
 
-// ═══════════════════════════════════════════════════════════════════════════
-// PRIMITIVE WITNESSES
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// Witness None<'T> - construct empty option
-/// SSA cost: 3 (tag constant + undef + insertvalue)
-let witnessNone
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (valueType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let tagSSA = ssas.[0]
-    let undefSSA = ssas.[1]
-    let resultSSA = ssas.[2]
-    let optType = optionType valueType
-    
-    let ops = [
-        MLIROp.ArithOp (ArithOp.ConstI (tagSSA, noneTag, TInt I8))
-        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, optType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, undefSSA, tagSSA, [0], optType))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = optType }
-
-/// Witness Some x - construct option with value
-/// SSA cost: 4 (tag constant + undef + insertvalue tag + insertvalue value)
-let witnessSome
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (valueVal: Val)
-    (valueType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let tagSSA = ssas.[0]
-    let undefSSA = ssas.[1]
-    let withTagSSA = ssas.[2]
-    let resultSSA = ssas.[3]
-    let optType = optionType valueType
-    
-    let ops = [
-        MLIROp.ArithOp (ArithOp.ConstI (tagSSA, someTag, TInt I8))
-        MLIROp.LLVMOp (LLVMOp.Undef (undefSSA, optType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (withTagSSA, undefSSA, tagSSA, [0], optType))
-        MLIROp.LLVMOp (LLVMOp.InsertValue (resultSSA, withTagSSA, valueVal.SSA, [1], optType))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = optType }
-
-/// Witness Option.isSome - check if option has value
-/// SSA cost: 3 (extractvalue + constant + icmp)
-let witnessIsSome
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (optionVal: Val)
-    (valueType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let tagSSA = ssas.[0]
-    let oneSSA = ssas.[1]
-    let resultSSA = ssas.[2]
-    let optType = optionType valueType
-    
-    let ops = [
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, optionVal.SSA, [0], optType))
-        MLIROp.ArithOp (ArithOp.ConstI (oneSSA, someTag, TInt I8))
-        MLIROp.ArithOp (ArithOp.CmpI (resultSSA, ICmpPred.Eq, tagSSA, oneSSA, TInt I8))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = MLIRTypes.i1 }
-
-/// Witness Option.isNone - check if option is empty
-/// SSA cost: 3 (extractvalue + constant + icmp)
-let witnessIsNone
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (optionVal: Val)
-    (valueType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let tagSSA = ssas.[0]
-    let zeroSSA = ssas.[1]
-    let resultSSA = ssas.[2]
-    let optType = optionType valueType
-    
-    let ops = [
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, optionVal.SSA, [0], optType))
-        MLIROp.ArithOp (ArithOp.ConstI (zeroSSA, noneTag, TInt I8))
-        MLIROp.ArithOp (ArithOp.CmpI (resultSSA, ICmpPred.Eq, tagSSA, zeroSSA, TInt I8))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = MLIRTypes.i1 }
-
-/// Witness Option.get - extract value (assumes Some)
-/// SSA cost: 1 (extractvalue)
-let witnessGet
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (optionVal: Val)
-    (valueType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    let resultSSA = requireSSA nodeId ssa
-    let optType = optionType valueType
-    
-    let ops = [
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (resultSSA, optionVal.SSA, [1], optType))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = valueType }
-
-/// Witness Option.defaultValue - get value or default
-/// Uses arith.select for branchless conditional
-/// SSA cost: 5
-let witnessDefaultValue
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (defaultVal: Val)
-    (optionVal: Val)
-    (valueType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    let ssas = requireSSAs nodeId ssa
-    let tagSSA = ssas.[0]
-    let oneSSA = ssas.[1]
-    let isSomeSSA = ssas.[2]
-    let valueSSA = ssas.[3]
-    let resultSSA = ssas.[4]
-    let optType = optionType valueType
-    
-    let ops = [
-        // Extract tag and check if Some
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (tagSSA, optionVal.SSA, [0], optType))
-        MLIROp.ArithOp (ArithOp.ConstI (oneSSA, someTag, TInt I8))
-        MLIROp.ArithOp (ArithOp.CmpI (isSomeSSA, ICmpPred.Eq, tagSSA, oneSSA, TInt I8))
-        // Extract value
-        MLIROp.LLVMOp (LLVMOp.ExtractValue (valueSSA, optionVal.SSA, [1], optType))
-        // Select: isSome ? value : default
-        MLIROp.ArithOp (ArithOp.Select (resultSSA, isSomeSSA, valueSSA, defaultVal.SSA, valueType))
-    ]
-    ops, TRValue { SSA = resultSSA; Type = valueType }
-
-/// Witness Option.map - transform value if Some
-/// Requires conditional and closure invocation
-let witnessMap
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (mapperVal: Val)
-    (optionVal: Val)
-    (inputType: MLIRType)
-    (outputType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    // Complex - requires conditional + closure call
-    // For cold implementation, return error - should decompose in FNCS
-    [], TRError "Option.map requires conditional + closure call - use functional decomposition"
-
-/// Witness Option.bind - flatMap for options
-/// Requires conditional and closure invocation
-let witnessBind
-    (nodeId: NodeId)
-    (ssa: SSAAssign.SSAAssignment)
-    (binderVal: Val)
-    (optionVal: Val)
-    (inputType: MLIRType)
-    (outputType: MLIRType)
-    : MLIROp list * TransferResult =
-    
-    [], TRError "Option.bind requires conditional + closure call - use functional decomposition"
+        | op -> WitnessOutput.error $"Unknown Option operation: {op}"
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SSA COST FUNCTIONS
+// NANOPASS REGISTRATION (Public)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// SSA cost for None
-let noneSSACost : int = 3
-
-/// SSA cost for Some
-let someSSACost : int = 4
-
-/// SSA cost for isSome
-let isSomeSSACost : int = 3
-
-/// SSA cost for isNone
-let isNoneSSACost : int = 3
-
-/// SSA cost for get
-let getSSACost : int = 1
-
-/// SSA cost for defaultValue
-let defaultValueSSACost : int = 5
-
-/// SSA cost for map (placeholder - requires control flow)
-let mapSSACost : int = 15
-
-/// SSA cost for bind (placeholder - requires control flow)
-let bindSSACost : int = 20
+/// Option nanopass - witnesses Option intrinsic nodes
+let nanopass : Nanopass = {
+    Name = "Option"
+    Witness = witnessOption
+}

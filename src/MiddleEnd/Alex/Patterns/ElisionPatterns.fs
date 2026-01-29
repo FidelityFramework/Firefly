@@ -442,21 +442,21 @@ let pBuildForEachLoop (collectionSSA: SSA) (bodyOps: MLIROp list)
 // ═══════════════════════════════════════════════════════════
 
 /// If/then/else via SCF.If
-let pIfThenElse (cond: SSA) (thenOps: MLIROp list) (elseOps: MLIROp list option) : PSGParser<MLIROp list> =
+let pBuildIfThenElse (cond: SSA) (thenOps: MLIROp list) (elseOps: MLIROp list option) : PSGParser<MLIROp list> =
     parser {
         let! ifOp = pSCFIf cond thenOps elseOps
         return [ifOp]
     }
 
 /// While loop via SCF.While
-let pWhileLoop (condOps: MLIROp list) (bodyOps: MLIROp list) : PSGParser<MLIROp list> =
+let pBuildWhileLoop (condOps: MLIROp list) (bodyOps: MLIROp list) : PSGParser<MLIROp list> =
     parser {
         let! whileOp = pSCFWhile condOps bodyOps
         return [whileOp]
     }
 
 /// For loop via SCF.For
-let pForLoop (lower: SSA) (upper: SSA) (step: SSA) (bodyOps: MLIROp list) : PSGParser<MLIROp list> =
+let pBuildForLoop (lower: SSA) (upper: SSA) (step: SSA) (bodyOps: MLIROp list) : PSGParser<MLIROp list> =
     parser {
         let! forOp = pSCFFor lower upper step bodyOps
         return [forOp]
@@ -626,12 +626,28 @@ let pOptionNone (ssas: SSA list) : PSGParser<MLIROp list> =
     pDUCase 0L [] ssas
 
 /// Option.IsSome: extract tag, compare with 1
-let pOptionIsSome (optionSSA: SSA) (tagSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pOptionIsSome (optionSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! extractTagOp = pExtractValue tagSSA optionSSA [0]
-        let! oneConstOp = pConstI resultSSA 1L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA resultSSA
+        let! oneConstOp = pConstI oneSSA 1L
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA oneSSA
         return [extractTagOp; oneConstOp; cmpOp]
+    }
+
+/// Option.IsNone: extract tag, compare with 0
+let pOptionIsNone (optionSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        let! extractTagOp = pExtractValue tagSSA optionSSA [0]
+        let! zeroConstOp = pConstI zeroSSA 0L
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA
+        return [extractTagOp; zeroConstOp; cmpOp]
+    }
+
+/// Option.Get: extract value field (index 1)
+let pOptionGet (optionSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        let! extractOp = pExtractValue resultSSA optionSSA [1]
+        return [extractOp]
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -647,11 +663,11 @@ let pListEmpty (ssas: SSA list) : PSGParser<MLIROp list> =
     pDUCase 0L [] ssas
 
 /// List.IsEmpty: extract tag, compare with 0
-let pListIsEmpty (listSSA: SSA) (tagSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+let pListIsEmpty (listSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! extractTagOp = pExtractValue tagSSA listSSA [0]
-        let! zeroConstOp = pConstI resultSSA 0L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA resultSSA
+        let! zeroConstOp = pConstI zeroSSA 0L
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
@@ -735,20 +751,20 @@ let pResultError (error: Val) (ssas: SSA list) : PSGParser<MLIROp list> =
     pDUCase 1L [error] ssas
 
 /// Result.IsOk: extract tag, compare with 0
-let pResultIsOk (resultSSA: SSA) (tagSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
+let pResultIsOk (resultSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! extractTagOp = pExtractValue tagSSA resultSSA [0]
-        let! zeroConstOp = pConstI cmpSSA 0L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA cmpSSA
+        let! zeroConstOp = pConstI zeroSSA 0L
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA zeroSSA
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
 /// Result.IsError: extract tag, compare with 1
-let pResultIsError (resultSSA: SSA) (tagSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
+let pResultIsError (resultSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! extractTagOp = pExtractValue tagSSA resultSSA [0]
-        let! oneConstOp = pConstI cmpSSA 1L
-        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA cmpSSA
+        let! oneConstOp = pConstI oneSSA 1L
+        let! cmpOp = Alex.Elements.ArithElements.pCmpI cmpSSA ICmpPred.Eq tagSSA oneSSA
         return [extractTagOp; oneConstOp; cmpOp]
     }
 

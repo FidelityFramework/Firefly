@@ -3,7 +3,7 @@
 open System
 open System.IO
 open System.Runtime.InteropServices
-open Core.XParsec.Foundation
+open CLI.Diagnostics.Types
 
 /// Represents the status of a toolchain element
 type ComponentStatus =
@@ -300,7 +300,7 @@ module ComponentChecking =
         MSYS2Detection.validateMSYS2Environment()
 
 /// Main toolchain verification with comprehensive reporting
-let verifyToolchain (verbose: bool) : CompilerResult<unit> =
+let verifyToolchain (verbose: bool) : DiagnosticResult<unit> =
     printfn "Verifying Firefly toolchain requirements..."
     printfn "=========================================="
     
@@ -417,7 +417,7 @@ let verifyToolchain (verbose: bool) : CompilerResult<unit> =
             printfn "2. Open 'MSYS2 MINGW64' terminal"
             printfn "3. Run: pacman -S mingw-w64-x86_64-gcc mingw-w64-x86_64-llvm"
             printfn "4. Run: firefly doctor"
-        CompilerFailure [InternalError("toolchain", "Missing required toolchain components", None)]
+        Failure [InternalError("toolchain", "Missing required toolchain components", None)]
     elif hasWarnings then
         printfn "All required components found!"
         printfn "Some optional components are missing but compilation should work."

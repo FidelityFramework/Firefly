@@ -8,6 +8,8 @@
 module Alex.Traversal.WitnessRegistry
 
 open Alex.Traversal.NanopassArchitecture
+open Alex.Traversal.TransferTypes
+open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WITNESS MODULE IMPORTS
@@ -26,8 +28,8 @@ module ArithWitness = Alex.Witnesses.ArithWitness
 // module MapWitness = Alex.Witnesses.MapWitness
 // module SetWitness = Alex.Witnesses.SetWitness
 
-// Priority 3: Control Flow
-// module ControlFlowWitness = Alex.Witnesses.ControlFlowWitness
+// Priority 3: Control Flow (special - needs nanopass list for sub-graph traversal)
+module ControlFlowWitness = Alex.Witnesses.ControlFlowWitness
 
 // Priority 4: Memory & Lambda
 // module MemoryWitness = Alex.Witnesses.MemoryWitness
@@ -48,9 +50,10 @@ let mutable globalRegistry = NanopassRegistry.empty
 /// Initialize the global registry
 /// Called once at startup to populate the registry with all witness nanopasses
 let initializeRegistry () =
-    globalRegistry <-
+    // First register leaf witnesses (literals, arithmetic, memory, etc.)
+    let leafRegistry =
         NanopassRegistry.empty
-        // Priority 1: Simple Witnesses (migrate these first)
+        // Priority 1: Simple Witnesses
         |> NanopassRegistry.register LiteralWitness.nanopass
         |> NanopassRegistry.register ArithWitness.nanopass
 
@@ -60,9 +63,6 @@ let initializeRegistry () =
         // |> NanopassRegistry.register MapWitness.nanopass
         // |> NanopassRegistry.register SetWitness.nanopass
 
-        // Priority 3: Control Flow
-        // |> NanopassRegistry.register ControlFlowWitness.nanopass
-
         // Priority 4: Memory & Lambda
         // |> NanopassRegistry.register MemoryWitness.nanopass
         // |> NanopassRegistry.register LambdaWitness.nanopass
@@ -71,7 +71,20 @@ let initializeRegistry () =
         |> NanopassRegistry.register LazyWitness.nanopass
         // |> NanopassRegistry.register SeqWitness.nanopass
 
-        // More witnesses will be added as they're migrated
+    // Now create ControlFlowWitness with the leaf nanopass list for sub-graph traversal
+    // ControlFlowWitness needs access to ALL witnesses (including itself) for recursive sub-graphs
+    let mutable finalRegistry = leafRegistry
+    let controlFlowNanopass = ControlFlowWitness.createNanopass (leafRegistry.Nanopasses)
+    finalRegistry <- NanopassRegistry.register controlFlowNanopass finalRegistry
+
+    // Re-create ControlFlowWitness with FULL registry including itself (for recursive control flow)
+    let controlFlowNanopassRecursive = ControlFlowWitness.createNanopass (finalRegistry.Nanopasses)
+    finalRegistry <- { finalRegistry with
+                        Nanopasses = finalRegistry.Nanopasses
+                                     |> List.filter (fun np -> np.Name <> "ControlFlow")
+                                     |> List.append [controlFlowNanopassRecursive] }
+
+    globalRegistry <- finalRegistry
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MIGRATION NOTES

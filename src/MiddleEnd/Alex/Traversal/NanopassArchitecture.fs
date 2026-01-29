@@ -39,12 +39,11 @@ let rec private visitAllNodes
     : unit =
 
     // Check if already visited
-    let nodeIdVal = NodeId.value currentNode.Id
-    if MLIRAccumulator.isVisited nodeIdVal accumulator then
+    if MLIRAccumulator.isVisited currentNode.Id accumulator then
         ()
     else
         // Mark as visited
-        MLIRAccumulator.markVisited nodeIdVal accumulator
+        MLIRAccumulator.markVisited currentNode.Id accumulator
 
         // Focus zipper on this node
         match PSGZipper.focusOn currentNode.Id visitedCtx.Zipper with
@@ -63,7 +62,7 @@ let rec private visitAllNodes
             // Bind result if value
             match output.Result with
             | TRValue v ->
-                MLIRAccumulator.bindNode nodeIdVal v.SSA v.Type accumulator
+                MLIRAccumulator.bindNode currentNode.Id v.SSA v.Type accumulator
             | TRVoid -> ()
             | TRError msg ->
                 MLIRAccumulator.addError msg accumulator
@@ -73,6 +72,46 @@ let rec private visitAllNodes
                 match SemanticGraph.tryGetNode childId visitedCtx.Graph with
                 | Some childNode -> visitAllNodes witness focusedCtx childNode accumulator
                 | None -> ()
+
+/// Witness a sub-graph rooted at a given node, returning collected operations
+///
+/// This is used by control flow witnesses to materialize branch sub-graphs
+/// as operation lists for structured control flow regions (SCF.If, SCF.While, etc.)
+///
+/// Unlike visitAllNodes which accumulates into a shared accumulator, this:
+/// 1. Creates an isolated accumulator for the sub-graph
+/// 2. Witnesses all reachable nodes from the root
+/// 3. Returns operations as a list (for SCF region nesting)
+let witnessSubgraph
+    rootNodeId
+    (ctx: WitnessContext)
+    (witness: WitnessContext -> SemanticNode -> WitnessOutput)
+    : MLIROp list =
+
+    // Create isolated accumulator for this sub-graph
+    let subAccumulator = MLIRAccumulator.empty()
+
+    // Get root node
+    match SemanticGraph.tryGetNode rootNodeId ctx.Graph with
+    | None -> []
+    | Some rootNode ->
+        // Focus zipper on root of sub-graph
+        match PSGZipper.focusOn rootNodeId ctx.Zipper with
+        | None -> []
+        | Some focusedZipper ->
+            // Create sub-context with isolated accumulator
+            let subCtx = {
+                Graph = ctx.Graph
+                Coeffects = ctx.Coeffects
+                Accumulator = subAccumulator
+                Zipper = focusedZipper
+            }
+
+            // Traverse sub-graph starting from root
+            visitAllNodes witness subCtx rootNode subAccumulator
+
+            // Return collected operations
+            List.rev subAccumulator.TopLevelOps
 
 /// Run a single nanopass over entire PSG
 let runNanopass

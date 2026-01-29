@@ -10,6 +10,7 @@ module Alex.Traversal.MLIRTransfer
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.WitnessRegistry
@@ -62,27 +63,3 @@ let transfer
             // Errors occurred - report them
             Error (String.concat "; " errors)
 
-// ═══════════════════════════════════════════════════════════════════════════
-// MIGRATION NOTES
-// ═══════════════════════════════════════════════════════════════════════════
-
-/// MIGRATION STATUS (January 2026):
-///
-/// Witnesses migrated to nanopass pattern:
-/// - LazyWitness (LazyExpr, LazyForce) - Priority 5
-/// - LiteralWitness (Literal) - Priority 1
-/// - ArithWitness (BinaryArith, Comparison, Bitwise, Unary) - Priority 1
-///
-/// Witnesses pending migration:
-/// - OptionWitness, ListWitness, MapWitness, SetWitness - Priority 2
-/// - ControlFlowWitness - Priority 3
-/// - MemoryWitness, LambdaWitness - Priority 4
-/// - SeqWitness - Priority 5
-///
-/// As witnesses are migrated:
-/// 1. Export `let nanopass : Nanopass = { Name = "..."; Witness = ... }`
-/// 2. Register in WitnessRegistry.fs
-/// 3. NO changes needed to this file - witnesses automatically included
-///
-/// This architecture eliminates the manual dispatch pattern entirely.
-/// Each nanopass handles its category via selective witnessing (WitnessOutput.skip).

@@ -35,22 +35,12 @@ let runNanopassesParallel
     (coeffects: TransferCoeffects)
     : MLIRAccumulator list =
 
-    // Create cold tasks for each nanopass
-    let nanopassTasks =
-        nanopasses
-        |> List.map (fun nanopass ->
-            coldTask {
-                // Each cold task runs one nanopass
-                // Results arrive in random order (referentially transparent)
-                return runNanopass nanopass graph coeffects
-            })
-
-    // Execute all cold tasks in parallel
+    // Execute all nanopasses in parallel
     // Results collected as they arrive (order doesn't matter - associative merge)
     let parallelResults =
-        nanopassTasks
+        nanopasses
         |> List.toArray
-        |> Array.Parallel.map (fun task -> task.Result)
+        |> Array.Parallel.map (fun nanopass -> runNanopass nanopass graph coeffects)
         |> Array.toList
 
     parallelResults

@@ -8,8 +8,6 @@
 module Alex.Witnesses.LiteralWitness
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
-open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
-open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
@@ -18,36 +16,22 @@ open Alex.Patterns.ElisionPatterns
 module SSAAssign = PSGElaboration.SSAAssignment
 
 // ═══════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════
-
-/// Get result SSA for a node (the final SSA from its allocation)
-let private getSingleSSA (nodeId: NodeId) (ssa: SSAAssign.SSAAssignment) : SSA =
-    match SSAAssign.lookupSSA nodeId ssa with
-    | Some s -> s
-    | None -> failwithf "No result SSA for node %A" nodeId
-
-// ═══════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════
 
 /// Witness Literal nodes - category-selective (handles only Literal nodes)
 let private witnessLiteralNode (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    // Use XParsec combinator to match literal
     match tryMatch pLiteral ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
     | Some (lit, _) ->
-        // Get SSA from coeffects
-        let ssa = getSingleSSA node.Id ctx.Coeffects.SSA
-        let arch = ctx.Coeffects.Platform.TargetArch
+        match SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
+        | None -> WitnessOutput.error "Literal: No SSA assigned"
+        | Some ssa ->
+            let arch = ctx.Coeffects.Platform.TargetArch
+            match tryMatch (pBuildLiteral lit ssa arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+            | None -> WitnessOutput.error "Literal pattern emission failed"
 
-        // Call pattern to build MLIR (pattern returns PSGParser, need to execute it)
-        match tryMatch (pBuildLiteral lit ssa arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-        | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-        | None -> WitnessOutput.error "Literal pattern emission failed"
-
-    | None ->
-        // Not a literal node - skip
-        WitnessOutput.skip
+    | None -> WitnessOutput.skip
 
 // ═══════════════════════════════════════════════════════════
 // NANOPASS REGISTRATION (Public)

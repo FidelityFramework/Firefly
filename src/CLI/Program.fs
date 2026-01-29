@@ -11,7 +11,7 @@ open System
 open System.IO
 open System.Reflection
 open Argu
-open Alex.Pipeline.CompilationOrchestrator
+open Core.CompilationOrchestrator
 open CLI.Commands.VerifyCommand
 open CLI.Commands.DoctorCommand
 

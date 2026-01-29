@@ -3,7 +3,7 @@
 open System
 open System.Runtime.InteropServices
 open Argu
-open Core.XParsec.Foundation
+open CLI.Diagnostics.Types
 open CLI.Diagnostics
 
 /// Command line arguments for the doctor command
@@ -61,7 +61,7 @@ let doctor (args: ParseResults<DoctorArgs>) =
         
         0 // Success exit code
     
-    | CompilerFailure errors ->
+    | Failure errors ->
         printfn ""
         printfn "✗ Some issues were found that may prevent compilation."
         
