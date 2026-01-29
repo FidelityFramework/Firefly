@@ -171,3 +171,57 @@ let pSelect (ssa: SSA) (cond: SSA) (trueVal: SSA) (falseVal: SSA) : PSGParser<ML
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
         return MLIROp.ArithOp (ArithOp.Select (ssa, cond, trueVal, falseVal, ty))
     }
+
+// ═══════════════════════════════════════════════════════════
+// BITWISE OPERATIONS
+// ═══════════════════════════════════════════════════════════
+// NOTE: These replace LLVM dialect bitwise ops (llvm.and, llvm.or, etc.)
+// with standard MLIR Arith dialect operations for backend flexibility.
+
+/// Emit arith.andi (bitwise AND)
+let pAndI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.AndI (ssa, lhs, rhs, ty))
+    }
+
+/// Emit arith.ori (bitwise OR)
+let pOrI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.OrI (ssa, lhs, rhs, ty))
+    }
+
+/// Emit arith.xori (bitwise XOR)
+let pXorI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.XorI (ssa, lhs, rhs, ty))
+    }
+
+/// Emit arith.shli (shift left)
+let pShLI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.ShLI (ssa, lhs, rhs, ty))
+    }
+
+/// Emit arith.shrui (logical shift right - unsigned)
+let pShRUI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.ShRUI (ssa, lhs, rhs, ty))
+    }
+
+/// Emit arith.shrsi (arithmetic shift right - signed)
+let pShRSI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+    parser {
+        let! state = getUserState
+        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        return MLIROp.ArithOp (ArithOp.ShRSI (ssa, lhs, rhs, ty))
+    }

@@ -8,8 +8,10 @@ open XParsec
 open XParsec.Parsers     // preturn
 open XParsec.Combinators // parser { }
 open Alex.XParsec.PSGCombinators
+open Alex.XParsec.Extensions // sequence combinator
 open Alex.Dialects.Core.Types
 open Alex.Elements.MLIRElements
+open Alex.Elements.MemRefElements
 open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
 open Alex.Elements.FuncElements
@@ -93,12 +95,7 @@ let pExtractCaptures (baseIndex: int) (captureTypes: MLIRType list) (structType:
                     let! extractOp = pExtractValue extractSSA structLoadSSA [extractIndex] capTy
                     return extractOp
                 })
-            |> List.fold (fun acc p ->
-                parser {
-                    let! ops = acc
-                    let! op = p
-                    return ops @ [op]
-                }) (preturn [])
+            |> sequence
 
         return loadOp :: extractOps
     }

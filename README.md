@@ -36,41 +36,41 @@ F# Source Code
 │ FrontEnd: FNCS Integration                                  │
 │ - Type checking & semantic analysis (FNCS)                  │
 │ - Native type universe (NTUKind)                            │
-│ - Intrinsic operations (Sys.*, NativePtr.*, etc.)          │
+│ - Intrinsic operations (Sys.*, NativePtr.*, etc.)           │
 └─────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ Program Semantic Graph (PSG) - Nanopass Pipeline           │
-│ Phase 1: Structural Construction (SynExpr → PSG nodes)     │
-│ Phase 2: Symbol Correlation (attach FSharpSymbol)          │
-│ Phase 3: Soft-Delete Reachability (mark unreachable)       │
-│ Phase 4: Typed Tree Overlay (type resolution via zipper)   │
-│ Phase 5+: Enrichment (def-use, operations, saturation)     │
+│ Program Semantic Graph (PSG) - Nanopass Pipeline            │
+│ Phase 1: Structural Construction (SynExpr → PSG nodes)      │
+│ Phase 2: Symbol Correlation (attach FSharpSymbol)           │
+│ Phase 3: Soft-Delete Reachability (mark unreachable)        │
+│ Phase 4: Typed Tree Overlay (type resolution via zipper)    │
+│ Phase 5+: Enrichment (def-use, operations, saturation)      │
 └─────────────────────────────────────────────────────────────┘
     ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ MiddleEnd: PSGElaboration + Alex                           │
-│ - PSGElaboration: Coeffect analysis (SSA, Platform, etc.)  │
-│ - Alex/Zipper: Traverse PSG with XParsec patterns          │
-│ - Alex/Elements: Atomic MLIR ops (internal)                │
-│ - Alex/Patterns: Composable elision templates              │
-│ - Alex/Witnesses: Category-based code generation           │
+│ MiddleEnd: PSGElaboration + Alex                            │
+│ - PSGElaboration: Coeffect analysis (SSA, Platform, etc.)   │
+│ - Alex/Zipper: Traverse PSG with XParsec patterns           │
+│ - Alex/Elements: Atomic MLIR ops (internal)                 │
+│ - Alex/Patterns: Composable elision templates               │
+│ - Alex/Witnesses: Category-based code generation            │
 └─────────────────────────────────────────────────────────────┘
     ↓
 MLIR (multiple dialects)
     ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ MiddleEnd: MLIR Optimization                               │
-│ - Dialect lowering (scf→cf, arith→llvm, etc.)             │
-│ - MLIR-to-LLVM translation                                 │
+│ MiddleEnd: MLIR Optimization                                │
+│ - Dialect lowering (scf→cf, arith→llvm, etc.)               │
+│ - MLIR-to-LLVM translation                                  │
 └─────────────────────────────────────────────────────────────┘
     ↓
 LLVM IR
     ↓
 ┌─────────────────────────────────────────────────────────────┐
-│ BackEnd: Native Code Generation                            │
-│ - LLVM compilation to object files                         │
-│ - Linking (freestanding, console, embedded)                │
+│ BackEnd: Native Code Generation                             │
+│ - LLVM compilation to object files                          │
+│ - Linking (freestanding, console, embedded)                 │
 └─────────────────────────────────────────────────────────────┘
     ↓
 Native Binary (no runtime dependencies)

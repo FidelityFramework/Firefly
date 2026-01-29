@@ -146,6 +146,42 @@ let arithOpToString (op: ArithOp) : string =
     | Select (result, cond, trueVal, falseVal, ty) ->
         sprintf "%s = arith.select %s, %s, %s : %s"
             (ssaToString result) (ssaToString cond) (ssaToString trueVal) (ssaToString falseVal) (typeToString ty)
+    // Bitwise operations (migrated from LLVM dialect)
+    | AndI (result, lhs, rhs, ty) ->
+        sprintf "%s = arith.andi %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
+    | OrI (result, lhs, rhs, ty) ->
+        sprintf "%s = arith.ori %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
+    | XorI (result, lhs, rhs, ty) ->
+        sprintf "%s = arith.xori %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
+    | ShLI (result, lhs, rhs, ty) ->
+        sprintf "%s = arith.shli %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
+    | ShRUI (result, lhs, rhs, ty) ->
+        sprintf "%s = arith.shrui %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
+    | ShRSI (result, lhs, rhs, ty) ->
+        sprintf "%s = arith.shrsi %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
+
+/// Serialize MemRefOp to MLIR text
+let memrefOpToString (op: MemRefOp) : string =
+    match op with
+    | MemRefOp.Load (result, memref, indices, ty) ->
+        let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
+        sprintf "%s = memref.load %s%s : memref<%s>"
+            (ssaToString result) (ssaToString memref) indicesStr (typeToString ty)
+    | MemRefOp.Store (value, memref, indices, ty) ->
+        let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
+        sprintf "memref.store %s, %s%s : memref<%s>"
+            (ssaToString value) (ssaToString memref) indicesStr (typeToString ty)
+    | MemRefOp.Alloca (result, memrefType, alignmentOpt) ->
+        match alignmentOpt with
+        | Some alignment ->
+            sprintf "%s = memref.alloca() {alignment = %d : i64} : %s"
+                (ssaToString result) alignment (typeToString memrefType)
+        | None ->
+            sprintf "%s = memref.alloca() : %s" (ssaToString result) (typeToString memrefType)
+    | MemRefOp.SubView (result, source, offsets, resultType) ->
+        let offsetsStr = offsets |> List.map ssaToString |> String.concat ", "
+        sprintf "%s = memref.subview %s[%s] : %s"
+            (ssaToString result) (ssaToString source) offsetsStr (typeToString resultType)
 
 /// Serialize LLVMOp to MLIR text
 let llvmOpToString (op: LLVMOp) : string =
@@ -225,6 +261,7 @@ let llvmOpToString (op: LLVMOp) : string =
 let rec opToString (op: MLIROp) : string =
     match op with
     | MLIROp.ArithOp aop -> arithOpToString aop
+    | MLIROp.MemRefOp mop -> memrefOpToString mop
     | MLIROp.LLVMOp lop -> llvmOpToString lop
     | MLIROp.FuncOp fop ->
         match fop with

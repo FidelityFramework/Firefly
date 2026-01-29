@@ -11,6 +11,7 @@ open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Elements.MLIRElements
+open Alex.Elements.MemRefElements
 open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
 

@@ -8,9 +8,11 @@ open XParsec
 open XParsec.Parsers     // fail, preturn
 open XParsec.Combinators // parser { }, >>=, <|>
 open Alex.XParsec.PSGCombinators
+open Alex.XParsec.Extensions // sequence combinator
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Elements.MLIRElements
+open Alex.Elements.MemRefElements
 open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
 open Alex.Elements.SCFElements
@@ -27,17 +29,6 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 
 /// Create parser failure with error message
 let pfail msg : PSGParser<'a> = fail (Message msg)
-
-/// Sequence a list of parsers into a parser of a list
-let rec sequence (parsers: PSGParser<'a> list) : PSGParser<'a list> =
-    match parsers with
-    | [] -> preturn []
-    | p :: ps ->
-        parser {
-            let! x = p
-            let! xs = sequence ps
-            return x :: xs
-        }
 
 // ═══════════════════════════════════════════════════════════
 // MEMORY PATTERNS

@@ -142,6 +142,13 @@ type FuncVisibility =
 // MLIR OPERATIONS (for type-safe MLIR construction)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// MemRef dialect operations (standard MLIR memory operations)
+type MemRefOp =
+    | Load of SSA * SSA * SSA list * MLIRType                          // result, memref, indices, type
+    | Store of SSA * SSA * SSA list * MLIRType                         // value, memref, indices, type
+    | Alloca of SSA * MLIRType * int option                            // result, memrefType, alignment
+    | SubView of SSA * SSA * SSA list * MLIRType                       // result, source, offsets, resultType
+
 /// LLVM dialect operations
 type LLVMOp =
     // Memory operations
@@ -202,6 +209,13 @@ type ArithOp =
     | TruncI of SSA * SSA * MLIRType * MLIRType             // result, value, srcType, destType
     | SIToFP of SSA * SSA * MLIRType * MLIRType             // result, value, srcType, destType
     | FPToSI of SSA * SSA * MLIRType * MLIRType             // result, value, srcType, destType
+    // Bitwise operations (migrated from LLVM dialect)
+    | AndI of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
+    | OrI of SSA * SSA * SSA * MLIRType                     // result, lhs, rhs, type
+    | XorI of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type
+    | ShLI of SSA * SSA * SSA * MLIRType                    // result, lhs, rhs, type (shift left)
+    | ShRUI of SSA * SSA * SSA * MLIRType                   // result, lhs, rhs, type (logical shift right)
+    | ShRSI of SSA * SSA * SSA * MLIRType                   // result, lhs, rhs, type (arithmetic shift right)
     // Other
     | Select of SSA * SSA * SSA * SSA * MLIRType            // result, cond, trueVal, falseVal, type
 
@@ -269,6 +283,7 @@ type VectorOp =
 
 /// Top-level MLIR operation (all dialects) - forward declaration for mutual recursion
 type MLIROp =
+    | MemRefOp of MemRefOp
     | LLVMOp of LLVMOp
     | ArithOp of ArithOp
     | SCFOp of SCFOp
