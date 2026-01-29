@@ -100,12 +100,38 @@ let defaultConfig = {
     DiscoveryThreshold = 10000  // Placeholder for future tuning
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// NANOPASS RESULT SERIALIZATION (for -k flag debugging)
+// ═══════════════════════════════════════════════════════════════════════════
+
+open System.IO
+open System.Text.Json
+
+/// Serialize a nanopass result to JSON for debugging
+let private serializeNanopassResult (intermediatesDir: string) (nanopass: Nanopass) (accumulator: MLIRAccumulator) : unit =
+    let fileName = sprintf "07_%s_witness.json" (nanopass.Name.ToLower())
+    let filePath = Path.Combine(intermediatesDir, fileName)
+
+    let summary = {|
+        NanopassName = nanopass.Name
+        OperationCount = List.length accumulator.TopLevelOps
+        ErrorCount = List.length accumulator.Errors
+        VisitedNodes = accumulator.Visited |> Set.toList |> List.map (fun (NodeId id) -> id)
+        Errors = accumulator.Errors
+        Operations = accumulator.TopLevelOps |> List.map (fun op -> sprintf "%A" op)
+    |}
+
+    let json = JsonSerializer.Serialize(summary, JsonSerializerOptions(WriteIndented = true))
+    File.WriteAllText(filePath, json)
+    printfn "[Alex] Wrote nanopass result: %s" fileName
+
 /// Main entry point: Run all nanopasses and collect results
 let executeNanopasses
     (config: ParallelConfig)
     (registry: NanopassRegistry)
     (graph: SemanticGraph)
     (coeffects: TransferCoeffects)
+    (intermediatesDir: string option)
     : MLIRAccumulator =
 
     if List.isEmpty registry.Nanopasses then
@@ -125,6 +151,14 @@ let executeNanopasses
                 runNanopassesParallel registry.Nanopasses graph coeffects
             else
                 runNanopassesSequential registry.Nanopasses graph coeffects
+
+        // Serialize each nanopass result for debugging (if keeping intermediates)
+        match intermediatesDir with
+        | Some dir ->
+            List.zip registry.Nanopasses nanopassResults
+            |> List.iter (fun (nanopass, accumulator) ->
+                serializeNanopassResult dir nanopass accumulator)
+        | None -> ()
 
         // Envelope pass: Collect and overlay results
         collectEnvelope nanopassResults

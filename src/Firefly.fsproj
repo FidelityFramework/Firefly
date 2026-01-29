@@ -35,6 +35,8 @@
 
       <!-- FNCS Integration (thin layer receiving SemanticGraph) -->
       <Compile Include="FrontEnd/FNCS/Integration.fs" />
+      <!-- FrontEnd - Project Loading (public API: .fidproj → PSG) -->
+      <Compile Include="FrontEnd/ProjectLoader.fs" />
       <!-- Platform Templates -->
       <Compile Include="FrontEnd/Templates/TemplateTypes.fs" />
       <Compile Include="FrontEnd/Templates/TemplateLoader.fs" />
@@ -50,6 +52,7 @@
       <Compile Include="MiddleEnd/PSGElaboration/StringCollection.fs" />
       <!-- Platform Config (depends on PlatformTypes) -->
       <Compile Include="MiddleEnd/PSGElaboration/PlatformConfig.fs" />
+      <Compile Include="MiddleEnd/PSGElaboration/PlatformBindingResolution.fs" />
       <Compile Include="MiddleEnd/PSGElaboration/PatternBindingAnalysis.fs" />
       <Compile Include="MiddleEnd/PSGElaboration/CoeffectValidation.fs" />
       <Compile Include="MiddleEnd/PSGElaboration/PreprocessingSerializer.fs" />
@@ -108,6 +111,8 @@
       <!-- Alex Pipeline Types -->
       <Compile Include="MiddleEnd/Alex/Pipeline/CompilationTypes.fs" />
 
+      <!-- MiddleEnd - MLIR Generation (Public API: PSG → MLIR) -->
+      <Compile Include="MiddleEnd/MLIRGeneration.fs" />
 
       <!-- MiddleEnd - MLIR Optimization -->
       <Compile Include="MiddleEnd/MLIROpt/Lowering.fs" />

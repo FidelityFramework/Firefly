@@ -41,39 +41,44 @@ type CompilationContext = {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 1: Load Project
+// Phase 1: FrontEnd - Compile F# → PSG
 // ═══════════════════════════════════════════════════════════════════════════
 
-let private loadProject (projectPath: string) : Result<ProjectCheckResult, string> =
-    timePhase "FNCS" "Project Loading & Type Checking" (fun () ->
-        ProjectChecker.checkProject projectPath)
+let private runFrontEnd (projectPath: string) : Result<ProjectCheckResult, string> =
+    timePhase "FrontEnd" "F# → PSG (Type Checking & Semantic Graph)" (fun () ->
+        FrontEnd.ProjectLoader.load projectPath)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 2: Generate MLIR (STUB - needs coeffects integration)
+// Phase 2: MiddleEnd (Alex + PSGElaboration) 
 // ═══════════════════════════════════════════════════════════════════════════
 
-let private generateMLIR (project: ProjectCheckResult) (ctx: CompilationContext) : Result<string, string> =
-    timePhase "MLIR" "MLIR Generation" (fun () ->
-        // TODO: Integrate with Alex.Traversal.MLIRTransfer
-        // 1. Compute coeffects from project.CheckResult.Graph
-        // 2. Call transfer(graph, entryNodeId, coeffects)
-        // 3. Emit MLIR text from returned ops
-        Error "MLIR transfer not yet integrated - needs coeffects computation")
+let private runMiddleEnd (project: ProjectCheckResult) (ctx: CompilationContext) : Result<string, string> =
+    timePhase "MiddleEnd" "MLIR Generation" (fun () ->
+        // Get platform context from FNCS
+        match Core.FNCS.Integration.platformContext project.CheckResult with
+        | None -> Error "No platform context available from FNCS"
+        | Some platformCtx ->
+            // Delegate to MiddleEnd - it orchestrates PSGElaboration + Alex
+            MiddleEnd.MLIRGeneration.generate
+                project.CheckResult.Graph
+                platformCtx
+                ctx.OutputKind
+                ctx.IntermediatesDir)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 3: Lower MLIR → LLVM
+// Phase 3: BackEnd (MLIR Lowering)
 // ═══════════════════════════════════════════════════════════════════════════
 
-let private lowerToLLVM (mlirPath: string) (llPath: string) : Result<unit, string> =
-    timePhase "MLIR-LOWER" "Lowering MLIR to LLVM IR" (fun () ->
+let private runMLIRLowering (mlirPath: string) (llPath: string) : Result<unit, string> =
+    timePhase "BackEnd.MLIRLower" "Lowering MLIR to LLVM IR" (fun () ->
         lowerToLLVM mlirPath llPath)
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Phase 4: Link LLVM → Native
+// Phase 4: BackEnd (Linking)
 // ═══════════════════════════════════════════════════════════════════════════
 
-let private linkToNative (llPath: string) (outputPath: string) (triple: string) (kind: Core.Types.Dialects.OutputKind) : Result<unit, string> =
-    timePhase "LINK" "Linking to native binary" (fun () ->
+let private runLinking (llPath: string) (outputPath: string) (triple: string) (kind: Core.Types.Dialects.OutputKind) : Result<unit, string> =
+    timePhase "BackEnd.Link" "Linking to native binary" (fun () ->
         compileToNative llPath outputPath triple kind)
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -136,45 +141,46 @@ let compileProject (options: CompilationOptions) : int =
         Directory.CreateDirectory(intermediatesDir) |> ignore
         enableAllPhases intermediatesDir
 
-    // Run pipeline
+    // Run pipeline: FrontEnd → MiddleEnd → BackEnd
     let result =
-        loadProject options.ProjectPath
+        // Phase 1: FrontEnd - Compile F# to PSG
+        runFrontEnd options.ProjectPath
         |> Result.bind (fun project ->
             let ctx = setupContext options project
-            
+
             printfn "Project: %s" ctx.ProjectName
             printfn "Target:  %s" ctx.TargetTriple
             printfn "Output:  %s" ctx.OutputPath
             printfn ""
 
-            // Phase 2: Generate MLIR
-            generateMLIR project ctx
-            |> Result.bind (fun mlirContent ->
-                // Write MLIR
+            // Phase 2: MiddleEnd - Generate MLIR from PSG
+            runMiddleEnd project ctx
+            |> Result.bind (fun mlirText ->
+                // Write MLIR to file
                 let mlirPath =
                     match ctx.IntermediatesDir with
                     | Some dir -> Path.Combine(dir, artifactFilename FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig.ArtifactId.Mlir)
                     | None -> Path.Combine(Path.GetTempPath(), ctx.ProjectName + ".mlir")
-                File.WriteAllText(mlirPath, mlirContent)
+                File.WriteAllText(mlirPath, mlirText)
 
                 if options.EmitMLIROnly then
                     printfn "Stopped after MLIR generation (--emit-mlir)"
                     Ok ()
                 else
-                    // Phase 3: Lower to LLVM
+                    // Phase 3: BackEnd - Lower MLIR to LLVM IR
                     let llPath =
                         match ctx.IntermediatesDir with
                         | Some dir -> Path.Combine(dir, artifactFilename FSharp.Native.Compiler.NativeTypedTree.Infrastructure.PhaseConfig.ArtifactId.Llvm)
                         | None -> Path.Combine(Path.GetTempPath(), ctx.ProjectName + ".ll")
 
-                    lowerToLLVM mlirPath llPath
+                    runMLIRLowering mlirPath llPath
                     |> Result.bind (fun () ->
                         if options.EmitLLVMOnly then
                             printfn "Stopped after LLVM IR generation (--emit-llvm)"
                             Ok ()
                         else
-                            // Phase 4: Link to native
-                            linkToNative llPath ctx.OutputPath ctx.TargetTriple ctx.OutputKind
+                            // Phase 4: BackEnd - Link to native binary
+                            runLinking llPath ctx.OutputPath ctx.TargetTriple ctx.OutputKind
                             |> Result.map (fun () ->
                                 printfn ""
                                 printfn "Compilation successful: %s" ctx.OutputPath))))
