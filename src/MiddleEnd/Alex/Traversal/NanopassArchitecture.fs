@@ -204,24 +204,22 @@ let runNanopass
     // Create fresh accumulator
     let freshAcc = MLIRAccumulator.empty()
 
-    // Start from entry points
-    for entryId in graph.EntryPoints do
-        match PSGZipper.create graph entryId with
-        | None -> ()
-        | Some initialZipper ->
-            match SemanticGraph.tryGetNode entryId graph with
+    // Visit ALL reachable nodes, not just entry-point-reachable nodes
+    // This ensures nodes like Console.write/writeln (reachable via VarRef but not via child edges) are witnessed
+    for kvp in graph.Nodes do
+        let nodeId, node = kvp.Key, kvp.Value
+        if node.IsReachable && not (MLIRAccumulator.isVisited nodeId freshAcc) then
+            match PSGZipper.create graph nodeId with
             | None -> ()
-            | Some entryNode ->
-                // Create context for this entry point
-                let entryCtx = {
+            | Some initialZipper ->
+                let nodeCtx = {
                     Graph = graph
                     Coeffects = coeffects
                     Accumulator = freshAcc
                     Zipper = initialZipper
                 }
-
-                // Traverse from this entry point
-                visitAllNodes nanopass.Witness entryCtx entryNode freshAcc
+                // Visit this reachable node
+                visitAllNodes nanopass.Witness nodeCtx node freshAcc
 
     freshAcc
 
