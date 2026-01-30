@@ -67,37 +67,33 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
 
         if isEntryPoint then
             // Entry point Lambda: generate func.func @main wrapper
-            let scopeLabel = sprintf "func_%d" nodeIdValue
-            let scopeKind = FunctionScope "main"
+            if node.Id = NodeId 536 then printfn "[DEBUG] Entry point Lambda - using nested accumulator"
 
-            if node.Id = NodeId 536 then printfn "[DEBUG] Entering entry point path, adding scope markers"
-
-            // Mark scope entry
-            MLIRAccumulator.addOp (MLIROp.ScopeMarker (ScopeEnter (scopeKind, scopeLabel))) ctx.Accumulator
-
-            // Witness body nodes into shared accumulator with FRESH visited set
-            // Use fresh visited set because we WANT to re-visit body nodes (already visited by single-phase)
-            // to capture their operations within this scope
+            // Create NESTED accumulator for body operations
+            // Bindings still go to GLOBAL NodeBindings (shared with parent)
+            let bodyAcc = MLIRAccumulator.empty()
+            
+            // Witness body nodes into nested accumulator with FRESH visited set
             let freshVisited = ref Set.empty
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
-                    let bodyCtx = { ctx with Zipper = bodyZipper }
-                    visitAllNodes subGraphCombinator bodyCtx bodyNode ctx.Accumulator freshVisited
+                    // Body context: nested accumulator, but shared global bindings via ctx.Accumulator.NodeAssoc
+                    let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
+                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc freshVisited
+                    
+                    // Copy bindings from body accumulator to parent (for cross-scope lookups)
+                    bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
+                        ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
                 | None -> ()
             | None -> ()
 
-            // Mark scope exit
-            MLIRAccumulator.addOp (MLIROp.ScopeMarker (ScopeExit (scopeKind, scopeLabel))) ctx.Accumulator
-
-            // Extract operations between markers
-            let scopeOps = MLIRAccumulator.extractScope scopeKind scopeLabel ctx.Accumulator
-            if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: Extracted %d operations from scope" (List.length scopeOps)
+            if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: Body has %d operations" (List.length bodyAcc.AllOps)
 
             // Separate body ops from module-level ops
-            let bodyOps = scopeOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ -> false | _ -> true)
-            let moduleOps = scopeOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ -> true | _ -> false)
+            let bodyOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ -> false | _ -> true)
+            let moduleOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ -> true | _ -> false)
 
             // Get body result for return value
             let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
@@ -121,10 +117,10 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             let funcParams = [(SSA.Arg 0, argvType)]
             let funcDef = FuncOp.FuncDef("main", funcParams, returnType, completeBody, Public)
 
-            // Replace scope with FuncDef
-            MLIRAccumulator.replaceScope scopeKind scopeLabel (MLIROp.FuncOp funcDef) ctx.Accumulator
+            // Add FuncDef to parent accumulator as top-level operation
+            MLIRAccumulator.addOp (MLIROp.FuncOp funcDef) ctx.Accumulator
 
-            // Add module-level ops separately
+            // Add module-level ops to parent
             MLIRAccumulator.addOps moduleOps ctx.Accumulator
 
             { InlineOps = []; TopLevelOps = []; Result = TRVoid }
@@ -139,34 +135,28 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | None ->
                     sprintf "lambda_%d" nodeIdValue
 
-            let scopeLabel = sprintf "func_%d" nodeIdValue
-            let scopeKind = FunctionScope funcName
-
-            // Mark scope entry
-            MLIRAccumulator.addOp (MLIROp.ScopeMarker (ScopeEnter (scopeKind, scopeLabel))) ctx.Accumulator
-
-            // Witness body nodes into shared accumulator with FRESH visited set
-            // Use fresh visited set because we WANT to re-visit body nodes (already visited by single-phase)
-            // to capture their operations within this scope
+            // Create NESTED accumulator for body operations
+            let bodyAcc = MLIRAccumulator.empty()
+            
+            // Witness body nodes into nested accumulator with FRESH visited set
             let freshVisited = ref Set.empty
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
-                    let bodyCtx = { ctx with Zipper = bodyZipper }
-                    visitAllNodes subGraphCombinator bodyCtx bodyNode ctx.Accumulator freshVisited
+                    // Body context: nested accumulator, shared global bindings
+                    let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
+                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc freshVisited
+                    
+                    // Copy bindings from body accumulator to parent
+                    bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
+                        ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
                 | None -> ()
             | None -> ()
 
-            // Mark scope exit
-            MLIRAccumulator.addOp (MLIROp.ScopeMarker (ScopeExit (scopeKind, scopeLabel))) ctx.Accumulator
-
-            // Extract operations between markers
-            let scopeOps = MLIRAccumulator.extractScope scopeKind scopeLabel ctx.Accumulator
-
-            // Separate body ops from module-level ops (GlobalStrings, etc.)
-            let bodyOps = scopeOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
-            let moduleOps = scopeOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
+            // Separate body ops from module-level ops (GlobalStrings, nested functions)
+            let bodyOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
+            let moduleOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
 
             // Get body result for return value
             let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
@@ -209,10 +199,10 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Build FuncDef for module-level function
             let funcDef = FuncOp.FuncDef(funcName, mlirParams, returnType, completeBody, Public)
 
-            // Replace scope with FuncDef
-            MLIRAccumulator.replaceScope scopeKind scopeLabel (MLIROp.FuncOp funcDef) ctx.Accumulator
+            // Add FuncDef to parent accumulator as top-level operation
+            MLIRAccumulator.addOp (MLIROp.FuncOp funcDef) ctx.Accumulator
 
-            // Add module-level ops separately
+            // Add module-level ops to parent
             MLIRAccumulator.addOps moduleOps ctx.Accumulator
 
             { InlineOps = []; TopLevelOps = []; Result = TRVoid }

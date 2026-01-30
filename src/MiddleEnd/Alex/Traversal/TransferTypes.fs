@@ -250,80 +250,9 @@ module MLIRAccumulator =
     /// - Witnesses emit FuncCall operations (codata)
     /// - Declaration Collection Pass analyzes calls and emits FuncDecl (structural MLIR transformation)
 
-    /// Extract operations between scope markers (for wrapping in FuncDef/SCFOp)
-    let extractScope (kind: ScopeKind) (label: string) (acc: MLIRAccumulator) : MLIROp list =
-        let enterMarker = MLIROp.ScopeMarker (ScopeEnter (kind, label))
-        let exitMarker = MLIROp.ScopeMarker (ScopeExit (kind, label))
-
-        // Find operations between markers
-        // Operations are prepended during accumulation, so they're already in reverse post-order
-        // Post-order traversal + prepend = correct definition-before-use order
-        let rec findBetween ops collecting result =
-            match ops with
-            | [] -> result  // Markers not found, return what we collected
-            | op :: rest ->
-                if op = exitMarker then
-                    findBetween rest true result
-                elif op = enterMarker then
-                    result  // Found both markers, return collected ops (already in correct order)
-                elif collecting then
-                    findBetween rest true (op :: result)
-                else
-                    findBetween rest false result
-
-        findBetween acc.AllOps false []
-
-    /// Replace scope contents with a single operation (e.g., wrap in FuncDef)
-    let replaceScope (kind: ScopeKind) (label: string) (replacement: MLIROp) (acc: MLIRAccumulator) =
-        let enterMarker = MLIROp.ScopeMarker (ScopeEnter (kind, label))
-        let exitMarker = MLIROp.ScopeMarker (ScopeExit (kind, label))
-
-        // Remove operations between markers and the markers themselves
-        // Operations are prepended during accumulation, so they're in reverse order
-        // We need to preserve this order (don't reverse again)
-        let rec removeScope ops collecting result =
-            match ops with
-            | [] -> result  // Don't reverse - operations already in correct prepended order
-            | op :: rest ->
-                if op = exitMarker then
-                    // Start collecting (skipping marker)
-                    removeScope rest true result
-                elif op = enterMarker then
-                    // Found enter marker, insert replacement and stop collecting
-                    removeScope rest false (replacement :: result)
-                elif collecting then
-                    // Skip operations between markers
-                    removeScope rest true result
-                else
-                    // Keep operations outside scope
-                    removeScope rest false (op :: result)
-
-        acc.AllOps <- removeScope acc.AllOps false []
-
-    /// Remove scope entirely (markers and contents)
-    let removeScopeEntirely (kind: ScopeKind) (label: string) (acc: MLIRAccumulator) =
-        let enterMarker = MLIROp.ScopeMarker (ScopeEnter (kind, label))
-        let exitMarker = MLIROp.ScopeMarker (ScopeExit (kind, label))
-
-        // Remove operations between markers and the markers themselves
-        let rec doRemove ops collecting result =
-            match ops with
-            | [] -> List.rev result
-            | op :: rest ->
-                if op = exitMarker then
-                    // Start collecting (skipping marker)
-                    doRemove rest true result
-                elif op = enterMarker then
-                    // Found enter marker, skip it and stop collecting
-                    doRemove rest false result
-                elif collecting then
-                    // Skip operations between markers
-                    doRemove rest true result
-                else
-                    // Keep operations outside scope
-                    doRemove rest false (op :: result)
-
-        acc.AllOps <- doRemove acc.AllOps false []
+    /// NOTE: Scope markers removed - single-phase execution with nested accumulators
+    /// Scope-owning witnesses (Lambda, ControlFlow) create nested accumulators for body operations.
+    /// Operations naturally nest; bindings remain global for cross-scope lookups.
 
     /// Generate fresh SSA for MLIR-level temporary (not associated with PSG node)
     /// Used for implementation-level operations like FFI marshaling
@@ -341,11 +270,9 @@ module MLIRAccumulator =
     let topLevelOps (acc: MLIRAccumulator) = acc.AllOps
 
     /// Recursively count all operations (including nested in FuncDef, SCFOp, etc.)
-    /// ScopeMarkers are metadata and don't count as operations
     let rec countOperations (ops: MLIROp list) : int =
         ops |> List.sumBy (fun op ->
             match op with
-            | MLIROp.ScopeMarker _ -> 0  // Metadata, not an operation
             | MLIROp.FuncOp (FuncOp.FuncDef (_, _, _, body, _)) ->
                 1 + countOperations body
             | MLIROp.SCFOp (SCFOp.If (_, thenOps, elseOps)) ->

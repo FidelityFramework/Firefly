@@ -68,7 +68,6 @@ let transfer
         // Strip scope markers and prepare operations for output
         let cleanedOps =
             accumulator.AllOps
-            |> List.filter (fun op -> match op with MLIROp.ScopeMarker _ -> false | _ -> true)
             |> List.rev
 
         // Write partial MLIR to intermediate file for debugging (even with errors)

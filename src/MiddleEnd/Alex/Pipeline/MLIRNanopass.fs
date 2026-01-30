@@ -303,7 +303,6 @@ let structuralFoldingPass (operations: MLIROp list) : MLIROp list =
         ops |> List.filter (fun op ->
             match op with
             | MLIROp.FuncOp (FuncOp.FuncDef _) -> true  // Keep FuncDef nodes
-            | MLIROp.ScopeMarker _ -> false  // Remove scope markers
             | MLIROp.GlobalString _ -> true  // Keep globals (will deduplicate separately)
             | _ -> not (isDuplicate op)  // Keep if not duplicate
         )

@@ -40,33 +40,29 @@ let private makeSubGraphCombinator (nanopasses: Nanopass list) : (WitnessContext
         tryWitnesses nanopasses
 
 /// Helper: Witness a branch/scope by marking boundaries and extracting operations
-let private witnessBranchScope (scopeKind: ScopeKind) (rootId: NodeId) ctx combinator : MLIROp list =
-    let scopeLabel = sprintf "scope_%d" (NodeId.value rootId)
+/// Witness a branch scope (if-then, if-else, while-cond, while-body, for-body)
+/// Uses nested accumulator to collect branch operations without markers
+let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) combinator : MLIROp list =
+    // Create NESTED accumulator for branch operations
+    let branchAcc = MLIRAccumulator.empty()
 
-    // Mark scope entry
-    MLIRAccumulator.addOp (MLIROp.ScopeMarker (ScopeEnter (scopeKind, scopeLabel))) ctx.Accumulator
-
-    // Witness branch nodes into shared accumulator
+    // Witness branch nodes into nested accumulator
     match SemanticGraph.tryGetNode rootId ctx.Graph with
     | Some branchNode ->
         match focusOn rootId ctx.Zipper with
         | Some branchZipper ->
-            let branchCtx = { ctx with Zipper = branchZipper }
+            let branchCtx = { ctx with Zipper = branchZipper; Accumulator = branchAcc }
             let branchVisited = ref Set.empty  // Fresh visited set for branch traversal
-            visitAllNodes combinator branchCtx branchNode ctx.Accumulator branchVisited
+            visitAllNodes combinator branchCtx branchNode branchAcc branchVisited
+            
+            // Copy bindings from branch accumulator to parent
+            branchAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
+                ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
         | None -> ()
     | None -> ()
 
-    // Mark scope exit
-    MLIRAccumulator.addOp (MLIROp.ScopeMarker (ScopeExit (scopeKind, scopeLabel))) ctx.Accumulator
-
-    // Extract operations between markers
-    let branchOps = MLIRAccumulator.extractScope scopeKind scopeLabel ctx.Accumulator
-
-    // Remove scope from accumulator (markers + contents)
-    MLIRAccumulator.removeScopeEntirely scopeKind scopeLabel ctx.Accumulator
-
-    branchOps
+    // Return branch operations directly from nested accumulator
+    branchAcc.AllOps
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
@@ -82,8 +78,8 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
         match MLIRAccumulator.recallNode condId ctx.Accumulator with
         | None -> WitnessOutput.error "IfThenElse: Condition not yet witnessed"
         | Some (condSSA, _) ->
-            let thenOps = witnessBranchScope IfThenScope thenId ctx subGraphCombinator
-            let elseOps = elseIdOpt |> Option.map (fun elseId -> witnessBranchScope IfElseScope elseId ctx subGraphCombinator)
+            let thenOps = witnessBranchScope thenId ctx subGraphCombinator
+            let elseOps = elseIdOpt |> Option.map (fun elseId -> witnessBranchScope elseId ctx subGraphCombinator)
 
             match tryMatch (pBuildIfThenElse condSSA thenOps elseOps) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
             | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
@@ -92,8 +88,8 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
     | None ->
         match tryMatch pWhileLoop ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
         | Some ((condId, bodyId), _) ->
-            let condOps = witnessBranchScope WhileCondScope condId ctx subGraphCombinator
-            let bodyOps = witnessBranchScope WhileBodyScope bodyId ctx subGraphCombinator
+            let condOps = witnessBranchScope condId ctx subGraphCombinator
+            let bodyOps = witnessBranchScope bodyId ctx subGraphCombinator
 
             match tryMatch (pBuildWhileLoop condOps bodyOps) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
             | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
@@ -104,7 +100,7 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
             | Some ((_, lowerId, upperId, _, bodyId), _) ->
                 match MLIRAccumulator.recallNode lowerId ctx.Accumulator, MLIRAccumulator.recallNode upperId ctx.Accumulator with
                 | Some (lowerSSA, _), Some (upperSSA, _) ->
-                    let _bodyOps = witnessBranchScope ForBodyScope bodyId ctx subGraphCombinator
+                    let _bodyOps = witnessBranchScope bodyId ctx subGraphCombinator
                     WitnessOutput.error "ForLoop needs step constant - gap in patterns"
 
                 | _ -> WitnessOutput.error "ForLoop: Loop bounds not yet witnessed"

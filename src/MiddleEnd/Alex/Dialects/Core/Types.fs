@@ -283,23 +283,8 @@ type VectorOp =
     | ConstantMask of SSA * int list                                        // result, maskDimSizes
     | Print of SSA * string option                                          // source, punctuation
 
-/// Scope kind for tracking nested regions during witnessing
-/// Used with flat accumulator architecture to delimit function/branch boundaries
-type ScopeKind =
-    | FunctionScope of funcName: string
-    | IfThenScope
-    | IfElseScope
-    | WhileCondScope
-    | WhileBodyScope
-    | ForBodyScope
-
-/// Scope marker for flat accumulator architecture
-/// These are metadata annotations in the flat operation stream
-type ScopeMarker =
-    | ScopeEnter of ScopeKind * label: string
-    | ScopeExit of ScopeKind * label: string
-
-/// Top-level MLIR operation (all dialects) - forward declaration for mutual recursion
+/// Top-level MLIR operation (all dialects)
+/// Single-phase execution with nested accumulators - no scope markers needed
 type MLIROp =
     | MemRefOp of MemRefOp
     | LLVMOp of LLVMOp
@@ -311,7 +296,6 @@ type MLIROp =
     | VectorOp of VectorOp
     | Block of string * MLIROp list                                 // label, ops
     | Region of MLIROp list                                         // blocks
-    | ScopeMarker of ScopeMarker                                    // metadata for flat accumulator
     // Module-level declarations (backend-agnostic)
     | GlobalString of string * string * int                         // name, content, byteLength
     | AddressOf of SSA * string * MLIRType                          // result, globalName, ptrType
