@@ -232,7 +232,9 @@ module MLIRAccumulator =
         let enterMarker = MLIROp.ScopeMarker (ScopeEnter (kind, label))
         let exitMarker = MLIROp.ScopeMarker (ScopeExit (kind, label))
 
-        // Find operations between markers (reversed because ops are prepended)
+        // Find operations between markers
+        // Operations are prepended during accumulation, so they're already in reverse post-order
+        // Post-order traversal + prepend = correct definition-before-use order
         let rec findBetween ops collecting result =
             match ops with
             | [] -> result  // Markers not found, return what we collected
@@ -240,7 +242,7 @@ module MLIRAccumulator =
                 if op = exitMarker then
                     findBetween rest true result
                 elif op = enterMarker then
-                    List.rev result  // Found both markers, return collected ops
+                    result  // Found both markers, return collected ops (already in correct order)
                 elif collecting then
                     findBetween rest true (op :: result)
                 else
@@ -254,9 +256,11 @@ module MLIRAccumulator =
         let exitMarker = MLIROp.ScopeMarker (ScopeExit (kind, label))
 
         // Remove operations between markers and the markers themselves
+        // Operations are prepended during accumulation, so they're in reverse order
+        // We need to preserve this order (don't reverse again)
         let rec removeScope ops collecting result =
             match ops with
-            | [] -> List.rev result
+            | [] -> result  // Don't reverse - operations already in correct prepended order
             | op :: rest ->
                 if op = exitMarker then
                     // Start collecting (skipping marker)

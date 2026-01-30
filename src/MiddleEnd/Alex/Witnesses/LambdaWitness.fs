@@ -103,14 +103,15 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Get body result for return value
             let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
 
-            // Determine return value and type
+            // Trust bodyResult - emit error if None
             let returnSSA, returnType =
                 match bodyResult with
                 | Some (ssa, ty) -> (Some ssa, ty)
                 | None ->
-                    match List.tryLast bodyOps with
-                    | Some (MLIROp.ArithOp (ArithOp.ConstI (ssa, _, ty))) -> (Some ssa, ty)
-                    | _ -> (Some (SSA.V 0), TInt I32)
+                    let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some "Entry point return")
+                                (sprintf "Body (node %d) produced no result - fix upstream witness" (NodeId.value bodyId))
+                    MLIRAccumulator.addError err ctx.Accumulator
+                    (None, TInt I32)
 
             let returnOp = MLIROp.FuncOp (FuncOp.Return (returnSSA, Some returnType))
             let completeBody = bodyOps @ [returnOp]
@@ -130,20 +131,14 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             { InlineOps = []; TopLevelOps = []; Result = TRVoid }
         else
             // Non-entry-point Lambda: Generate FuncDef for module-level function
-            // Extract function name from parent Binding node
+            // Extract function name from parent Binding node using XParsec pattern
             let funcName =
-                match node.Parent with
-                | Some parentId ->
-                    match SemanticGraph.tryGetNode parentId ctx.Graph with
-                    | Some parentNode ->
-                        match parentNode.Kind.ToString().Split([|'\n'; '('|]) with
-                        | parts when parts.Length > 1 && parts.[0].Trim() = "Binding" ->
-                            // Extract binding name from: Binding ("writeln", ...)
-                            let name = parts.[1].Trim().Trim([|' '; '"'|])
-                            sprintf "@%s" name
-                        | _ -> sprintf "@lambda_%d" nodeIdValue
-                    | None -> sprintf "@lambda_%d" nodeIdValue
-                | None -> sprintf "@lambda_%d" nodeIdValue
+                match tryMatch pLambdaWithBinding ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                | Some ((bindingName, _, _, _), _) ->
+                    // No @ prefix - serializer will add it
+                    bindingName
+                | None ->
+                    sprintf "lambda_%d" nodeIdValue
 
             let scopeLabel = sprintf "func_%d" nodeIdValue
             let scopeKind = FunctionScope funcName
@@ -197,11 +192,18 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | NativeType.TFun (_, retType) -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch retType
                 | _ -> TInt I32  // Fallback
 
-            // Build return operation
-            let returnOp =
+            // Trust bodyResult - emit error if None
+            let returnSSA =
                 match bodyResult with
-                | Some (ssa, _) -> MLIROp.FuncOp (FuncOp.Return (Some ssa, Some returnType))
-                | None -> MLIROp.FuncOp (FuncOp.Return (None, Some returnType))
+                | Some (ssa, _) -> Some ssa
+                | None ->
+                    let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some (sprintf "%s return" funcName))
+                                (sprintf "Body (node %d) produced no result - fix upstream witness" (NodeId.value bodyId))
+                    MLIRAccumulator.addError err ctx.Accumulator
+                    None
+
+            // Build return operation
+            let returnOp = MLIROp.FuncOp (FuncOp.Return (returnSSA, Some returnType))
 
             let completeBody = bodyOps @ [returnOp]
 

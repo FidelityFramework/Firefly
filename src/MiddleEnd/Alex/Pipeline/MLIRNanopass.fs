@@ -254,17 +254,30 @@ let structuralFoldingPass (operations: MLIROp list) : MLIROp list =
         let defined = getDefinedSSAs op
         defined |> List.exists (fun ssa -> Set.contains ssa funcDefSSAs)
 
+    /// Deduplicate GlobalStrings by symbol name
+    let deduplicateGlobals (ops: MLIROp list) : MLIROp list =
+        let mutable seenGlobals = Set.empty
+        ops |> List.filter (fun op ->
+            match op with
+            | MLIROp.GlobalString (name, _, _) ->
+                if Set.contains name seenGlobals then
+                    false  // Skip duplicate
+                else
+                    seenGlobals <- Set.add name seenGlobals
+                    true  // Keep first occurrence
+            | _ -> true)
+
     /// Filter operations: keep FuncDef nodes and non-duplicate operations
     let rec filterOps ops =
         ops |> List.filter (fun op ->
             match op with
             | MLIROp.FuncOp (FuncOp.FuncDef _) -> true  // Keep FuncDef nodes
             | MLIROp.ScopeMarker _ -> false  // Remove scope markers
-            | MLIROp.GlobalString _ -> true  // Keep globals
+            | MLIROp.GlobalString _ -> true  // Keep globals (will deduplicate separately)
             | _ -> not (isDuplicate op)  // Keep if not duplicate
         )
 
-    let cleaned = filterOps operations
+    let cleaned = filterOps operations |> deduplicateGlobals
     printfn "[DEBUG] Structural folding: %d ops before, %d ops after" (List.length operations) (List.length cleaned)
     cleaned
 

@@ -28,8 +28,9 @@ let private witnessSequential (ctx: WitnessContext) (node: SemanticNode) : Witne
                 // Forward last child's SSA
                 { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
             | None ->
-                // Last child not witnessed yet (shouldn't happen in post-order)
-                WitnessOutput.error "Sequential: Last child not yet witnessed"
+                // Last child has no SSA (e.g., unit literal) - return void
+                // This is normal for sequences ending in unit expressions
+                { InlineOps = []; TopLevelOps = []; Result = TRVoid }
         | None ->
             // Empty sequential - return void
             { InlineOps = []; TopLevelOps = []; Result = TRVoid }

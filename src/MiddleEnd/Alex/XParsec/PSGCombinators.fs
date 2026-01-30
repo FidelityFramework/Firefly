@@ -230,6 +230,43 @@ let pLambdaWithCaptures : PSGParser<(string * FSharp.Native.Compiler.NativeTyped
         | _ -> return! fail (Message "Expected Lambda")
     }
 
+/// Match a Lambda node with parent Binding name
+/// Composes: pLambdaWithCaptures + zipper navigation + pBinding
+/// Returns: (bindingName, params, bodyId, captures)
+let pLambdaWithBinding : PSGParser<string * (string * FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NativeType * NodeId) list * NodeId * CaptureInfo list> =
+    parser {
+        // Get Lambda data from current node
+        let! (params', bodyId, captures) = pLambdaWithCaptures
+        
+        // Navigate to parent using zipper
+        let! state = getUserState
+        match up state.Zipper with
+        | Some parentZipper ->
+            // Save current state
+            let savedState = state
+            
+            // Update to parent node
+            let parentNode = parentZipper.Focus
+            do! setUserState { state with Zipper = parentZipper; Current = parentNode }
+            
+            // Try to match parent as Binding
+            let! bindingResult =
+                (parser {
+                    let! (name, _, _, _) = pBinding
+                    return Some name
+                } <|> preturn None)
+            
+            // Restore original state
+            do! setUserState savedState
+            
+            match bindingResult with
+            | Some name -> return (name, params', bodyId, captures)
+            | None -> return (sprintf "lambda_%d" (NodeId.value state.Current.Id), params', bodyId, captures)
+        | None ->
+            // No parent - use node ID as fallback name
+            return (sprintf "lambda_%d" (NodeId.value state.Current.Id), params', bodyId, captures)
+    }
+
 /// Match an IfThenElse node
 let pIfThenElse : PSGParser<NodeId * NodeId * NodeId option> =
     parser {
@@ -266,6 +303,17 @@ let pSequential : PSGParser<NodeId list> =
         match node.Kind with
         | SemanticKind.Sequential childIds -> return childIds
         | _ -> return! fail (Message "Expected Sequential")
+    }
+
+/// Match a TypeAnnotation node
+/// TypeAnnotation is a transparent wrapper - returns (wrappedNodeId, annotatedType)
+let pTypeAnnotation : PSGParser<NodeId * NativeType> =
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.TypeAnnotation (wrappedId, annotatedType) ->
+            return (wrappedId, annotatedType)
+        | _ -> return! fail (Message "Expected TypeAnnotation")
     }
 
 /// Match a PatternBinding node
