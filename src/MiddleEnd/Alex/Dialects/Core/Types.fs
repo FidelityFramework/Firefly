@@ -33,7 +33,8 @@ type MLIRType =
     | TStruct of MLIRType list              // Struct type
     | TArray of int * MLIRType              // Fixed-size array
     | TFunc of MLIRType list * MLIRType     // Function type (args, return)
-    | TMemRef of MLIRType                   // MemRef type
+    | TMemRef of MLIRType                   // MemRef type (dynamic 1D)
+    | TMemRefScalar of MLIRType             // Scalar MemRef type (0D)
     | TVector of int * MLIRType             // Vector type (SIMD)
     | TIndex                                // Index type
     | TUnit                                 // Unit type (represented as i32 0)
@@ -148,6 +149,7 @@ type MemRefOp =
     | Store of SSA * SSA * SSA list * MLIRType                         // value, memref, indices, type
     | Alloca of SSA * MLIRType * int option                            // result, memrefType, alignment
     | SubView of SSA * SSA * SSA list * MLIRType                       // result, source, offsets, resultType
+    | ExtractBasePtr of SSA * SSA * MLIRType                           // result, memref, memrefType → !llvm.ptr (for FFI)                       // result, source, offsets, resultType
 
 /// LLVM dialect operations
 type LLVMOp =

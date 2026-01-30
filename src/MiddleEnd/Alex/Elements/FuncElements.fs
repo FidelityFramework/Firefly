@@ -61,3 +61,12 @@ let pFuncConstant (result: SSA) (funcName: string) (funcTy: MLIRType) : PSGParse
     parser {
         return MLIROp.FuncOp (FuncOp.FuncConstant (result, funcName, funcTy))
     }
+
+// ═══════════════════════════════════════════════════════════
+// RETURN
+// ═══════════════════════════════════════════════════════════
+
+let pFuncReturn (valueOpt: SSA option) (tyOpt: MLIRType option) : PSGParser<MLIROp> =
+    parser {
+        return MLIROp.FuncOp (FuncOp.Return (valueOpt, tyOpt))
+    }

@@ -9,15 +9,15 @@ open XParsec.Parsers     // preturn
 open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
-open Alex.Elements.LLVMElements
+open Alex.Elements.FuncElements
 open Alex.Elements.ArithElements
 
 // ═══════════════════════════════════════════════════════════
 // PLATFORM I/O SYSCALLS
 // ═══════════════════════════════════════════════════════════
 
-/// Build Sys.write syscall pattern
-/// syscall(1, fd, buffer_ptr, count) -> bytes_written
+/// Build Sys.write syscall pattern (portable)
+/// Uses func.call (portable) for direct syscall
 ///
 /// Parameters:
 /// - resultSSA: SSA value for result (bytes written)
@@ -26,15 +26,19 @@ open Alex.Elements.ArithElements
 /// - countSSA: Number of bytes to write SSA
 let pSysWrite (resultSSA: SSA) (fdSSA: SSA) (bufferSSA: SSA) (countSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Emit llvm.call to write syscall
-        // write(fd: i64, buffer: ptr, count: i64) -> i64
-        let! writeCall = pCall resultSSA "write" [(fdSSA, TInt I64); (bufferSSA, TPtr); (countSSA, TInt I64)]
+        // Portable direct call to write syscall: write(fd: i64, buffer: ptr, count: i64) -> i64
+        let vals = [
+            { SSA = fdSSA; Type = TInt I64 }
+            { SSA = bufferSSA; Type = TPtr }
+            { SSA = countSSA; Type = TInt I64 }
+        ]
+        let! writeCall = pFuncCall (Some resultSSA) "write" vals (TInt I64)
 
         return ([writeCall], TRValue { SSA = resultSSA; Type = TInt I64 })
     }
 
-/// Build Sys.read syscall pattern
-/// syscall(0, fd, buffer_ptr, count) -> bytes_read
+/// Build Sys.read syscall pattern (portable)
+/// Uses func.call (portable) for direct syscall
 ///
 /// Parameters:
 /// - resultSSA: SSA value for result (bytes read)
@@ -43,9 +47,13 @@ let pSysWrite (resultSSA: SSA) (fdSSA: SSA) (bufferSSA: SSA) (countSSA: SSA) : P
 /// - countSSA: Maximum bytes to read SSA
 let pSysRead (resultSSA: SSA) (fdSSA: SSA) (bufferSSA: SSA) (countSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Emit llvm.call to read syscall
-        // read(fd: i64, buffer: ptr, count: i64) -> i64
-        let! readCall = pCall resultSSA "read" [(fdSSA, TInt I64); (bufferSSA, TPtr); (countSSA, TInt I64)]
+        // Portable direct call to read syscall: read(fd: i64, buffer: ptr, count: i64) -> i64
+        let vals = [
+            { SSA = fdSSA; Type = TInt I64 }
+            { SSA = bufferSSA; Type = TPtr }
+            { SSA = countSSA; Type = TInt I64 }
+        ]
+        let! readCall = pFuncCall (Some resultSSA) "read" vals (TInt I64)
 
         return ([readCall], TRValue { SSA = resultSSA; Type = TInt I64 })
     }

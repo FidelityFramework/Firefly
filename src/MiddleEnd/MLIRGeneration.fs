@@ -81,7 +81,13 @@ let generate
     | entryId :: _ ->
         match transfer graph entryId coeffects intermediatesDir with
         | Result.Ok (topLevelOps, _) ->
+            // Apply MLIR nanopasses (MLIR→MLIR transformations)
+            // This is the integration point for dual witness infrastructure:
+            // - PSG witnesses emit portable MLIR (memref, func.call)
+            // - MLIR nanopasses transform for backends (FFI conversion, DCont/Inet lowering)
+            let transformedOps = Alex.Pipeline.MLIRNanopass.applyPasses topLevelOps platformResolution
+
             // Serialize MLIROp → MLIR text (exit point of MiddleEnd)
-            let mlirText = moduleToString "main" topLevelOps
+            let mlirText = moduleToString "main" transformedOps
             Result.Ok mlirText
         | Result.Error msg -> Result.Error msg

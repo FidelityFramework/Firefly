@@ -15,6 +15,8 @@ open Alex.Elements.MLIRElements
 open Alex.Elements.MemRefElements
 open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open Alex.CodeGeneration.TypeMapping
 
 // ═══════════════════════════════════════════════════════════
 // FIELD EXTRACTION PATTERNS
@@ -42,8 +44,8 @@ let pAllocaImmutable (valueSSA: SSA) (valueType: MLIRType) (ssas: SSA list) : PS
 
         let constOneTy = TInt I64
         let! constOp = pConstI constOneSSA 1L constOneTy
-        let! allocaOp = pAlloca allocaSSA (Some 1)
-        let! storeOp = pStore valueSSA allocaSSA
+        let! allocaOp = pAlloca allocaSSA valueType None
+        let! storeOp = pStore valueSSA allocaSSA [] valueType
 
         return [constOp; allocaOp; storeOp]
     }
@@ -172,7 +174,7 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
         // Allocate array
         let countTy = TInt I64
         let! countOp = pConstI countSSA (int64 count) countTy
-        let! allocaOp = pAlloca allocaSSA (Some count)
+        let! allocaOp = pAlloca allocaSSA elemType None
 
         // Store each element
         let indexTy = TInt I64
@@ -185,7 +187,7 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
                     let gepSSA = ssas.[2 + i * 2 + 1]
                     let! idxOp = pConstI idxSSA (int64 i) indexTy
                     let! gepOp = pGEP gepSSA allocaSSA [(idxSSA, TInt I64)]
-                    let! storeOp = pStore elem.SSA gepSSA
+                    let! storeOp = pStore elem.SSA gepSSA [] elemType
                     return [idxOp; gepOp; storeOp]
                 })
             |> sequence
@@ -215,22 +217,43 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
 /// NativePtr.stackalloc<'T>() : nativeptr<'T>
 let pNativePtrStackAlloc (resultSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Emit memref.alloca operation
-        let! allocaOp = pAlloca resultSSA None
+        let! state = getUserState
 
-        return ([allocaOp], TRValue { SSA = resultSSA; Type = TPtr })
+        // Extract element type from nativeptr<'T> in state.Current.Type
+        let elemType =
+            match state.Current.Type with
+            | NativeType.TApp(tycon, [innerTy]) when tycon.Name = "nativeptr" ->
+                // Map inner type to concrete MLIR type via platform
+                mapNativeTypeForArch state.Platform.TargetArch innerTy
+            | _ ->
+                // Fallback to byte storage if type extraction fails
+                TInt I8
+
+        let! allocaOp = pAlloca resultSSA elemType None
+        let memrefTy = TMemRefScalar elemType
+
+        // Return memref type (not TPtr) - conversion to pointer happens at FFI boundary
+        return ([allocaOp], TRValue { SSA = resultSSA; Type = memrefTy })
     }
 
 /// Build NativePtr.write pattern
 /// Writes a value to a pointer location
 ///
 /// NativePtr.write (ptr: nativeptr<'T>) (value: 'T) : unit
-let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) (elemType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Emit memref.store operation
-        let! storeOp = pStore valueSSA ptrSSA
+        let! storeOp = pStore valueSSA ptrSSA [] elemType
 
         return ([storeOp], TRVoid)
+    }
+
+/// Convert memref to pointer for FFI boundaries
+/// Uses builtin.unrealized_conversion_cast for boundary crossing
+let pMemRefToPtr (resultSSA: SSA) (memrefSSA: SSA) (memrefTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! extractOp = pExtractBasePtr resultSSA memrefSSA memrefTy
+        return ([extractOp], TRValue { SSA = resultSSA; Type = TPtr })
     }
 
 /// Build NativePtr.read pattern

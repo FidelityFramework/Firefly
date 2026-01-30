@@ -103,8 +103,11 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             let returnOp = MLIROp.FuncOp (FuncOp.Return (returnSSA, Some returnType))
             let completeBody = bodyOps @ [returnOp]
 
-            // Build FuncDef wrapper
-            let funcDef = FuncOp.FuncDef("main", [], returnType, completeBody, Public)
+            // Build func.func @main wrapper (portable)
+            // Parameters: argv as !llvm.struct<(!llvm.ptr, i64)> fat pointer
+            let argvType = TStruct [TPtr; TInt I64]
+            let funcParams = [(SSA.Arg 0, argvType)]
+            let funcDef = FuncOp.FuncDef("main", funcParams, returnType, completeBody, Public)
 
             // Replace scope with FuncDef
             MLIRAccumulator.replaceScope scopeKind scopeLabel (MLIROp.FuncOp funcDef) ctx.Accumulator

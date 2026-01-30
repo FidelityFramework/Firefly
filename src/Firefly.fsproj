@@ -119,6 +119,9 @@
       <!-- Alex Pipeline Types -->
       <Compile Include="MiddleEnd/Alex/Pipeline/CompilationTypes.fs" />
 
+      <!-- Alex Pipeline - MLIR Nanopasses (MLIR→MLIR transformations) -->
+      <Compile Include="MiddleEnd/Alex/Pipeline/MLIRNanopass.fs" />
+
       <!-- MiddleEnd - MLIR Generation (Public API: PSG → MLIR) -->
       <Compile Include="MiddleEnd/MLIRGeneration.fs" />
 

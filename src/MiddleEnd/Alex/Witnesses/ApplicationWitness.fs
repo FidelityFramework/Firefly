@@ -9,6 +9,7 @@ module Alex.Witnesses.ApplicationWitness
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
@@ -72,9 +73,22 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "NativePtr.stackalloc pattern failed"
 
                         | IntrinsicModule.NativePtr, "write", [ptrSSA; valueSSA] ->
-                            match tryMatch (pNativePtrWrite valueSSA ptrSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                            | None -> WitnessOutput.error "NativePtr.write pattern failed"
+                            // Extract element type from pointer argument (nativeptr<'T>)
+                            let ptrNodeId = argIds.[0]
+                            match SemanticGraph.tryGetNode ptrNodeId ctx.Graph with
+                            | Some ptrNode ->
+                                let elemType =
+                                    match ptrNode.Type with
+                                    | NativeType.TApp(tycon, [innerTy]) when tycon.Name = "nativeptr" ->
+                                        mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch innerTy
+                                    | _ ->
+                                        // Fallback to i8 if type extraction fails
+                                        TInt I8
+
+                                match tryMatch (pNativePtrWrite valueSSA ptrSSA elemType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                                | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                | None -> WitnessOutput.error "NativePtr.write pattern failed"
+                            | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"
 
                         | IntrinsicModule.NativePtr, "read", [ptrSSA] ->
                             match tryMatch (pNativePtrRead resultSSA ptrSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
@@ -82,6 +96,9 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "NativePtr.read pattern failed"
 
                         | IntrinsicModule.Sys, "write", [fdSSA; bufferSSA; countSSA] ->
+                            // Witness emits call with memref - MLIR nanopass layer will convert if needed
+                            // ARCHITECTURAL PRINCIPLE: Witnesses observe PSG and emit MLIR.
+                            // MLIR nanopasses transform MLIR. Clean separation of concerns.
                             match tryMatch (pSysWrite resultSSA fdSSA bufferSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                             | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                             | None -> WitnessOutput.error "Sys.write pattern failed"

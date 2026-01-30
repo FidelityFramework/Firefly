@@ -42,6 +42,8 @@ let rec typeToString (ty: MLIRType) : string =
         sprintf "(%s) -> %s" paramStrs (typeToString retType)
     | TMemRef elemTy ->
         sprintf "memref<?x%s>" (typeToString elemTy)
+    | TMemRefScalar elemTy ->
+        sprintf "memref<%s>" (typeToString elemTy)
     | TVector (count, elemTy) ->
         sprintf "vector<%dx%s>" count (typeToString elemTy)
     | TIndex -> "index"
@@ -164,11 +166,11 @@ let arithOpToString (op: ArithOp) : string =
 let memrefOpToString (op: MemRefOp) : string =
     match op with
     | MemRefOp.Load (result, memref, indices, ty) ->
-        let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
+        let indicesStr = if List.isEmpty indices then "[]" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
         sprintf "%s = memref.load %s%s : memref<%s>"
             (ssaToString result) (ssaToString memref) indicesStr (typeToString ty)
     | MemRefOp.Store (value, memref, indices, ty) ->
-        let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
+        let indicesStr = if List.isEmpty indices then "[]" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
         sprintf "memref.store %s, %s%s : memref<%s>"
             (ssaToString value) (ssaToString memref) indicesStr (typeToString ty)
     | MemRefOp.Alloca (result, memrefType, alignmentOpt) ->
@@ -182,6 +184,11 @@ let memrefOpToString (op: MemRefOp) : string =
         let offsetsStr = offsets |> List.map ssaToString |> String.concat ", "
         sprintf "%s = memref.subview %s[%s] : %s"
             (ssaToString result) (ssaToString source) offsetsStr (typeToString resultType)
+    | MemRefOp.ExtractBasePtr (result, memref, ty) ->
+        // builtin.unrealized_conversion_cast is the standard MLIR way to handle
+        // type conversions at boundaries (FFI, dialect boundaries, etc.)
+        sprintf "%s = builtin.unrealized_conversion_cast %s : %s to !llvm.ptr"
+            (ssaToString result) (ssaToString memref) (typeToString ty)
 
 /// Serialize LLVMOp to MLIR text
 let llvmOpToString (op: LLVMOp) : string =
@@ -278,15 +285,17 @@ let rec opToString (op: MLIROp) : string =
             let paramsStr = paramTypes |> List.map typeToString |> String.concat ", "
             sprintf "func.func private @%s(%s) -> %s" name paramsStr (typeToString retTy)
         | FuncCall (resultOpt, funcName, args, retTy) ->
-            let argsStr = args |> List.map valToString |> String.concat ", "
+            let argSSAs = args |> List.map (fun v -> ssaToString v.SSA) |> String.concat ", "
+            let argTypes = args |> List.map (fun v -> typeToString v.Type) |> String.concat ", "
             match resultOpt with
-            | Some result -> sprintf "%s = func.call @%s(%s) : %s" (ssaToString result) funcName argsStr (typeToString retTy)
-            | None -> sprintf "func.call @%s(%s) : %s" funcName argsStr (typeToString retTy)
+            | Some result -> sprintf "%s = func.call @%s(%s) : (%s) -> %s" (ssaToString result) funcName argSSAs argTypes (typeToString retTy)
+            | None -> sprintf "func.call @%s(%s) : (%s) -> %s" funcName argSSAs argTypes (typeToString retTy)
         | FuncCallIndirect (resultOpt, callee, args, retTy) ->
-            let argsStr = args |> List.map valToString |> String.concat ", "
+            let argSSAs = args |> List.map (fun v -> ssaToString v.SSA) |> String.concat ", "
+            let argTypes = args |> List.map (fun v -> typeToString v.Type) |> String.concat ", "
             match resultOpt with
-            | Some result -> sprintf "%s = func.call_indirect %s(%s) : %s" (ssaToString result) (ssaToString callee) argsStr (typeToString retTy)
-            | None -> sprintf "func.call_indirect %s(%s) : %s" (ssaToString callee) argsStr (typeToString retTy)
+            | Some result -> sprintf "%s = func.call_indirect %s(%s) : (%s) -> %s" (ssaToString result) (ssaToString callee) argSSAs argTypes (typeToString retTy)
+            | None -> sprintf "func.call_indirect %s(%s) : (%s) -> %s" (ssaToString callee) argSSAs argTypes (typeToString retTy)
         | FuncConstant (result, funcName, funcTy) ->
             sprintf "%s = func.constant @%s : %s" (ssaToString result) funcName (typeToString funcTy)
         | Return (valueOpt, tyOpt) ->

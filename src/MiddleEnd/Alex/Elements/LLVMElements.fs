@@ -34,16 +34,6 @@ open Alex.Elements.ArithElements
 let pLoad (ssa: SSA) (ptr: SSA) : PSGParser<MLIROp> =
     MemRefElements.pLoad ssa ptr []
 
-/// DEPRECATED: Use MemRefElements.pStore instead
-/// Wrapper for backward compatibility with Pattern files
-let pStore (value: SSA) (ptr: SSA) : PSGParser<MLIROp> =
-    MemRefElements.pStore value ptr []
-
-/// DEPRECATED: Use MemRefElements.pAlloca instead
-/// Wrapper for backward compatibility with Pattern files
-let pAlloca (ssa: SSA) (size: int option) : PSGParser<MLIROp> =
-    MemRefElements.pAlloca ssa None
-
 /// DEPRECATED: For simple array indexing, use MemRefElements.pSubView instead
 /// For C struct layout, use pStructGEP below
 /// Wrapper for backward compatibility with Pattern files

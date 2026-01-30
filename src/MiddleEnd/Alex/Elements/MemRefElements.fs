@@ -30,19 +30,18 @@ let pLoad (ssa: SSA) (memref: SSA) (indices: SSA list) : PSGParser<MLIROp> =
     }
 
 /// Emit memref.store operation
-let pStore (value: SSA) (memref: SSA) (indices: SSA list) : PSGParser<MLIROp> =
+/// elemType: element type of the memref (must match value type)
+let pStore (value: SSA) (memref: SSA) (indices: SSA list) (elemType: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.MemRefOp (MemRefOp.Store (value, memref, indices, ty))
+        return MLIROp.MemRefOp (MemRefOp.Store (value, memref, indices, elemType))
     }
 
 /// Emit memref.alloca operation (stack allocation)
-let pAlloca (ssa: SSA) (alignment: int option) : PSGParser<MLIROp> =
+/// elemType: explicit element type for the memref (e.g., TInt I8, TInt I32, TStruct [...])
+/// Creates scalar (0D) memref for single-element allocations
+let pAlloca (ssa: SSA) (elemType: MLIRType) (alignment: int option) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        let memrefType = TMemRef ty
+        let memrefType = TMemRefScalar elemType
         return MLIROp.MemRefOp (MemRefOp.Alloca (ssa, memrefType, alignment))
     }
 
@@ -53,4 +52,12 @@ let pSubView (ssa: SSA) (source: SSA) (offsets: SSA list) : PSGParser<MLIROp> =
         let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
         let memrefType = TMemRef ty
         return MLIROp.MemRefOp (MemRefOp.SubView (ssa, source, offsets, memrefType))
+    }
+
+/// Extract base pointer from memref for FFI boundaries
+/// Uses builtin.unrealized_conversion_cast - standard MLIR operation for boundary crossings
+/// This is for cases where portable memref needs to be passed to external C functions (syscalls, FFI)
+let pExtractBasePtr (result: SSA) (memref: SSA) (memrefTy: MLIRType) : PSGParser<MLIROp> =
+    parser {
+        return MLIROp.MemRefOp (MemRefOp.ExtractBasePtr (result, memref, memrefTy))
     }

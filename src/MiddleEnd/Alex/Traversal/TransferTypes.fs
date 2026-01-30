@@ -194,7 +194,8 @@ module Diagnostic =
 type MLIRAccumulator = {
     mutable AllOps: MLIROp list                      // Flat operation stream with markers
     mutable Errors: Diagnostic list
-    mutable NodeAssoc: Map<NodeId, SSA * MLIRType>  // Global SSA bindings
+    mutable NodeAssoc: Map<NodeId, SSA * MLIRType>  // Global SSA bindings (PSG nodes)
+    mutable MLIRTempCounter: int                      // For MLIR-level temporary SSAs (NOT PSG nodes)
 }
 
 module MLIRAccumulator =
@@ -203,6 +204,7 @@ module MLIRAccumulator =
             AllOps = []
             Errors = []
             NodeAssoc = Map.empty
+            MLIRTempCounter = 0
         }
 
     /// Add a single operation to the flat stream

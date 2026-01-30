@@ -47,7 +47,7 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
 
         // Update position: pos + size
         let! addOp = pAddI newPosSSA heapPosSSA sizeSSA
-        let! storePosOp = pStore newPosSSA heapPosPtrSSA
+        let! storePosOp = pStore newPosSSA heapPosPtrSSA [] (TInt I64)
 
         return ([addressOfPosOp; loadPosOp; addressOfBaseOp; gepOp; addOp; storePosOp], resultPtrSSA)
     }

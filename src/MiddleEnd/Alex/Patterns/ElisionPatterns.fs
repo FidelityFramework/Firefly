@@ -22,6 +22,8 @@ open Alex.Elements.IndexElements
 open Alex.Elements.VectorElements
 open PSGElaboration.StringCollection  // For deriveGlobalRef, deriveByteLength
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open Alex.CodeGeneration.TypeMapping
 
 // ═══════════════════════════════════════════════════════════
 // XParsec HELPERS
@@ -45,8 +47,11 @@ let pFieldAccess (structPtr: SSA) (fieldIndex: int) (gepSSA: SSA) (loadSSA: SSA)
 /// Field set via StructGEP + Store
 let pFieldSet (structPtr: SSA) (fieldIndex: int) (value: SSA) (gepSSA: SSA) : PSGParser<MLIROp list> =
     parser {
+        let! state = getUserState
+        let elemType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+
         let! gepOp = pStructGEP gepSSA structPtr fieldIndex
-        let! storeOp = pStore value gepSSA
+        let! storeOp = pStore value gepSSA [] elemType
         return [gepOp; storeOp]
     }
 
@@ -61,8 +66,11 @@ let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) 
 /// Array element set via GEP + Store
 let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gepSSA: SSA) : PSGParser<MLIROp list> =
     parser {
+        let! state = getUserState
+        let elemType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+
         let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
-        let! storeOp = pStore value gepSSA
+        let! storeOp = pStore value gepSSA [] elemType
         return [gepOp; storeOp]
     }
 
@@ -269,13 +277,13 @@ let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy
         let codePtrTy = TPtr
         let! extractCodePtrOp = pExtractValue codePtrSSA lazySSA [2] codePtrTy
 
-        // Alloca space for lazy struct (1 element)
+        // Alloca space for lazy struct
         let constOneTy = TInt I64
         let! constOneOp = pConstI constOneSSA 1L constOneTy
-        let! allocaOp = pAlloca ptrSSA (Some 1)
+        let! allocaOp = pAlloca ptrSSA lazyTy None
 
         // Store lazy struct to alloca'd space
-        let! storeOp = pStore lazySSA ptrSSA
+        let! storeOp = pStore lazySSA ptrSSA [] lazyTy
 
         // Call thunk with pointer -> result
         let! callOp = pIndirectCall resultSSA codePtrSSA [(ptrSSA, TPtr)]
@@ -1023,11 +1031,13 @@ let pApplicationCall (resultSSA: SSA) (funcSSA: SSA) (args: (SSA * MLIRType) lis
         return ([callOp], TRValue { SSA = resultSSA; Type = retType })
     }
 
-/// Build direct function call (for known function names - optimization)
-/// Future: Use this when funcId resolves to a known symbol name
+/// Build direct function call (for known function names - portable)
+/// Uses func.call (portable) instead of llvm.call (backend-specific)
 let pDirectCall (resultSSA: SSA) (funcName: string) (args: (SSA * MLIRType) list) (retType: MLIRType)
                 : PSGParser<MLIROp list * TransferResult> =
     parser {
-        let! callOp = pCall resultSSA funcName args
+        // Convert (SSA * MLIRType) list to Val list for pFuncCall
+        let vals = args |> List.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
+        let! callOp = pFuncCall (Some resultSSA) funcName vals retType
         return ([callOp], TRValue { SSA = resultSSA; Type = retType })
     }
