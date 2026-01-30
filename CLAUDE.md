@@ -1,282 +1,107 @@
 # Firefly Compiler - Claude Context
 
-## ⚡ ACTIVE ASSIGNMENT: Alex XParsec Remediation (January 2026)
+## Active Assignment: Alex XParsec Remediation (January 2026)
 
-> **STATUS:** Planning Complete, Ready for Implementation
-> **PRIORITY:** This is THE ONLY active assignment. All other work is paused.
+**STATUS:** Planning Complete, Ready for Implementation
+**PRIORITY:** This is THE ONLY active assignment.
 
-### Quick Start for Context Window Transition
+### Context Window Protocol
 
-**At the START of EVERY context window:**
+**START of every context window:**
+1. Read checklist: `mcp__serena-local__read_memory` → `alex_remediation_checklist_2026jan`
+2. Read plan: `/home/hhh/.claude/plans/elegant-marinating-summit.md`
+3. Read core memories: `alex_element_pattern_witness_architecture`, `xparsec_correct_usage_pattern`, `alex_xparsec_throughout_architecture`, `codata_photographer_principle`
+4. Review canonical example: `src/Alex/Witnesses/LazyWitness.fs` (38 lines)
+5. Check progress in checklist
 
-1. **Read the checklist:** `mcp__serena-local__read_memory` for `alex_remediation_checklist_2026jan`
-2. **Read the plan:** `/home/hhh/.claude/plans/elegant-marinating-summit.md`
-3. **Read core memories:**
-   - `alex_element_pattern_witness_architecture`
-   - `xparsec_correct_usage_pattern`
-   - `alex_xparsec_throughout_architecture`
-   - `codata_photographer_principle`
-4. **Review the canonical example:** `src/Alex/Witnesses/LazyWitness.fs` (38 lines)
-5. **Check current progress in checklist** - See what's ✅ complete, 🔄 in-progress, ⬜ not started
+**END of every context window:**
+1. Update checklist (✅/🔄)
+2. Document blockers in "Session Notes"
+3. Commit if compilable
+4. `mcp__serena-local__edit_memory` to persist progress
 
-**At the END of EVERY context window:**
+### Assignment Details
 
-1. **Update the checklist:** Mark items ✅ complete or 🔄 in-progress
-2. **Document issues:** Add blockers/findings to "Session Notes" in checklist
-3. **Commit work** (if compilable): Keep working tree clean
-4. **Update memory:** `mcp__serena-local__edit_memory` to persist progress
+**Goal:** Refactor Alex to leverage XParsec throughout Element/Pattern/Witness architecture
 
-### Assignment Overview
+**Targets:** 56% code reduction (8K→3.5K lines), 90% witness reduction (5.7K→600), 100% direct MLIR op elimination (564→0)
 
-**Goal:** Systematically refactor Alex to leverage XParsec APIs throughout Element/Pattern/Witness architecture
+**Canonical Example:** `src/Alex/Witnesses/LazyWitness.fs` — ALL witnesses follow this ~20-line pattern
 
-**Key Metrics:**
-- **Target:** 56% code reduction (8,000 → 3,500 lines)
-- **Witnesses:** 90% reduction (5,773 → 600 lines)
-- **Direct MLIR ops:** 100% elimination (564 → 0)
-- **XParsec-based witnesses:** 1300% increase (1 → 14)
+**Tracking:** Checklist in Serena memory `alex_remediation_checklist_2026jan`, plan at path above
 
-**Canonical Example:** `src/Alex/Witnesses/LazyWitness.fs` (38 lines) - ALL witnesses must follow this pattern
+### Golden Rules
+1. NO code changes without reading plan and checklist first
+2. LazyWitness.fs is the template for all witnesses
+3. XParsec throughout — Elements, Patterns, AND Witnesses
+4. Codata principle — witnesses observe and return, never build or compute
+5. Gap emergence — if transform logic needed, return `TRError` and fix in FNCS
+6. Incremental validation — compile + test after EACH witness
 
-**Timeline:** 5-6 days (29-41 hours) with testing
-
-**Progress Tracking:**
-- **Checklist:** Serena memory `alex_remediation_checklist_2026jan`
-- **Plan:** `/home/hhh/.claude/plans/elegant-marinating-summit.md`
-
-### The Golden Rules
-
-1. **NO code changes without reading the plan and checklist first**
-2. **LazyWitness.fs is the template** - All witnesses follow its ~20-line pattern
-3. **XParsec throughout** - Elements, Patterns, AND Witnesses all use XParsec
-4. **Codata principle** - Witnesses observe and return, never build or compute
-5. **Gap emergence** - If transform logic needed, return `TRError` and fix in FNCS
-6. **Incremental validation** - Compile + test after EACH witness refactoring
-
-### Architecture Overview
-
+### Alex Architecture
 ```
 Elements/    (module internal)  →  Atomic MLIR ops with XParsec state threading
 Patterns/    (public)           →  Composable elision templates (~50 lines each)
 Witnesses/   (public)           →  Thin observers (~20 lines each)
 ```
-
-**Type-Level Firewall:** Elements are `module internal` - witnesses physically CANNOT import them.
-
----
-
-## CRITICAL: Consult Serena Memories at Architectural Decision Points
-
-> **When encountering issues "downstream" in the pipeline, ALWAYS consult Serena memories on architecture BEFORE attempting fixes.**
-
-The Serena MCP server maintains authoritative memories about architectural decisions, negative examples, and design principles. At any decision point where you're tempted to:
-- Add special-case logic for specific functions or libraries
-- Create a central dispatch/routing mechanism
-- Pattern-match on symbol names rather than PSG structure
-- Work around a PSG deficiency in code generation
-
-**STOP and consult these Serena memories:**
-- `architecture_principles` - Core architectural constraints
-- `fncs_architecture` - FNCS (F# Native Compiler Services) design
-- `alex_zipper_architecture` - The correct Zipper + XParsec + Bindings model
-- `baker_component` - Type resolution layer (Phase 4), SRTP handling
-- `negative_examples` - Real mistakes to avoid repeating
-- `native_binding_architecture` - How platform bindings flow to native code
-
-Use `mcp__serena__read_memory` to review relevant memories before proceeding.
+Elements are `module internal` — witnesses physically cannot import them.
 
 ---
 
-## CRITICAL: Context Window Reset Protocol
+## Architectural Principles
 
-> **At the START of every new context window (after compaction/reset), IMMEDIATELY perform an architectural review.**
+### Consult Serena Memories Before Acting
 
-Before taking ANY action on code, you MUST:
+At any architectural decision point, read relevant memories FIRST:
+- `architecture_principles`, `negative_examples` — Core constraints and real mistakes
+- `fncs_architecture`, `fncs_functional_decomposition_principle` — FNCS design
+- `alex_zipper_architecture` — Zipper + XParsec + Bindings model
+- `baker_component` — Type resolution (Phase 4), SRTP
+- `native_binding_architecture` — Platform bindings flow
+- `compose_from_standing_art_principle` — Extend recent patterns, don't reinvent
 
-1. **Activate the Firefly project** via Serena: `mcp__serena-local__activate_project "Firefly"`
-2. **List available memories**: `mcp__serena-local__list_memories`
-3. **Read critical memories** - at minimum:
-   - `architecture_principles` - Core architectural constraints
-   - `negative_examples` - Real mistakes with explanations (ESSENTIAL)
-   - `fncs_functional_decomposition_principle` - Why intrinsics must decompose
-   - `compose_from_standing_art_principle` - New features MUST extend recent patterns
-4. **Read task-relevant memories** based on the work at hand
-5. **Confirm the layered architecture** - where does this change belong?
+### The Cardinal Rule: Fix Upstream
 
-This is **NON-NEGOTIABLE**. The codebase contains patterns that LOOK reasonable but are architectural violations:
-- Semantic hollowing (type signatures with no functional structure)
-- Imperative MLIR construction in Alex (building structure that should come from PSG)
-- "Kick the can" intrinsics (expecting downstream to implement)
-- Central dispatch/routing mechanisms
-
-Without reviewing memories, you WILL repeat these mistakes. The patterns exist in the code because previous sessions made them before learning better.
-
-**The memories encode hard-won lessons. Read them BEFORE acting.**
-
----
-
-## CRITICAL: Deliberate, Didactic Approach Required
-
-> **SLOW DOWN. Be deliberate. Be didactic. Use agents prolifically to gather context before acting.**
-
-This is a sophisticated compiler project with deep architectural constraints. Fast, intuitive fixes are almost always wrong. The correct approach requires:
-
-1. **Consult Serena Memories First** - Before any architectural decision, read relevant memories. The memories encode lessons learned from past mistakes.
-
-2. **Use Agents Before Acting** - Before making any change, spawn multiple agents to explore relevant reference materials, documentation, and related codebases. Do not rely solely on the files immediately visible.
-
-3. **Confirm Intent** - When encountering ambiguity or when the path forward isn't crystal clear, stop and confirm with the user rather than making assumptions.
-
-4. **Trace Full Pipeline** - Every issue must be traced through the complete compilation pipeline before proposing a fix. Symptoms rarely appear where root causes exist.
-
-5. **Understand Before Implementing** - Read all relevant documentation, explore reference implementations, and understand the architectural constraints before writing code.
-
-### Anti-Pattern: "Going Too Fast"
-
-The following behavior is WRONG:
-- Seeing an error and immediately patching where it manifests
-- Adding stub implementations to "make it work"
-- Using BCL/runtime dependencies when native implementations exist
-- Making changes without exploring reference materials first
-
-The correct behavior:
-- Pause and spawn agents to explore context
-- Understand WHY something works a certain way before changing it
-- Look at how similar problems are solved in reference implementations
-- Recognize when operations need to be FNCS intrinsics (types and operations are compiler-level, not library-level)
-
----
-
-## CRITICAL: Compose from Standing Art (January 2026)
-
-> **New features MUST compose from recently established patterns, not invent parallel mechanisms.**
-
-When implementing new language features (Lazy, Seq, Async, etc.), the correct approach is to:
-
-1. **Identify what existing patterns apply** - Does this need closures? Capture analysis? State machines?
-2. **Check what was RECENTLY established** - Read the last 2-3 PRDs for new patterns
-3. **EXTEND the existing pattern** - Don't reinvent, compose
-
-**Real Example (PRD-14 Lazy):**
-```
-WRONG: Created {code_ptr, env_ptr} with null env_ptr for no-capture case
-       → Ignored that flat closures had JUST been established in PRD-11
-
-RIGHT: Lazy = PRD-11 Flat Closure + memoization state
-       {computed: i1, value: T, code_ptr: ptr, cap₀, cap₁, ...}
-       → Reused capture analysis, coeffect patterns, SSA cost model
-```
-
-**Before implementing ANY new feature, ask:**
-- What patterns from the last 2-3 PRDs apply here?
-- What Serena memories document relevant architecture?
-- Am I extending existing code or writing parallel implementations?
-- Does this "feel like" special-case handling? (If yes, STOP)
-
-**Key Serena memory:** `compose_from_standing_art_principle`
-
-**The ripple effect:** Getting primitives right creates positive ripple effects. PRD-11 closures compose into PRD-14 Lazy, which composes into PRD-15 Seq, which enables PRD-16 Seq operations. If PRD-11 was wrong, ALL downstream features inherit that wrongness.
-
-> "The standing art composes up. Use it."
-
----
-
-## Primary Reference Resources
-
-These resources are ESSENTIAL for understanding the project architecture and making correct decisions. **Use agents prolifically to explore these resources before making changes.**
-
-### Language & Compiler References
-
-| Resource | Path | Purpose |
-|----------|------|---------|
-| **F# Compiler Source** | `~/repos/fsharp` | F# compiler implementation, FSharp.Compiler.Service internals, AST structures |
-| **F# Language Specification** | `~/repos/fslang-spec` | Authoritative F# language semantics, type system, evaluation rules |
-| **Nanopass Framework** | `~/repos/nanopass-framework-scheme` | Reference implementation of nanopass compiler architecture (Scheme). Key resource for understanding `define-language`, `define-pass`, catamorphisms. See `doc/user-guide.pdf` |
-
-### MLIR & Code Generation References
-
-| Resource | Path | Purpose |
-|----------|------|---------|
-| **Triton CPU** | `~/triton-cpu` | Production MLIR implementation, dialect patterns, optimization passes |
-| **MLIR Haskell Bindings** | `~/repos/mlir-hs` | Alternative MLIR binding approach, type-safe IR construction |
-
-### Fidelity Ecosystem
-
-| Resource | Path | Purpose |
-|----------|------|---------|
-| **Alloy** | `~/repos/Alloy` | HISTORICAL ARCHIVE - Absorbed into FNCS (January 2026). Preserved as reference for patterns it established. |
-| **BAREWire** | `~/repos/BAREWire` | Binary serialization - FUTURE. Memory-efficient wire protocol |
-| **Farscape** | `~/repos/Farscape` | Distributed compute - FUTURE. Native F# distributed processing |
-
-### Documentation
-
-| Resource | Path | Purpose |
-|----------|------|---------|
-| **Firefly Docs** | `/docs/` | PRIMARY: Architecture, design decisions, PSG, Alex, lessons learned |
-| **SpeakEZ Blog** | `~/repos/SpeakEZ/hugo/content/blog` | SECONDARY: Articles explaining design philosophy, architectural thinking |
-
-### When to Use Each Resource
-
-- **Encountering F# AST/syntax issues**: Explore `~/repos/fsharp` for FCS implementation details
-- **Type system questions**: Reference `~/repos/fslang-spec` for language semantics
-- **MLIR dialect patterns**: Look at `~/triton-cpu` for production examples
-- **Native type implementation**: Types are FNCS intrinsics (NTUKind), not library code. See `~/repos/fsnative/src/Compiler/NativeTypedTree/Expressions/`
-- **Architectural decisions**: Read `/docs/Architecture_Canonical.md` first
-- **Understanding "why"**: Check `~/repos/SpeakEZ/hugo/content/blog` for philosophy (including "Absorbing Alloy")
-
-### Agent Usage Protocol
-
-Before making any non-trivial change:
-
-1. **Spawn an Explore agent** to understand the codebase area being modified
-2. **Spawn reference agents** to explore relevant reference materials (e.g., how does FCS handle this? How do FNCS intrinsics work?)
-3. **Read documentation** in `/docs/` related to the area of change
-4. **Synthesize understanding** before proposing changes
-
-Example agent tasks:
-- "Explore how FNCS defines string intrinsics in Intrinsics.fs"
-- "Search ~/repos/fsharp for how FCS represents extern declarations"
-- "Find examples of syscall bindings in ~/triton-cpu"
-- "Look up the F# spec section on statically resolved type parameters"
-- "Explore NTUKind type mappings in NativeTypes.fs"
-
----
-
-## Project Overview
-
-Firefly is an ahead-of-time (AOT) compiler for F# targeting native binary output without the .NET runtime. The project compiles F# source code through MLIR to LLVM IR and finally to native executables.
-
-**Primary Goal**: Compile F# code to efficient, standalone native binaries that can run without any runtime dependencies (freestanding mode) or with minimal libc dependency (console mode).
-
-**Key Constraint**: "Compiles" means a working native binary that executes correctly, not just successful parsing or IR generation.
-
-## The "Fidelity" Mission
-
-The framework is named "Fidelity" because it **preserves memory and type safety** through the entire compilation pipeline to native code. This is fundamentally different from:
-
-- **.NET/CLR**: Relies on a managed runtime with garbage collection
-- **Fable**: Transforms F# AST to target language AST (JavaScript, Rust, Python), delegating memory management to the target runtime
-
-Fidelity/Firefly:
-- **Preserves type fidelity**: F# types map to precise native representations, never erased
-- **Preserves memory fidelity**: Compiler-verified lifetimes, deterministic allocation (stack/arena)
-- **No runtime**: The generated binary has the same safety properties as the source, enforced at compile time
-
-The PSG is not merely an AST - it is a **semantic graph carrying proofs** about memory lifetimes, type safety, resource ownership, and coeffects. Alex consumes this rich semantic information to generate MLIR that preserves all guarantees.
-
-## Architecture Overview
-
-The compilation pipeline flows through these major phases:
+**Never patch where symptoms appear.** This is a multi-stage compiler pipeline. Trace upstream to find the root cause:
 
 ```
-F# Source → FCS → PSG (True Nanopass Pipeline) → Alex/Zipper → MLIR → LLVM → Native Binary
+Native Binary ← LLVM ← MLIR ← Alex/Zipper ← Nanopasses ← PSG ← FCS ← FNCS ← F# Source
 ```
 
-### The PSG Nanopass Pipeline (CRITICAL)
+Fix at the EARLIEST pipeline stage where the defect exists. Before any fix, answer:
+1. Have I traced through the full pipeline?
+2. Am I fixing the ROOT CAUSE or patching a SYMPTOM?
+3. Am I adding library-specific logic to a layer that shouldn't know about libraries?
+4. Does my fix require code generation to "know" about specific function names?
 
-> **See: `docs/PSG_Nanopass_Architecture.md` for authoritative details.**
+If #3 or #4 is "yes", STOP. You're about to violate layer separation.
 
-PSG construction is itself a **true nanopass pipeline**, not a monolithic operation. Each phase does ONE thing:
+### Layer Separation
+
+| Layer | Does | Does NOT |
+|-------|------|----------|
+| **FNCS** | Define native types (NTUKind) and intrinsic ops | Generate code or know targets |
+| **FCS** | Parse, type-check, resolve symbols | Transform or generate code |
+| **PSG Builder** | Construct semantic graph from FCS | Make targeting decisions |
+| **Nanopasses** | Enrich PSG with edges/classifications | Generate MLIR or know targets |
+| **Alex/Zipper** | Traverse PSG, emit MLIR via bindings | Pattern-match on symbol names |
+| **Bindings** | Platform-specific MLIR generation | Know about F# syntax |
+
+### Compose from Standing Art
+
+New features MUST compose from recently established patterns, not invent parallel mechanisms. Before implementing anything: What patterns from the last 2-3 PRDs apply? Am I extending existing code or writing parallel implementations? If it feels like special-case handling, STOP.
+
+---
+
+## Pipeline Overview
+
+```
+F# Source → FCS → PSG (Nanopass Pipeline) → Alex/Zipper → MLIR → LLVM → Native Binary
+```
+
+### PSG Nanopass Pipeline
+
+> See `docs/PSG_Nanopass_Architecture.md` for details.
 
 ```
 Phase 1: Structural Construction    SynExpr → PSG with nodes + ChildOf edges
@@ -286,551 +111,138 @@ Phase 4: Typed Tree Overlay         + Type, Constraints, SRTP resolution (Zipper
 Phase 5+: Enrichment Nanopasses     + def-use edges, operation classification, etc.
 ```
 
-**CRITICAL Principles:**
-
-1. **Soft-delete reachability** - Mark unreachable nodes but preserve structure. The typed tree zipper needs full structure for navigation.
-
-2. **Typed tree overlay via zipper** - A zipper correlates `FSharpExpr` (typed tree) with PSG nodes by range, capturing:
-   - Resolved types (after inference)
-   - Resolved constraints (after solving)
-   - **SRTP resolution** (TraitCall → resolved member) - THIS IS ESSENTIAL
-
-3. **Each phase is inspectable** - Intermediate PSGs can be examined independently via `-k` flag.
-
-**Why the Typed Tree Matters:**
-
-Without the typed tree overlay, SRTP (Statically Resolved Type Parameters) cannot be resolved:
-
-```fsharp
-// Example with SRTP constraint
-let inline write< ^T when ^T : (member Length : int)> (x: ^T) = ...
-```
-
-- Syntax tree sees: `App [write, x]`
-- Typed tree knows: `TraitCall` resolving the SRTP constraint to the specific member access
-
-The typed tree zipper captures this resolution INTO the PSG. Downstream passes (including Alex) use it directly.
-
-> **See: `docs/TypedTree_Zipper_Design.md` for zipper implementation details.**
+Key: Soft-delete reachability (never hard-delete — zipper needs full structure). Typed tree overlay captures SRTP resolution into PSG. Each phase inspectable via `-k`.
 
 ### Core Components
 
-1. **FCS (F# Compiler Services)** - `/src/Core/FCS/`
-   - Provides parsing (`SynExpr`), type checking (`FSharpExpr`), and semantic analysis
-   - Single source of truth for F# semantics
-   - **Both** syntax and typed trees are used during PSG construction
-   - See `docs/FCS_*.md` for detailed documentation
+- **FCS** (`/src/Core/FCS/`) — Parsing, type checking, semantic analysis. Both syntax and typed trees used.
+- **PSG** (`/src/Core/PSG/`) — Unified IR correlating syntax with semantics. THE single source of truth downstream.
+- **Nanopasses** (`/src/Core/PSG/Nanopass/`) — Single-purpose PSG enrichment passes.
+- **Alex** (`/src/Alex/`) — Zipper traversal + XParsec pattern matching + platform Bindings → MLIR.
+  - `Traversal/` — Zipper and XParsec-based PSG traversal
+  - `Pipeline/` — Orchestration, lowering, optimization
+  - `Bindings/` — Platform-aware code generation
+  - `CodeGeneration/` — Type mapping, MLIR builders
+- **FNCS Intrinsics** (external: `~/repos/fsnative/src/Compiler/NativeTypedTree/Expressions/`) — NTUKind type universe, intrinsic operations, platform resolution.
 
-2. **PSG (Program Semantic Graph)** - `/src/Core/PSG/`
-   - Unified intermediate representation correlating syntax with semantics
-   - **THE SINGLE SOURCE OF TRUTH** for all downstream stages
-   - Built through a true nanopass pipeline
-   - Contains typed tree overlay for SRTP resolution
-   - See `docs/PSG_Nanopass_Architecture.md` (CANONICAL) and `docs/PSG_architecture.md`
+### The Zipper + XParsec + Bindings Model
 
-3. **Nanopasses** - `/src/Core/PSG/Nanopass/`
-   - Small, single-purpose transformations that enrich the PSG
-   - Each pass does ONE thing (add def-use edges, classify operations, etc.)
-   - Passes are composable and can be inspected independently
-   - **Critical distinction**: Some nanopasses are part of PSG construction (Phase 4: Typed Tree Overlay), others enrich afterwards (Phase 5+)
-   - See `docs/PSG_Nanopass_Architecture.md`
-
-4. **Alex** - `/src/Alex/`
-   - Multi-dimensional hardware targeting layer ("Library of Alexandria")
-   - **Zipper**: The traversal engine - the "attention" of Alex
-   - **XParsec**: Pattern matching combinators for PSG structures
-   - **Bindings**: Platform-aware MLIR generation
-   - Maps F# semantics to platform-optimized code patterns
-   - Contains:
-     - `Traversal/` - Zipper and XParsec-based PSG traversal
-     - `Pipeline/` - Orchestration, FCS integration, lowering, optimization
-     - `Bindings/` - Platform-aware code generation patterns
-     - `CodeGeneration/` - Type mapping, MLIR builders
-
-5. **FNCS Intrinsics** - External at `~/repos/fsnative/src/Compiler/NativeTypedTree/Expressions/`
-   - Types ARE the language: NTUKind defines the native type universe
-   - Operations ARE intrinsics: Sys.*, NativePtr.*, Array.*, String.*, Math.*, Console.*, etc.
-   - Platform resolution via quotations at compile time
-   - Key files:
-     - `NativeTypes.fs` - NTUKind enum defining all native types
-     - `NativeGlobals.fs` - Type constructors with NTU metadata
-     - `Intrinsics.fs` - Intrinsic module definitions
-
-## CRITICAL: The Layer Separation Principle
-
-> **Each layer in the pipeline has ONE responsibility. Do not mix concerns across layers.**
-
-### Layer Responsibilities
-
-| Layer | Responsibility | DOES NOT |
-|-------|---------------|----------|
-| **FNCS** | Define native types (NTUKind) and intrinsic operations | Generate code or know about targets |
-| **FCS** | Parse, type-check, resolve symbols | Transform or generate code |
-| **PSG Builder** | Construct semantic graph from FCS output | Make targeting decisions |
-| **Nanopasses** | Enrich PSG with edges, classifications | Generate MLIR or know about targets |
-| **Alex/Zipper** | Traverse PSG, generate MLIR via bindings | Pattern-match on symbol names |
-| **Bindings** | Platform-specific MLIR generation | Know about F# syntax |
-| **MLIR/LLVM** | Lower and optimize IR | Know about F# |
-
-### The Zipper + Bindings Architecture (Non-Dispatch Model)
-
-**Alex generates MLIR through Zipper traversal and platform Bindings. There is NO central dispatch hub.**
-
-> **Key Insight: Centralization belongs at the OUTPUT (MLIR Builder), not at DISPATCH (traversal logic).**
-
-The antipattern is a central handler registry that routes based on node kinds. This collects special-case knowledge too early and becomes a dumping ground for library-aware logic.
-
-The correct model:
+NO central dispatch hub. The model:
 
 ```
-PSG Entry Point
-    ↓
-Zipper.create(psg, entryNode)
-    ↓
-Fold over structure (pre-order or post-order)
-    ↓
-At each node: XParsec pattern → MLIR emission
-    ↓
-Extern primitive? → ExternDispatch.dispatch(primitive)
-    ↓
-MLIR Builder accumulates
-    ↓
-Output: Complete MLIR module
+Zipper.create(psg, entryNode) → fold over structure → at each node: XParsec pattern → MLIR emission → MLIR Builder accumulates
 ```
 
-**The Zipper:**
-- Traverses the PSG structure bidirectionally
-- Provides "attention" - focus on current node with context
-- Is purely navigational - no routing or dispatch logic
-- Carries state through traversal (SSA counters, emitted blocks)
+- **Zipper**: Bidirectional PSG traversal, purely navigational, carries state
+- **XParsec**: Composable pattern matchers on PSG structure, local decisions
+- **Bindings**: Platform-specific MLIR, organized by (OSFamily, Architecture, BindingFunction), are DATA not routing
+- **MLIR Builder**: Where centralization correctly occurs (output, not dispatch)
 
-**XParsec Combinators:**
-- Match PSG node structure at each position
-- Composable patterns, not a routing table
-- Local decision-making based on node data
+---
 
-**The Bindings:**
-- Contain platform-specific MLIR generation
-- Looked up by `Platform.Bindings` module structure (e.g., `writeBytes`, `readBytes`)
-- Are DATA (syscall numbers, calling conventions), not routing logic
-- Organized by `(OSFamily, Architecture, BindingFunction)`
+## Negative Examples (Real Mistakes)
 
-**MLIR Builder:**
-- The natural "pool" where emissions accumulate
-- This is where centralization correctly occurs
-- Type-safe MLIR construction via computation expression
+1. **Symbol-name matching in codegen** — `match symbolName with "Console.Write" -> ...` couples codegen to namespaces. Use PSG node types and FNCS intrinsic markers instead.
 
-**MLIR generation should NEVER:**
-- Pattern-match on function names or module paths
-- Have special cases for specific namespaces
-- Contain conditional logic based on symbol names
-- Create a central dispatch/routing mechanism
-- Require knowledge of user-level module structure
+2. **Unmarked intrinsics** — Operations must be defined in FNCS `Intrinsics.fs` to be recognized. If it's not there, Alex can't generate code for it.
 
-## NEGATIVE EXAMPLES: What NOT To Do
+3. **Nanopass logic in codegen** — Don't import nanopass modules or build indices during MLIR generation. Nanopasses run before; codegen consumes the enriched PSG.
 
-These are real mistakes made during development. **DO NOT REPEAT THEM.**
+4. **Mutable state in codegen** — Mutable variable handling belongs in PSG nanopasses, not in a `GenerationContext`.
 
-### Mistake 1: Adding namespace-specific logic to MLIR generation
+5. **Central dispatch hub** — Handler registries routing on node kinds (PSGEmitter, PSGScribe — removed twice). Zipper folds, XParsec matches locally, Bindings provide implementations.
 
-```fsharp
-// WRONG - MLIR generation should not match on namespaces
-match symbolName with
-| Some name when name = "MyApp.Console.Write" ->
-    generateConsoleWrite psg ctx node  // Special case!
-| Some name when name.StartsWith("SomeLib.") ->
-    generateLibraryCall psg ctx node  // Another special case!
-```
+6. **Hard-deleting unreachable nodes** — Breaks typed tree zipper. Use soft-delete (IsReachable = false).
 
-**Why this is wrong**: MLIR generation is now coupled to namespace structure. The code generation should be driven by PSG node types and FNCS intrinsic markers, not symbol names.
+7. **Mixing nanopass scopes** — Pipe operators (`|>`) use `ReducePipeOperators`. SRTP is separate. Don't mix.
 
-**The fix**: Alex recognizes FNCS intrinsics (marked with `SemanticKind.Intrinsic`) and generates MLIR based on the intrinsic type, not the symbol name.
+8. **BCL/runtime dependencies** — Types and operations are FNCS intrinsics (compiler-level), not library code.
 
-### Mistake 2: Expecting FNCS intrinsics without proper recognition
+---
 
-```fsharp
-// WRONG - Calling something that looks like an intrinsic but isn't marked
-let result = Console.writeln "Hello"  // If Console.writeln isn't a recognized FNCS intrinsic...
-```
+## Reference Resources
 
-**Why this is wrong**: If an operation isn't defined in FNCS Intrinsics.fs as an intrinsic, FNCS doesn't know how to type it or mark it for Alex.
+| Resource | Path | When |
+|----------|------|------|
+| F# Compiler Source | `~/repos/fsharp` | AST/syntax issues, FCS internals |
+| F# Language Spec | `~/repos/fslang-spec` | Type system, evaluation rules |
+| Nanopass Framework | `~/repos/nanopass-framework-scheme` | Nanopass architecture (see `doc/user-guide.pdf`) |
+| Triton CPU | `~/triton-cpu` | MLIR dialect patterns, optimization |
+| MLIR Haskell Bindings | `~/repos/mlir-hs` | Alternative MLIR binding approach |
+| Alloy | `~/repos/Alloy` | HISTORICAL — absorbed into FNCS Jan 2026 |
+| Firefly Docs | `/docs/` | PRIMARY architecture docs |
+| SpeakEZ Blog | `~/repos/SpeakEZ/hugo/content/blog` | Design philosophy |
 
-**The fix**: All operations that should compile to native code must be defined in FNCS as intrinsics:
-```fsharp
-// In Intrinsics.fs - FNCS intrinsic module
-| "Console.writeln" ->
-    NativeType.TFun(env.Globals.StringType, env.Globals.UnitType)
-```
-
-Note: `string` has native semantics (UTF-8 fat pointer with Pointer/Length members) via FNCS. Users write `string` and FNCS provides native semantics transparently.
-
-### Mistake 3: Putting nanopass logic in MLIR generation
-
-```fsharp
-// WRONG - Importing nanopass modules into code generation
-open Core.PSG.Nanopass.DefUseEdges
-
-// WRONG - Building indices during MLIR generation
-let defIndex = buildDefinitionIndex psg
-```
-
-**Why this is wrong**: Nanopasses run BEFORE MLIR generation. They enrich the PSG. Code generation should consume the enriched PSG, not run nanopass logic.
-
-### Mistake 4: Adding mutable state tracking to code generation
-
-```fsharp
-// WRONG - Code generation tracking mutable bindings
-type GenerationContext = {
-    // ...
-    MutableBindings: Map<string, Val>  // NO! This is transformation logic
-}
-```
-
-**Why this is wrong**: Mutable variable handling should be resolved in the PSG via nanopasses. Code generation should just follow edges to find values.
-
-### Mistake 5: Creating a central "Emitter" or "Scribe" dispatch hub
-
-```fsharp
-// WRONG - Central dispatch that routes based on node kinds
-module PSGEmitter =
-    let handlers = Dictionary<string, NodeHandler>()
-
-    let registerHandler prefix handler =
-        handlers.[prefix] <- handler
-
-    let emit node =
-        let prefix = getKindPrefix node.SyntaxKind
-        match handlers.TryGetValue(prefix) with
-        | true, handler -> handler node
-        | _ -> defaultHandler node
-```
-
-**Why this is wrong**:
-- This is the antipattern that was removed twice (PSGEmitter, then PSGScribe)
-- It collects "special case" routing too early in the pipeline
-- It inevitably attracts library-aware logic ("if ConsoleWrite then...")
-- The centralization belongs at the OUTPUT (MLIR Builder), not at DISPATCH
-
-**The fix**: No central dispatcher. The Zipper folds over PSG structure. XParsec matches locally at each node. Bindings are looked up by Platform.Bindings module structure. MLIR Builder accumulates the output.
-
-## Platform Bindings (FNCS Intrinsics)
-
-Platform operations are FNCS intrinsics in the `Sys` module:
-
-```fsharp
-// FNCS Intrinsics.fs - Sys intrinsic module
-| "Sys.write" ->
-    // fd:int -> buffer:nativeptr<byte> -> count:int -> int
-    NativeType.TFun(env.Globals.IntType,
-        NativeType.TFun(NativeType.TNativePtr Types.uint8Type,
-            NativeType.TFun(env.Globals.IntType, env.Globals.IntType)))
-
-| "Sys.clock_gettime" ->
-    // unit -> int64 (ticks since epoch)
-    NativeType.TFun(env.Globals.UnitType, env.Globals.Int64Type)
-```
-
-Alex provides platform-specific implementations for each `Sys` intrinsic based on the target platform (Linux x86_64, ARM64, Windows, etc.).
-
-**Why intrinsics?** Following ML, Rust, and Triton-CPU patterns, platform operations belong in the compiler, not a library. FNCS defines the operation signatures; Alex provides implementations.
-
-## Critical Working Principle: Zoom Out Before Fixing
-
-> **THIS IS A COMPILER. Compiler development has fundamentally different requirements than typical application development. The pipeline is a directed, multi-stage transformation where upstream decisions have cascading downstream effects. You MUST understand this before making any changes.**
-
-### The Cardinal Rule
-
-**When encountering ANY adverse finding that is NOT a baseline F# syntax error, you MUST stop and review the ENTIRE compiler pipeline before attempting a fix.**
-
-### Why This Matters
-
-**DO NOT "patch in place."** The instinct to fix a problem where it manifests is almost always wrong in compiler development. A symptom appearing in MLIR generation may have its root cause in:
-- Missing intrinsic definition in FNCS
-- Incorrect symbol capture in FCS ingestion
-- Failed correlation in PSG construction
-- Missing nanopass transformation
-- Wrong reachability decisions
-
-**Patching downstream creates technical debt that compounds.** A "fix" that works around a PSG deficiency:
-- Masks the real problem
-- Creates implicit dependencies on broken behavior
-- Makes future fixes harder as the codebase grows
-- Violates the architectural separation of concerns
-
-### The Correct Approach
-
-1. **Observe the symptom** - Note exactly what's wrong (wrong output, missing symbol, incorrect behavior)
-
-2. **Trace upstream** - Walk backwards through the pipeline:
-   ```
-   Native Binary ← LLVM ← MLIR ← Alex/Zipper ← Nanopasses ← PSG ← FCS ← FNCS ← F# Source
-   ```
-
-3. **Find the root cause** - The fix belongs at the EARLIEST point in the pipeline where the defect exists
-
-4. **Fix upstream** - Correct the root cause, then verify the fix propagates correctly through all downstream stages
-
-5. **Validate end-to-end** - Confirm the native binary behaves correctly
-
-### Forcing Functions
-
-Before proposing any fix for a non-syntax issue, answer these questions:
-
-1. "Have I read the relevant docs in `/docs/`?"
-2. "Have I traced this issue through the full pipeline?"
-3. "Am I fixing the ROOT CAUSE or patching a SYMPTOM?"
-4. "Is my fix at the earliest possible point in the pipeline?"
-5. "Will this fix work correctly as the compiler evolves, or am I creating hidden coupling?"
-6. **"Am I adding library-specific logic to a layer that shouldn't know about libraries?"**
-7. **"Does my fix require code generation to 'know' about specific function names?"**
-
-If you cannot confidently answer all questions, you have not yet understood the problem well enough to fix it.
-
-**If the answer to question 6 or 7 is "yes", STOP. You are about to make the same mistake again.**
-
-### Pipeline Review Checklist
-
-When a non-syntax issue arises:
-
-1. **FNCS Intrinsics Level**
-   - Is the operation defined as an intrinsic in Intrinsics.fs?
-   - Does the intrinsic have the correct type signature?
-   - Is the NTUKind mapping correct for the types involved?
-
-2. **FCS Ingestion Level**
-   - Is the symbol being captured correctly?
-   - Is the type information complete and accurate?
-   - Are all dependencies being resolved?
-
-3. **PSG Construction Level**
-   - Is the function reachable from the entry point?
-   - Are call edges being created correctly?
-   - Is symbol correlation working?
-   - Does the PSG show the full decomposed structure?
-
-4. **Nanopass Level**
-   - Are def-use edges being created?
-   - Are operations being classified correctly?
-   - Is the PSG fully enriched before MLIR generation?
-
-5. **Alex/Zipper Level**
-   - Is the traversal following the PSG structure?
-   - Is MLIR generation based on node kinds, not symbol names?
-   - Are there NO library-specific special cases?
-
-6. **MLIR/LLVM Level**
-   - Is the generated IR valid?
-   - Are external declarations correct?
-   - Is the calling convention appropriate?
-
-## XParsec and the Zipper
-
-> **The Zipper is the "attention" of Alex. XParsec provides type-safe pattern matching. Together they traverse the PSG and drive MLIR generation through Bindings.**
-
-### The Zipper's Role
-
-The Zipper traverses the PSG bidirectionally. It:
-- Moves through the graph structure
-- Provides context about the current position
-- Enables focused operations at specific nodes
-- Carries state through traversal
-
-### XParsec's Role
-
-XParsec provides composable pattern matchers that:
-- Match against typed PSG structures
-- Preserve type information through transformations
-- Enable backtracking and alternatives
-
-### Bindings' Role
-
-Bindings contain platform-specific MLIR generation:
-- Organized by platform (Linux_x86_64, Windows_x86_64, etc.)
-- Looked up by PSG node structure
-- Generate MLIR for syscalls, memory operations, etc.
-
-### What NOT To Do
-
-**DO NOT fall back to string-based parsing or pattern matching on stringified representations.**
-
-```fsharp
-// WRONG - String matching on symbol names
-if symbolName.Contains("Console.Write") then ...
-
-// WRONG - Hardcoded namespace paths
-| Some name when name.StartsWith("MyLib.") -> ...
-
-// RIGHT - Pattern match on PSG node structure and FNCS intrinsic markers
-match node.SyntaxKind with
-| "App:FunctionCall" -> processCall zipper bindings
-| "Intrinsic:Sys.write" -> processSysWrite zipper bindings  // FNCS intrinsic
-| "WhileLoop" -> processWhileLoop zipper bindings
-```
-
-## Essential Documentation
-
-Before making changes, review these documents in `/docs/`:
+### Key Documentation
 
 | Document | Purpose |
 |----------|---------|
-| **`FNCS_Architecture.md`** | **CRITICAL: F# Native Compiler Services - native type resolution at source** |
-| **`Architecture_Canonical.md`** | **AUTHORITATIVE: Two-layer model, platform bindings (BCL-free), nanopass pipeline** |
-| **`PSG_Nanopass_Architecture.md`** | **CANONICAL: True nanopass pipeline, typed tree overlay, SRTP** |
-| **`TypedTree_Zipper_Design.md`** | **Zipper implementation for FSharpExpr/PSG correlation** |
-| `PSG_architecture.md` | PSG design decisions, node identity |
-| `Alex_Architecture_Overview.md` | Alex overview (references canonical doc) |
+| `Architecture_Canonical.md` | AUTHORITATIVE: Two-layer model, platform bindings, nanopass pipeline |
+| `FNCS_Architecture.md` | F# Native Compiler Services |
+| `PSG_Nanopass_Architecture.md` | True nanopass pipeline, typed tree overlay, SRTP |
+| `TypedTree_Zipper_Design.md` | Zipper for FSharpExpr/PSG correlation |
 | `XParsec_PSG_Architecture.md` | XParsec integration with Zipper |
-| `HelloWorld_Lessons_Learned.md` | Common pitfalls and solutions |
 
+---
 
-## Sample Projects
+## Build & Test
 
-Located in `/samples/console/`:
-
-- `HelloWorld/` - Minimal validation sample
-- `FidelityHelloWorld/` - Progressive complexity samples:
-  - `01_HelloWorldDirect/` - Direct module calls
-  - `02_HelloWorldSaturated/` - Saturated function calls
-  - `03_HelloWorldHalfCurried/` - Pipe operators, partial application
-  - `04_HelloWorldFullCurried/` - Full currying, Result.map, lambdas
-- `TimeLoop/` - Mutable state, while loops, DateTime, Sleep
-
-## Build, Test, and Validation Commands
-
-> **CRITICAL: Compilation is NOT validation. The samples MUST be executed and their output validated.**
-
-A change is NOT complete until:
-1. The compiler builds successfully (`dotnet build`)
-2. Sample programs compile to native binaries
-3. **The native binaries execute correctly and produce expected output**
-
-### Validation Protocol
-
-After ANY change to the compiler pipeline, you MUST:
-
-1. **Build the compiler**
-2. **Compile a relevant sample** (start with `01_HelloWorldDirect`)
-3. **Execute the binary interactively** and verify output
-4. **Progress through samples** in order (01 → 02 → 03 → 04) as each succeeding sample tests more complex F# features
+### Quick Commands
 
 ```bash
-# Build the compiler
-cd /home/hhh/repos/Firefly/src
-dotnet build
+# Build compiler
+cd /home/hhh/repos/Firefly/src && dotnet build
 
-# Compile sample 01
+# Compile a sample
 cd /home/hhh/repos/Firefly/samples/console/FidelityHelloWorld/01_HelloWorldDirect
 /home/hhh/repos/Firefly/src/bin/Debug/net10.0/Firefly compile HelloWorld.fidproj
 
-# CRITICAL: Execute and validate output
-./HelloWorld
-# Expected: "Hello, World!" (or prompts for input, then greeting)
-
-# If sample 01 passes, progress to sample 02, 03, 04
-cd ../02_HelloWorldSaturated
-/home/hhh/repos/Firefly/src/bin/Debug/net10.0/Firefly compile HelloWorld.fidproj
+# Execute and validate
 ./HelloWorld
 
-# With verbose output (for debugging)
-Firefly compile HelloWorld.fidproj --verbose
-
-# Keep intermediate files for debugging (.mlir, .ll files)
+# Keep intermediates for debugging
 Firefly compile HelloWorld.fidproj -k
 ```
 
-### Sample Progression
-
-| Sample | Tests | Expected Behavior |
-|--------|-------|-------------------|
-| `01_HelloWorldDirect` | Static strings, basic Console calls | Prints greeting |
-| `02_HelloWorldSaturated` | Let bindings, string interpolation | Prints formatted greeting |
-| `03_HelloWorldHalfCurried` | Pipe operators, function values | Prints greeting with pipes |
-| `04_HelloWorldFullCurried` | Full currying, Result.map, lambdas | Interactive name input, greeting |
-| `TimeLoop` | Mutable state, while loops, Sleep | Countdown timer |
-
-**Do NOT claim a feature works until you have executed the binary and verified the output.**
-
-### Regression Test Runner (PRIMARY)
-
-**ALWAYS use the regression runner to validate changes.** It tests all samples automatically.
+### Regression Runner (PRIMARY)
 
 ```bash
-# Run full test suite (from any directory)
 cd /home/hhh/repos/Firefly/tests/regression
-dotnet fsi Runner.fsx
-
-# Run in parallel (faster)
-dotnet fsi Runner.fsx -- --parallel
-
-# Run specific sample(s)
-dotnet fsi Runner.fsx -- --sample 05_AddNumbers
-dotnet fsi Runner.fsx -- --sample 07_BitsTest --sample 08_Option
-
-# Verbose output (shows compile errors and output diffs)
-dotnet fsi Runner.fsx -- --verbose
-
-# Combined
-dotnet fsi Runner.fsx -- --parallel --verbose
+dotnet fsi Runner.fsx                              # Full suite
+dotnet fsi Runner.fsx -- --parallel --verbose       # Fast + detailed
+dotnet fsi Runner.fsx -- --sample 05_AddNumbers     # Specific sample
 ```
 
-The runner:
-1. Builds the compiler once
-2. Compiles all samples defined in `Manifest.toml` **with `-k` flag (intermediates always generated)**
-3. Executes compiled binaries and compares output to expected
-4. Reports pass/fail/mismatch status
+A change is NOT complete until the regression runner passes AND binaries execute correctly.
 
-**IMPORTANT: Intermediates are ALWAYS available after a runner run.** After running the test suite, you can immediately inspect intermediates at:
-```
-samples/console/FidelityHelloWorld/<sample>/target/intermediates/
-```
+### Sample Progression
 
-### Ordinal Artifact Naming Scheme (January 2026)
+| Sample | Tests |
+|--------|-------|
+| `01_HelloWorldDirect` | Static strings, basic Console calls |
+| `02_HelloWorldSaturated` | Let bindings, string interpolation |
+| `03_HelloWorldHalfCurried` | Pipe operators, function values |
+| `04_HelloWorldFullCurried` | Full currying, Result.map, lambdas |
+| `TimeLoop` | Mutable state, while loops, Sleep |
 
-All intermediate artifacts use a **global ordinal numbering** across the entire compilation pipeline. This enables `ls` to show them in pipeline order, regardless of which compiler stage produced them:
+### Intermediate Artifacts
 
-| Artifact | Stage | Description |
-|----------|-------|-------------|
-| `01_psg0.json` | FNCS | Initial PSG with reachability (PSG₀) |
-| `02_intrinsic_recipes.json` | FNCS | Intrinsic elaboration recipes |
-| `03_psg1.json` | FNCS | PSG after intrinsic fold-in (PSG₁) |
-| `04_saturation_recipes.json` | FNCS | Baker saturation recipes |
-| `05_psg2.json` | FNCS | Final saturated PSG to Alex (PSG₂) |
-| `06_coeffects.json` | Alex | Coeffect analysis (SSA, mutability, yields, patterns, strings) |
-| `07_output.mlir` | Alex | MLIR output |
-| `08_output.ll` | Alex | LLVM IR |
+After any runner run, intermediates are at `samples/console/FidelityHelloWorld/<sample>/target/intermediates/`:
 
-**CRITICAL Debugging Pattern**: When a sample fails, inspect intermediates in pipeline order:
+| Artifact | Stage |
+|----------|-------|
+| `01_psg0.json` | Initial PSG with reachability |
+| `02_intrinsic_recipes.json` | Intrinsic elaboration recipes |
+| `03_psg1.json` | PSG after intrinsic fold-in |
+| `04_saturation_recipes.json` | Baker saturation recipes |
+| `05_psg2.json` | Final saturated PSG to Alex |
+| `06_coeffects.json` | Coeffect analysis |
+| `07_output.mlir` | MLIR output |
+| `08_output.ll` | LLVM IR |
 
-1. **Check PSG₀** (`01_psg0.json`) - Is the initial structure correct?
-2. **Check recipes** (`02_intrinsic_recipes.json`, `04_saturation_recipes.json`) - Are elaborations creating the right replacement structures?
-3. **Check PSG₂** (`05_psg2.json`) - Did fold-in correctly integrate the recipes?
-4. **Check coeffects** (`06_coeffects.json`) - Are SSA assignments correct? Are PatternBindings getting SSAs?
-5. **Check MLIR** (`07_output.mlir`) - Is the MLIR well-formed?
+When debugging, inspect in pipeline order to find WHERE a bug originates.
 
-This pipeline-order inspection reveals WHERE in the pipeline a bug originates, not just where it manifests.
-
-**Never re-run compilation just to get intermediates.** They are always fresh after a test run.
-
-**Output format:**
-```
-=== Compilation Phase ===
-[PASS] 01_HelloWorldDirect (1.09s)
-[FAIL] 05_AddNumbers (733ms)
-
-=== Execution Phase ===
-[PASS] 01_HelloWorldDirect (30ms)
-[MISMATCH] 08_Option (30ms)
-  First diff at line 2:
-    Expected: Some 42: 42
-    Actual:   Some 42: Done!
-
-=== Summary ===
-Compilation: 7/16 passed, 9 failed
-Execution: 4/7 passed, 3 failed
-Status: FAILED
-```
-
-See `/home/hhh/repos/Firefly/tests/regression/README.md` for full documentation.
+---
 
 ## Key Files
 
@@ -842,141 +254,30 @@ See `/home/hhh/repos/Firefly/tests/regression/README.md` for full documentation.
 | `/src/Core/PSG/Nanopass/*.fs` | PSG enrichment passes |
 | `/src/Core/PSG/Reachability.fs` | Dead code elimination |
 | `/src/Alex/Traversal/PSGZipper.fs` | Zipper traversal |
-| `/src/Alex/Bindings/*.fs` | Platform-specific MLIR generation |
+| `/src/Alex/Bindings/*.fs` | Platform-specific MLIR |
 | `/src/Alex/Pipeline/CompilationOrchestrator.fs` | Full compilation |
-
-## Common Pitfalls
-
-1. **Missing Intrinsics**: Operations that aren't defined in FNCS Intrinsics.fs. If an operation should compile to native code, it must be a recognized FNCS intrinsic.
-
-2. **Namespace-Specific Logic**: Adding `if functionName = "X.Y"` logic anywhere in code generation. Alex should recognize intrinsic markers, not symbol names.
-
-3. **Symbol Correlation**: FCS symbol correlation can fail silently. Check `[BUILDER] Warning:` messages in verbose output.
-
-4. **Missing Nanopass**: If the PSG doesn't have the information you need, add a nanopass to enrich it. Don't compute it during MLIR generation.
-
-5. **Layer Violations**: Any time you find yourself importing a module from a different pipeline stage, stop and reconsider.
-
-6. **SRTP Blindness**: The syntax tree (`SynExpr`) shows SRTP operators as simple identifiers. Only the typed tree (`FSharpExpr.TraitCall`) knows the resolution. If your code doesn't have SRTP info, it means the typed tree overlay is incomplete.
-
-7. **Hard-Delete Reachability**: Physically removing unreachable nodes breaks the typed tree zipper. Use soft-delete (mark IsReachable = false) to preserve structure for correlation.
-
-8. **Wrong Nanopass Scope**: Different operator classes need different nanopasses. Pipe operators (`|>`, `<|`) are reduced by `ReducePipeOperators`. SRTP operators are a separate class. Don't mix concerns.
-
-9. **Central Dispatch/Emitter**: Creating a handler registry that routes based on node kinds. This antipattern (PSGEmitter, PSGScribe) was removed twice. The Zipper folds, XParsec matches locally, Bindings provide platform implementations, MLIR Builder accumulates. NO routing table.
-
-10. **Premature Centralization**: Pooling decision-making logic too early. Centralization is natural and correct at the OUTPUT (MLIR text), but wrong at DISPATCH (traversal logic). The PSG structure drives emission; there's no router.
 
 ## Project Configuration
 
-Projects use `.fidproj` files (TOML format):
-
+`.fidproj` files (TOML):
 ```toml
 [package]
 name = "ProjectName"
-
 [compilation]
 memory_model = "stack_only"
 target = "native"
-
-# No dependencies section needed - types and operations are FNCS intrinsics
-
 [build]
 sources = ["Main.fs"]
 output = "binary_name"
 output_kind = "freestanding"  # or "console"
 ```
 
-## When in Doubt: The Zoom-Out Protocol
-
-**Stop. Do not write code yet.**
-
-1. **Read the docs** - Review all relevant documentation in `/docs/` completely
-2. **Trace the pipeline** - Follow data flow from F# source to native binary
-3. **Identify the layer** - Determine which pipeline stage contains the ROOT CAUSE:
-   - FNCS (intrinsic definitions, type mappings)
-   - FCS (parsing, type checking, symbol resolution)
-   - PSG (semantic graph construction)
-   - Nanopasses (PSG enrichment)
-   - Alex/Zipper (traversal and MLIR generation)
-   - MLIR/LLVM (IR lowering, optimization)
-4. **Fix upstream** - Apply the fix at the earliest point where the defect exists
-5. **Validate downstream** - Verify the fix propagates correctly through all stages to produce a working binary
-
-**Remember**: In compiler development, the symptom location and the fix location are usually different. Resist the temptation to patch where you see the problem. Find where the problem originates and fix it there.
-
-## The Acid Test
-
-Before committing any change, ask:
-
-> "If someone deleted all the comments and looked only at what this code DOES, would they see library-specific logic in MLIR generation?"
-
-If yes, you have violated the layer separation principle. Revert and fix upstream.
-
-## CRITICAL: Use Serena MCP for Codebase Inspection
-
-**When you need to inspect, search, or understand code structure, ALWAYS use Serena MCP tools, NOT bash grep/find.**
-
-Serena provides semantic code understanding via LSP-aware tools:
-
-### Serena Tools (PREFERRED)
-
-| Task | Serena Tool | NOT Bash |
-|------|-------------|----------|
-| **Find symbol definitions** | `mcp__serena-local__find_symbol` | ~~grep -r "class Foo"~~ |
-| **Find references** | `mcp__serena-local__find_referencing_symbols` | ~~grep -r "Foo"~~ |
-| **Read file** | `mcp__serena-local__read_file` | ~~cat file.fs~~ |
-| **Search pattern** | `mcp__serena-local__search_for_pattern` | ~~grep -r "pattern"~~ |
-| **Get symbols overview** | `mcp__serena-local__get_symbols_overview` | ~~grep "type\|let\|module"~~ |
-| **List directory** | `mcp__serena-local__list_dir` | ~~ls -la~~ |
-
-### Why Serena, Not Bash?
-
-1. **Semantic awareness**: Serena understands F# syntax, modules, types, functions
-2. **Symbol resolution**: Follows references across files correctly
-3. **Type-aware**: Can filter by symbol kind (classes, functions, types)
-4. **Faster**: Indexed, doesn't re-scan every time
-5. **Accurate**: Won't match comments or strings, only actual code
-
-### Examples
-
-```fsharp
-// WRONG - Bash grep misses context, matches comments
-Bash: grep -r "witnessMemory" src/
-
-// RIGHT - Serena finds the actual function definition
-mcp__serena-local__find_symbol with name_path_pattern "witnessMemory"
-
-// WRONG - Bash grep finds all string occurrences
-Bash: grep -r "IntrinsicModule" src/
-
-// RIGHT - Serena finds references to the type
-mcp__serena-local__find_referencing_symbols with name_path "IntrinsicModule"
-
-// WRONG - Bash cat doesn't provide structure
-Bash: cat ApplicationWitness.fs
-
-// RIGHT - Serena provides symbol overview first
-mcp__serena-local__get_symbols_overview with relative_path "src/MiddleEnd/Alex/Witnesses/ApplicationWitness.fs"
-```
-
-### When to Use Bash
-
-- **Git operations**: `git status`, `git diff`, `git log`
-- **Build commands**: `dotnet build`, `dotnet test`
-- **System operations**: `mkdir`, `cd`, `mv`
-- **Tool invocation**: Running Firefly compiler
-
-**Rule of thumb**: If it's about UNDERSTANDING code, use Serena. If it's about RUNNING commands, use Bash.
-
-### Activating Projects
-
-Firefly has multiple related repos. Use `mcp__serena-local__activate_project` to switch:
+## Serena Projects
 
 ```
-mcp__serena-local__activate_project "Firefly"      # Main compiler
-mcp__serena-local__activate_project "fsnative"     # FNCS implementation
-mcp__serena-local__activate_project "fsnative-spec" # F# Native spec
+mcp__serena-local__activate_project "Firefly"       # Main compiler
+mcp__serena-local__activate_project "fsnative"      # FNCS implementation
+mcp__serena-local__activate_project "fsnative-spec"  # F# Native spec
 ```
 
-After activation, Serena tools operate on that project's codebase.
+Use Serena tools (not bash grep/find) for code understanding. Use bash for git, build, and system commands.

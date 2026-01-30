@@ -8,10 +8,12 @@
 
 module Alex.Traversal.MLIRTransfer
 
+open System.IO
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
+open Alex.Dialects.Core.Serialize
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.WitnessRegistry
 open Alex.Traversal.TwoPhaseNanopass
@@ -63,17 +65,27 @@ let transfer
             allOpsCount
             (List.length accumulator.Errors)
 
+        // Strip scope markers and prepare operations for output
+        let cleanedOps =
+            accumulator.AllOps
+            |> List.filter (fun op -> match op with MLIROp.ScopeMarker _ -> false | _ -> true)
+            |> List.rev
+
+        // Write partial MLIR to intermediate file for debugging (even with errors)
+        match intermediatesDir with
+        | Some dir ->
+            let mlirText = moduleToString "main" cleanedOps
+            let mlirPath = Path.Combine(dir, "07_output.mlir")
+            File.WriteAllText(mlirPath, mlirText)
+        | None -> ()
+
         // Check for errors accumulated during nanopass execution
         match accumulator.Errors with
         | [] ->
-            // Success - strip scope markers and return accumulated MLIR operations
-            let cleanedOps =
-                accumulator.AllOps
-                |> List.filter (fun op -> match op with MLIROp.ScopeMarker _ -> false | _ -> true)
-                |> List.rev
+            // Success - return accumulated MLIR operations
             Result.Ok (cleanedOps, [])
         | errors ->
-            // Errors occurred - format and report them
+            // Errors occurred - format and report them (MLIR already written above)
             let formattedErrors = errors |> List.map Diagnostic.format |> String.concat "\n"
             Result.Error formattedErrors
 
