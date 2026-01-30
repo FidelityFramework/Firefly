@@ -16,7 +16,7 @@ open Alex.Dialects.Core.Types
 open Alex.Dialects.Core.Serialize
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.WitnessRegistry
-open Alex.Traversal.SinglePhaseNanopass
+open Alex.Traversal.NanopassArchitecture
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PUBLIC API
@@ -47,15 +47,8 @@ let transfer
     | None ->
         Result.Error (sprintf "Entry node %d not found" (NodeId.value entryNodeId))
     | Some _ ->
-        // Execute all nanopasses in parallel
-        // Config: Enable parallel execution for production, sequential for debugging
-        let config = {
-            EnableParallel = true          // Parallel execution
-            EnableDiscovery = false        // Discovery deferred (full-fat strategy)
-            DiscoveryThreshold = 10000     // Placeholder for future optimization
-        }
-
-        let accumulator = executeNanopasses config globalRegistry graph coeffects intermediatesDir
+        // Execute all nanopasses in single-phase traversal
+        let accumulator = executeNanopasses globalRegistry graph coeffects intermediatesDir
 
         // Debug: Print accumulator stats with recursive counts
         let totalOps = MLIRAccumulator.totalOperations accumulator

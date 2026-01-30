@@ -342,9 +342,10 @@ module WitnessOutput =
 /// Context passed to witnesses - the elegant single parameter
 type WitnessContext = {
     Coeffects: TransferCoeffects
-    Accumulator: MLIRAccumulator
+    Accumulator: MLIRAccumulator     // Current scope's accumulator (changes for nested scopes)
+    RootAccumulator: MLIRAccumulator // Root/module-level accumulator (constant across all scopes)
     Graph: SemanticGraph
-    Zipper: PSGZipper              // Navigation state (created ONCE by fold)
+    Zipper: PSGZipper                // Navigation state (created ONCE by fold)
     GlobalVisited: ref<Set<NodeId>>  // Global visited set (shared across all nanopasses and function bodies)
 }
 

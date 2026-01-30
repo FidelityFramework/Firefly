@@ -48,9 +48,8 @@ let private makeSubGraphCombinator (nanopasses: Nanopass list) : (WitnessContext
 /// Witness Lambda operations - category-selective (handles only Lambda nodes)
 /// Takes nanopass list to build sub-graph combinator for body witnessing
 let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    // DEBUG: Check if we're being called for the Lambda node
-    if node.Id = NodeId 536 then
-        printfn "[DEBUG] LambdaWitness called for node 536, kind: %A" node.Kind
+    // DEBUG: Check ALL Lambda witnessing
+    printfn "[DEBUG] LambdaWitness called for node %d" (NodeId.value node.Id)
 
     // Single-phase: Use ALL witnesses for sub-graph traversal
     // No phase filtering needed - all witnesses run together in post-order
@@ -73,15 +72,18 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Bindings still go to GLOBAL NodeBindings (shared with parent)
             let bodyAcc = MLIRAccumulator.empty()
             
-            // Witness body nodes into nested accumulator with FRESH visited set
-            let freshVisited = ref Set.empty
+            // Witness body nodes into nested accumulator with GLOBAL visited set
+            // This prevents duplicate visitation by top-level traversal
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
+                if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: Body node %d has %d children" (NodeId.value bodyId) bodyNode.Children.Length
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
                     // Body context: nested accumulator, but shared global bindings via ctx.Accumulator.NodeAssoc
                     let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
-                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc freshVisited
+                    if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: About to visitAllNodes on body"
+                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
+                    if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: After visitAllNodes, bodyAcc has %d ops" (List.length bodyAcc.AllOps)
                     
                     // Copy bindings from body accumulator to parent (for cross-scope lookups)
                     bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
@@ -89,11 +91,16 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | None -> ()
             | None -> ()
 
-            if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: Body has %d operations" (List.length bodyAcc.AllOps)
-
-            // Separate body ops from module-level ops
-            let bodyOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ -> false | _ -> true)
-            let moduleOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ -> true | _ -> false)
+            // Separate body ops from module-level ops, and REVERSE to get correct order
+            // bodyAcc.AllOps accumulates in reverse (newest first), so reverse to get def-before-use order
+            let bodyOps = 
+                bodyAcc.AllOps 
+                |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
+                |> List.rev
+            let moduleOps = 
+                bodyAcc.AllOps 
+                |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
+                |> List.rev
 
             // Get body result for return value
             let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
@@ -117,13 +124,11 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             let funcParams = [(SSA.Arg 0, argvType)]
             let funcDef = FuncOp.FuncDef("main", funcParams, returnType, completeBody, Public)
 
-            // Add FuncDef to parent accumulator as top-level operation
-            MLIRAccumulator.addOp (MLIROp.FuncOp funcDef) ctx.Accumulator
+            // Return FuncDef and module-level ops in TopLevelOps
+            // visitAllNodes will add these to RootAccumulator
+            let topLevelOps = MLIROp.FuncOp funcDef :: moduleOps
 
-            // Add module-level ops to parent
-            MLIRAccumulator.addOps moduleOps ctx.Accumulator
-
-            { InlineOps = []; TopLevelOps = []; Result = TRVoid }
+            { InlineOps = []; TopLevelOps = topLevelOps; Result = TRVoid }
         else
             // Non-entry-point Lambda: Generate FuncDef for module-level function
             // Extract function name from parent Binding node using XParsec pattern
@@ -138,15 +143,15 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Create NESTED accumulator for body operations
             let bodyAcc = MLIRAccumulator.empty()
             
-            // Witness body nodes into nested accumulator with FRESH visited set
-            let freshVisited = ref Set.empty
+            // Witness body nodes into nested accumulator with GLOBAL visited set
+            // This prevents duplicate visitation by top-level traversal
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
                     // Body context: nested accumulator, shared global bindings
                     let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
-                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc freshVisited
+                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
                     
                     // Copy bindings from body accumulator to parent
                     bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
@@ -154,9 +159,16 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | None -> ()
             | None -> ()
 
-            // Separate body ops from module-level ops (GlobalStrings, nested functions)
-            let bodyOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
-            let moduleOps = bodyAcc.AllOps |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
+            // Separate body ops from module-level ops, and REVERSE to get correct order
+            // bodyAcc.AllOps accumulates in reverse (newest first), so reverse to get def-before-use order
+            let bodyOps = 
+                bodyAcc.AllOps 
+                |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
+                |> List.rev
+            let moduleOps = 
+                bodyAcc.AllOps 
+                |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
+                |> List.rev
 
             // Get body result for return value
             let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
@@ -199,13 +211,11 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Build FuncDef for module-level function
             let funcDef = FuncOp.FuncDef(funcName, mlirParams, returnType, completeBody, Public)
 
-            // Add FuncDef to parent accumulator as top-level operation
-            MLIRAccumulator.addOp (MLIROp.FuncOp funcDef) ctx.Accumulator
+            // Return FuncDef and module-level ops in TopLevelOps
+            // visitAllNodes will add these to RootAccumulator
+            let topLevelOps = MLIROp.FuncOp funcDef :: moduleOps
 
-            // Add module-level ops to parent
-            MLIRAccumulator.addOps moduleOps ctx.Accumulator
-
-            { InlineOps = []; TopLevelOps = []; Result = TRVoid }
+            { InlineOps = []; TopLevelOps = topLevelOps; Result = TRVoid }
 
     | None -> WitnessOutput.skip
 

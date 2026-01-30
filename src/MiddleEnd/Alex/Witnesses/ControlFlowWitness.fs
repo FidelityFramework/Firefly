@@ -52,8 +52,8 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) combinator
         match focusOn rootId ctx.Zipper with
         | Some branchZipper ->
             let branchCtx = { ctx with Zipper = branchZipper; Accumulator = branchAcc }
-            let branchVisited = ref Set.empty  // Fresh visited set for branch traversal
-            visitAllNodes combinator branchCtx branchNode branchAcc branchVisited
+            // Use GLOBAL visited set to prevent duplicate visitation by top-level traversal
+            visitAllNodes combinator branchCtx branchNode branchAcc ctx.GlobalVisited
             
             // Copy bindings from branch accumulator to parent
             branchAcc.NodeAssoc |> Map.iter (fun nodeId binding ->

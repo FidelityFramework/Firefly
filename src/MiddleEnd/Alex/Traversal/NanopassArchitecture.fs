@@ -91,9 +91,11 @@ let rec visitAllNodes
             // THEN witness current node (after ALL dependencies - children AND references)
             let output = witness focusedCtx currentNode
 
-            // Add operations to flat accumulator stream
+            // Add operations to appropriate accumulators
+            // InlineOps go to current scope accumulator (may be nested)
             MLIRAccumulator.addOps output.InlineOps accumulator
-            MLIRAccumulator.addOps output.TopLevelOps accumulator
+            // TopLevelOps go to ROOT accumulator (module-level only)
+            MLIRAccumulator.addOps output.TopLevelOps focusedCtx.RootAccumulator
 
             // Bind result if value (global binding)
             match output.Result with
@@ -138,6 +140,7 @@ let runNanopass
                     Graph = graph
                     Coeffects = coeffects
                     Accumulator = sharedAcc  // SHARED accumulator
+                    RootAccumulator = sharedAcc  // Root accumulator (same as shared for top-level)
                     Zipper = initialZipper
                     GlobalVisited = globalVisited  // GLOBAL visited set
                 }
@@ -172,3 +175,90 @@ module NanopassRegistry =
 
     let registerAll (nanopasses: Nanopass list) (registry: NanopassRegistry) =
         { registry with Nanopasses = nanopasses @ registry.Nanopasses }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMBINED WITNESS EXECUTION
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Combine multiple nanopass witnesses into a single witness that tries each in order
+let private combineWitnesses (nanopasses: Nanopass list) : (WitnessContext -> SemanticNode -> WitnessOutput) =
+    fun ctx node ->
+        let rec tryWitnesses remaining =
+            match remaining with
+            | [] -> WitnessOutput.skip
+            | nanopass :: rest ->
+                let result = nanopass.Witness ctx node
+                if result = WitnessOutput.skip then
+                    tryWitnesses rest
+                else
+                    result
+        tryWitnesses nanopasses
+
+/// Run all nanopasses in single post-order traversal with shared accumulator
+let runAllNanopasses
+    (nanopasses: Nanopass list)
+    (graph: SemanticGraph)
+    (coeffects: TransferCoeffects)
+    (sharedAcc: MLIRAccumulator)
+    (globalVisited: ref<Set<NodeId>>)
+    : unit =
+
+    // Create combined witness that tries all nanopasses at each node
+    let combinedWitness = combineWitnesses nanopasses
+
+    // Visit only TOP-LEVEL reachable nodes (entry points)
+    // Scope-internal nodes (Lambda bodies, branch bodies) are visited by their parent witnesses
+    for kvp in graph.Nodes do
+        let nodeId, node = kvp.Key, kvp.Value
+        // Only visit if reachable, not yet visited, AND parent is None or ModuleDef (top-level)
+        let isTopLevel =
+            match node.Parent with
+            | None -> true  // No parent = top-level
+            | Some parentId ->
+                match SemanticGraph.tryGetNode parentId graph with
+                | Some parentNode ->
+                    match parentNode.Kind with
+                    | SemanticKind.ModuleDef _ -> true  // Module-level binding
+                    | _ -> false  // Inside a scope (Lambda, If, etc.)
+                | None -> false
+        if node.IsReachable && not (Set.contains nodeId !globalVisited) && isTopLevel then
+            printfn "[DEBUG] Processing top-level node %d (%A)" (NodeId.value nodeId) node.Kind
+            match PSGZipper.create graph nodeId with
+            | None -> ()
+            | Some initialZipper ->
+                let nodeCtx = {
+                    Graph = graph
+                    Coeffects = coeffects
+                    Accumulator = sharedAcc
+                    RootAccumulator = sharedAcc  // Root same as shared for top-level
+                    Zipper = initialZipper
+                    GlobalVisited = globalVisited
+                }
+                visitAllNodes combinedWitness nodeCtx node sharedAcc globalVisited
+
+/// Main entry point: Execute all nanopasses and return accumulator
+let executeNanopasses
+    (registry: NanopassRegistry)
+    (graph: SemanticGraph)
+    (coeffects: TransferCoeffects)
+    (intermediatesDir: string option)
+    : MLIRAccumulator =
+
+    if List.isEmpty registry.Nanopasses then
+        MLIRAccumulator.empty()
+    else
+        // Create SINGLE shared accumulator for ALL nanopasses
+        let sharedAcc = MLIRAccumulator.empty()
+
+        // Create SINGLE global visited set for ALL nanopasses
+        let globalVisited = ref Set.empty
+
+        printfn "[Alex] Single-phase execution: %d registered nanopasses" (List.length registry.Nanopasses)
+
+        // Run all nanopasses together in single traversal
+        runAllNanopasses registry.Nanopasses graph coeffects sharedAcc globalVisited
+
+        // TODO: Serialize results if intermediatesDir provided
+        // TODO: Coverage validation
+
+        sharedAcc
