@@ -333,9 +333,14 @@ let structuralFoldingPass (operations: MLIROp list) : MLIROp list =
 /// 5. Remove any existing FuncDecl operations from witnesses (duplicates)
 let declarationCollectionPass (operations: MLIROp list) : MLIROp list =
 
-    /// NO FFI DECLARATIONS
-    /// External functions (write, Console.write, etc.) are resolved by MLIR and the linker
-    /// MLIR allows calls to undeclared external functions - they'll be linked later
+    /// Collect all function DEFINITIONS in the module
+    /// These are functions implemented in this module - they need NO declarations
+    let definedFunctions =
+        operations
+        |> List.choose (function
+            | MLIROp.FuncOp (FuncOp.FuncDef (name, _, _, _, _)) -> Some name
+            | _ -> None)
+        |> Set.ofList
 
     /// Recursively collect all function calls from operations
     let rec collectCalls (op: MLIROp) : (string * MLIRType list * MLIRType) list =
@@ -343,41 +348,41 @@ let declarationCollectionPass (operations: MLIROp list) : MLIROp list =
         | MLIROp.FuncOp (FuncOp.FuncCall (_, name, args, retTy)) ->
             // Collect this call's signature
             [(name, args |> List.map (fun v -> v.Type), retTy)]
-        
+
         // Recurse into nested operations
         | MLIROp.FuncOp (FuncOp.FuncDef (_, _, _, body, _)) ->
             body |> List.collect collectCalls
-        
+
         | MLIROp.SCFOp (SCFOp.If (_, thenOps, elseOps)) ->
             let thenCalls = thenOps |> List.collect collectCalls
             let elseCalls = elseOps |> Option.map (List.collect collectCalls) |> Option.defaultValue []
             thenCalls @ elseCalls
-        
+
         | MLIROp.SCFOp (SCFOp.While (condOps, bodyOps)) ->
             let condCalls = condOps |> List.collect collectCalls
             let bodyCalls = bodyOps |> List.collect collectCalls
             condCalls @ bodyCalls
-        
+
         | MLIROp.SCFOp (SCFOp.For (_, _, _, bodyOps)) ->
             bodyOps |> List.collect collectCalls
-        
+
         | MLIROp.Block (_, blockOps) ->
             blockOps |> List.collect collectCalls
-        
+
         | MLIROp.Region ops ->
             ops |> List.collect collectCalls
-        
+
         | _ -> []
-    
+
     /// Collect all function calls from all operations
     let allCalls = operations |> List.collect collectCalls
 
-    /// Group calls by function name and pick representative signature
-    /// Generate declarations for ALL called functions based on call site types
-    /// MLIR requires declarations; it will handle external linkage during lowering
+    /// Generate declarations ONLY for EXTERNAL functions (not defined in this module)
+    /// Internal functions already have FuncDef - declarations would cause redefinition errors
     let declarations =
         allCalls
         |> List.groupBy (fun (name, _, _) -> name)
+        |> List.filter (fun (name, _) -> not (Set.contains name definedFunctions))  // ONLY external functions
         |> List.map (fun (name, signatures) ->
             // Pick first signature (deterministic due to post-order)
             let (_, paramTypes, retType) = signatures.Head
@@ -390,11 +395,12 @@ let declarationCollectionPass (operations: MLIROp list) : MLIROp list =
             | MLIROp.FuncOp (FuncOp.FuncDecl _) -> false  // Remove witness-emitted declarations
             | _ -> true)
 
-    // Emit only internal function declarations (skip FFI - let MLIR/linker handle)
+    // Emit only EXTERNAL function declarations (functions called but not defined in this module)
+    // Internal functions (with FuncDef) need NO declarations - they're already defined
     if List.isEmpty declarations then
         withoutWitnessDecls
     else
-        printfn "[Alex] Declaration collection: Emitted %d internal function declarations" (List.length declarations)
+        printfn "[Alex] Declaration collection: Emitted %d external function declarations" (List.length declarations)
         declarations @ withoutWitnessDecls
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -418,11 +424,15 @@ let typeNormalizationPass (operations: MLIROp list) : MLIROp list =
         FreshSSACounter = ref 0
     }
 
-    // Collect function declarations to get canonical parameter types
-    let declarations =
+    // Collect function signatures (both declarations AND definitions) to get canonical parameter types
+    let functionSignatures =
         operations
         |> List.choose (function
             | MLIROp.FuncOp (FuncOp.FuncDecl (name, paramTypes, _, _)) -> Some (name, paramTypes)
+            | MLIROp.FuncOp (FuncOp.FuncDef (name, params, _, _, _)) ->
+                // Extract types from (SSA * MLIRType) list
+                let paramTypes = params |> List.map snd
+                Some (name, paramTypes)
             | _ -> None)
         |> Map.ofList
 
@@ -439,8 +449,8 @@ let typeNormalizationPass (operations: MLIROp list) : MLIROp list =
     let rec transformOp (op: MLIROp) : MLIROp list =
         match op with
         | MLIROp.FuncOp (FuncOp.FuncCall (resultOpt, funcName, args, retTy)) ->
-            // Check if we have a declaration for this function
-            match Map.tryFind funcName declarations with
+            // Check if we have a signature (declaration or definition) for this function
+            match Map.tryFind funcName functionSignatures with
             | Some paramTypes when paramTypes.Length = args.Length ->
                 // Check each argument against parameter type
                 let castsAndArgs =

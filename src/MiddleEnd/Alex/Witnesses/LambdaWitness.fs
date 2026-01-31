@@ -48,9 +48,6 @@ let private makeSubGraphCombinator (nanopasses: Nanopass list) : (WitnessContext
 /// Witness Lambda operations - category-selective (handles only Lambda nodes)
 /// Takes nanopass list to build sub-graph combinator for body witnessing
 let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    // DEBUG: Check ALL Lambda witnessing
-    printfn "[DEBUG] LambdaWitness called for node %d" (NodeId.value node.Id)
-
     // Single-phase: Use ALL witnesses for sub-graph traversal
     // No phase filtering needed - all witnesses run together in post-order
     let subGraphCombinator = makeSubGraphCombinator nanopasses
@@ -61,13 +58,8 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
         let nodeIdValue = NodeId.value node.Id
         let isEntryPoint = Set.contains nodeIdValue ctx.Coeffects.EntryPointLambdaIds
 
-        if node.Id = NodeId 536 then
-            printfn "[DEBUG] Pattern matched! isEntryPoint=%b, bodyId=%d" isEntryPoint (NodeId.value bodyId)
-
         if isEntryPoint then
             // Entry point Lambda: generate func.func @main wrapper
-            if node.Id = NodeId 536 then printfn "[DEBUG] Entry point Lambda - using nested accumulator"
-
             // Create NESTED accumulator for body operations
             // Bindings still go to GLOBAL NodeBindings (shared with parent)
             let bodyAcc = MLIRAccumulator.empty()
@@ -76,14 +68,11 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // This prevents duplicate visitation by top-level traversal
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
-                if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: Body node %d has %d children" (NodeId.value bodyId) bodyNode.Children.Length
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
                     // Body context: nested accumulator, but shared global bindings via ctx.Accumulator.NodeAssoc
                     let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
-                    if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: About to visitAllNodes on body"
                     visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
-                    if node.Id = NodeId 536 then printfn "[DEBUG] Entry point: After visitAllNodes, bodyAcc has %d ops" (List.length bodyAcc.AllOps)
                     
                     // Copy bindings from body accumulator to parent (for cross-scope lookups)
                     bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
@@ -131,14 +120,33 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             { InlineOps = []; TopLevelOps = topLevelOps; Result = TRVoid }
         else
             // Non-entry-point Lambda: Generate FuncDef for module-level function
-            // Extract function name from parent Binding node using XParsec pattern
+            // Extract QUALIFIED function name from parent Binding + ModuleDef (if present)
+            // Same logic as ApplicationWitness for qualified name resolution
             let funcName =
-                match tryMatch pLambdaWithBinding ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-                | Some ((bindingName, _, _, _), _) ->
-                    // No @ prefix - serializer will add it
-                    bindingName
-                | None ->
-                    sprintf "lambda_%d" nodeIdValue
+                // Lambda's parent should be Binding node - extract name directly from PSG
+                match node.Parent with
+                | Some bindingId ->
+                    match SemanticGraph.tryGetNode bindingId ctx.Graph with
+                    | Some bindingNode ->
+                        match bindingNode.Kind with
+                        | SemanticKind.Binding (bindingName, _, _, _) ->
+                            // Got binding name - check if Binding has ModuleDef parent for qualification
+                            match bindingNode.Parent with
+                            | Some moduleParentId ->
+                                match SemanticGraph.tryGetNode moduleParentId ctx.Graph with
+                                | Some moduleParent ->
+                                    match moduleParent.Kind with
+                                    | SemanticKind.ModuleDef (moduleName, _) ->
+                                        // Qualified name: Module.Function
+                                        sprintf "%s.%s" moduleName bindingName
+                                    | _ -> bindingName  // No ModuleDef parent, use binding name
+                                | None -> bindingName
+                            | None -> bindingName
+                        | _ ->
+                            // Parent is not a Binding - use generic lambda name
+                            sprintf "lambda_%d" nodeIdValue
+                    | None -> sprintf "lambda_%d" nodeIdValue
+                | None -> sprintf "lambda_%d" nodeIdValue
 
             // Create NESTED accumulator for body operations
             let bodyAcc = MLIRAccumulator.empty()
