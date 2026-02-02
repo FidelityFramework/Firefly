@@ -45,7 +45,8 @@ let rec typeToString (ty: MLIRType) : string =
     | TMemRefStatic (size, elemTy) ->
         sprintf "memref<%dx%s>" size (typeToString elemTy)
     | TMemRefScalar elemTy ->
-        sprintf "memref<%s>" (typeToString elemTy)
+        // Scalar memref (0D) is represented as 1-element static memref in MLIR
+        sprintf "memref<1x%s>" (typeToString elemTy)
     | TVector (count, elemTy) ->
         sprintf "vector<%dx%s>" count (typeToString elemTy)
     | TIndex -> "index"
@@ -168,13 +169,29 @@ let arithOpToString (op: ArithOp) : string =
 let memrefOpToString (op: MemRefOp) : string =
     match op with
     | MemRefOp.Load (result, memref, indices, ty) ->
-        let indicesStr = if List.isEmpty indices then "[]" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
-        sprintf "%s = memref.load %s%s : memref<%s>"
-            (ssaToString result) (ssaToString memref) indicesStr (typeToString ty)
+        // Build indices string
+        let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
+        // ty is element type - construct proper memref type for serialization
+        // Single index → 1-element static memref (matches pAlloca pattern)
+        // Multiple indices → dynamic memref
+        let memrefType =
+            match indices.Length with
+            | 0 | 1 -> TMemRefStatic (1, ty)
+            | _ -> TMemRef ty
+        sprintf "%s = memref.load %s%s : %s"
+            (ssaToString result) (ssaToString memref) indicesStr (typeToString memrefType)
     | MemRefOp.Store (value, memref, indices, ty) ->
-        let indicesStr = if List.isEmpty indices then "[]" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
-        sprintf "memref.store %s, %s%s : memref<%s>"
-            (ssaToString value) (ssaToString memref) indicesStr (typeToString ty)
+        // Build indices string
+        let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
+        // ty is element type - construct proper memref type for serialization
+        // Single index → 1-element static memref (matches pAlloca pattern)
+        // Multiple indices → dynamic memref
+        let memrefType =
+            match indices.Length with
+            | 0 | 1 -> TMemRefStatic (1, ty)
+            | _ -> TMemRef ty
+        sprintf "memref.store %s, %s%s : %s"
+            (ssaToString value) (ssaToString memref) indicesStr (typeToString memrefType)
     | MemRefOp.Alloca (result, memrefType, alignmentOpt) ->
         match alignmentOpt with
         | Some alignment ->
@@ -336,8 +353,33 @@ let rec opToString (op: MLIROp) : string =
             sprintf "%s = index.castu %s : index to %s" (ssaToString result) (ssaToString operand) (typeToString destTy)
         | _ ->
             sprintf "// TODO: Serialize IndexOp %A" iop
+    | MLIROp.SCFOp scfOp ->
+        match scfOp with
+        | SCFOp.While (condOps, bodyOps) ->
+            // scf.while with condition and body regions
+            let condStr = condOps |> List.map opToString |> String.concat "\n      "
+            let bodyStr = bodyOps |> List.map opToString |> String.concat "\n      "
+            sprintf "scf.while : () -> () {\n      %s\n    } do {\n      %s\n    }" condStr bodyStr
+        | SCFOp.If (cond, thenOps, elseOpsOpt) ->
+            let thenStr = thenOps |> List.map opToString |> String.concat "\n      "
+            match elseOpsOpt with
+            | Some elseOps ->
+                let elseStr = elseOps |> List.map opToString |> String.concat "\n      "
+                sprintf "scf.if %s {\n      %s\n    } else {\n      %s\n    }" (ssaToString cond) thenStr elseStr
+            | None ->
+                sprintf "scf.if %s {\n      %s\n    }" (ssaToString cond) thenStr
+        | SCFOp.For (lower, upper, step, bodyOps) ->
+            let bodyStr = bodyOps |> List.map opToString |> String.concat "\n      "
+            sprintf "scf.for %s = %s to %s step %s {\n      %s\n    }" 
+                (ssaToString lower) (ssaToString upper) (ssaToString step) (ssaToString step) bodyStr
+        | SCFOp.Yield ssas ->
+            let ssaStr = ssas |> List.map ssaToString |> String.concat ", "
+            sprintf "scf.yield %s" ssaStr
+        | SCFOp.Condition (cond, args) ->
+            let argsStr = args |> List.map ssaToString |> String.concat ", "
+            sprintf "scf.condition(%s) %s" (ssaToString cond) argsStr
     | _ ->
-        // For now, return placeholder for unimplemented operations (SCFOp, CFOp, VectorOp, Block, Region)
+        // For now, return placeholder for unimplemented operations (CFOp, VectorOp, Block, Region)
         sprintf "// TODO: Serialize %A" op
 
 /// Serialize a list of operations with proper indentation

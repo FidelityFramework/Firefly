@@ -1,48 +1,26 @@
-/// SequentialWitness - Witness sequential composition nodes
+/// SequentialWitness - DEPRECATED (January 2026)
 ///
-/// Sequential nodes don't emit MLIR - they forward the last child's SSA.
-/// All child operations are already emitted by child witnesses (post-order).
+/// ARCHITECTURAL DECISION: Sequential is NOT a witness.
 ///
-/// NANOPASS: This witness handles ONLY Sequential nodes.
-/// All other nodes return WitnessOutput.skip for other nanopasses to handle.
+/// Sequential nodes are structural scaffolding that organize the PSG tree.
+/// They don't observe coeffects, emit MLIR, or produce values.
+/// They only "forward" child results, which is composition/building, NOT witnessing.
+///
+/// VIOLATION: This pattern violated the codata photographer principle.
+/// Witnesses should observe pre-computed data, not forward/build results.
+///
+/// FIX: LambdaWitness now traverses Sequential structure directly using
+/// findLastValueNode to extract the last value-producing child.
+///
+/// This file is kept as a stub for documentation purposes.
+/// Sequential is NOT registered in WitnessRegistry.
 module Alex.Witnesses.SequentialWitness
 
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
-open Alex.XParsec.PSGCombinators
 
-// ═══════════════════════════════════════════════════════════
-// CATEGORY-SELECTIVE WITNESS (Private)
-// ═══════════════════════════════════════════════════════════
-
-/// Witness sequential nodes - forwards last child's SSA
-let private witnessSequential (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pSequential ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
-    | Some (childIds, _) ->
-        // Sequential forwards the last child's result
-        match List.tryLast childIds with
-        | Some lastId ->
-            match MLIRAccumulator.recallNode lastId ctx.Accumulator with
-            | Some (ssa, ty) ->
-                // Forward last child's SSA
-                { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
-            | None ->
-                // Last child has no SSA (e.g., unit literal) - return void
-                // This is normal for sequences ending in unit expressions
-                { InlineOps = []; TopLevelOps = []; Result = TRVoid }
-        | None ->
-            // Empty sequential - return void
-            { InlineOps = []; TopLevelOps = []; Result = TRVoid }
-    | None ->
-        WitnessOutput.skip
-
-// ═══════════════════════════════════════════════════════════
-// NANOPASS REGISTRATION (Public)
-// ═══════════════════════════════════════════════════════════
-
-/// Sequential nanopass - witnesses sequential composition
+/// DEPRECATED: Sequential witness removed - see module documentation
 let nanopass : Nanopass = {
-    Name = "Sequential"
-    Witness = witnessSequential
+    Name = "Sequential-DEPRECATED"
+    Witness = fun _ _ -> WitnessOutput.skip
 }

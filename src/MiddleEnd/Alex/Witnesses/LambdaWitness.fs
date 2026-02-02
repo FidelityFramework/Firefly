@@ -20,6 +20,7 @@ open Alex.Traversal.NanopassArchitecture
 open Alex.Traversal.PSGZipper
 open Alex.XParsec.PSGCombinators
 open Alex.Patterns.ClosurePatterns
+open Alex.Patterns.ElisionPatterns  // For findLastValueNode
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -92,17 +93,34 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 |> List.rev
 
             // Get body result for return value
-            let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
+            // Traverse Sequential structure to find actual value-producing node
+            let actualValueNode = Alex.Patterns.ElisionPatterns.findLastValueNode bodyId ctx.Graph
+            let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
 
-            // Trust bodyResult - emit error if None
+            // Determine return type from Lambda type signature
+            let arch = ctx.Coeffects.Platform.TargetArch
+            let expectedReturnType =
+                match node.Type with
+                | NativeType.TFun (_, retType) -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch retType
+                | _ -> TInt I32  // Fallback
+
+            // Handle bodyResult based on return type
             let returnSSA, returnType =
                 match bodyResult with
                 | Some (ssa, ty) -> (Some ssa, ty)
                 | None ->
-                    let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some "Entry point return")
-                                (sprintf "Body (node %d) produced no result - fix upstream witness" (NodeId.value bodyId))
-                    MLIRAccumulator.addError err ctx.Accumulator
-                    (None, TInt I32)
+                    // Check if Lambda returns unit - if so, None is expected (TRVoid)
+                    match node.Type with
+                    | NativeType.TFun (_, NativeType.TApp ({ NTUKind = Some NTUunit }, [])) ->
+                        // Unit-returning function - no result SSA is expected
+                        (None, expectedReturnType)
+                    | _ ->
+                        // Non-unit function should have produced a result
+                        let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some "Entry point return")
+                                    (sprintf "Body (node %d, actual value node %d) produced no result - fix upstream witness" 
+                                             (NodeId.value bodyId) (NodeId.value actualValueNode))
+                        MLIRAccumulator.addError err ctx.Accumulator
+                        (None, expectedReturnType)
 
             let returnOp = MLIROp.FuncOp (FuncOp.Return (returnSSA, Some returnType))
             let completeBody = bodyOps @ [returnOp]
@@ -179,7 +197,9 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 |> List.rev
 
             // Get body result for return value
-            let bodyResult = MLIRAccumulator.recallNode bodyId ctx.Accumulator
+            // Traverse Sequential structure to find actual value-producing node
+            let actualValueNode = Alex.Patterns.ElisionPatterns.findLastValueNode bodyId ctx.Graph
+            let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
 
             // Map parameters to MLIR types and build parameter list with SSAs
             let arch = ctx.Coeffects.Platform.TargetArch
@@ -201,15 +221,23 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | NativeType.TFun (_, retType) -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch retType
                 | _ -> TInt I32  // Fallback
 
-            // Trust bodyResult - emit error if None
+            // Handle bodyResult based on return type
             let returnSSA =
                 match bodyResult with
                 | Some (ssa, _) -> Some ssa
                 | None ->
-                    let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some (sprintf "%s return" funcName))
-                                (sprintf "Body (node %d) produced no result - fix upstream witness" (NodeId.value bodyId))
-                    MLIRAccumulator.addError err ctx.Accumulator
-                    None
+                    // Check if Lambda returns unit - if so, None is expected (TRVoid)
+                    match node.Type with
+                    | NativeType.TFun (_, NativeType.TApp ({ NTUKind = Some NTUunit }, [])) ->
+                        // Unit-returning function - no result SSA is expected
+                        None
+                    | _ ->
+                        // Non-unit function should have produced a result
+                        let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some (sprintf "%s return" funcName))
+                                    (sprintf "Body (node %d, actual value node %d) produced no result - fix upstream witness" 
+                                             (NodeId.value bodyId) (NodeId.value actualValueNode))
+                        MLIRAccumulator.addError err ctx.Accumulator
+                        None
 
             // Build return operation
             let returnOp = MLIROp.FuncOp (FuncOp.Return (returnSSA, Some returnType))

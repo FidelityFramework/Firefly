@@ -85,7 +85,9 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                         // Fallback to i8 if type extraction fails
                                         TInt I8
 
-                                match tryMatch (pNativePtrWrite valueSSA ptrSSA elemType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                                // Allocate temporary SSA for index constant
+                                let indexSSA = SSA.V 999990  // Temporary SSA for index 0
+                                match tryMatch (pNativePtrWrite valueSSA ptrSSA elemType indexSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "NativePtr.write pattern failed"
                             | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"

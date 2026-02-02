@@ -38,10 +38,10 @@ let pStore (value: SSA) (memref: SSA) (indices: SSA list) (elemType: MLIRType) :
 
 /// Emit memref.alloca operation (stack allocation)
 /// elemType: explicit element type for the memref (e.g., TInt I8, TInt I32, TStruct [...])
-/// Creates scalar (0D) memref for single-element allocations
+/// Creates static 1-element memref for single-element allocations
 let pAlloca (ssa: SSA) (elemType: MLIRType) (alignment: int option) : PSGParser<MLIROp> =
     parser {
-        let memrefType = TMemRefScalar elemType
+        let memrefType = TMemRefStatic (1, elemType)
         return MLIROp.MemRefOp (MemRefOp.Alloca (ssa, memrefType, alignment))
     }
 

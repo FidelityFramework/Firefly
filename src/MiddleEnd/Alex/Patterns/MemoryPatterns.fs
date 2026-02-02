@@ -38,17 +38,19 @@ let pExtractField (structSSA: SSA) (fieldIndex: int) (resultSSA: SSA) (structTy:
 /// SSAs: [0] = const 1, [1] = alloca result
 let pAllocaImmutable (valueSSA: SSA) (valueType: MLIRType) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
-        do! ensure (ssas.Length >= 2) $"pAllocaImmutable: Expected 2 SSAs, got {ssas.Length}"
+        do! ensure (ssas.Length >= 3) $"pAllocaImmutable: Expected 3 SSAs, got {ssas.Length}"
 
         let constOneSSA = ssas.[0]
         let allocaSSA = ssas.[1]
+        let indexSSA = ssas.[2]
 
         let constOneTy = TInt I64
         let! constOp = pConstI constOneSSA 1L constOneTy
         let! allocaOp = pAlloca allocaSSA valueType None
-        let! storeOp = pStore valueSSA allocaSSA [] valueType
+        let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storeOp = pStore valueSSA allocaSSA [indexSSA] valueType
 
-        return [constOp; allocaOp; storeOp]
+        return [constOp; allocaOp; indexOp; storeOp]
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -161,11 +163,11 @@ let pRecordCopyWith (origSSA: SSA) (recordType: MLIRType) (updates: (int * SSA) 
 // ═══════════════════════════════════════════════════════════
 
 /// Build array: allocate, initialize elements, construct fat pointer
-/// SSAs: [0] = count const, [1] = alloca, [2..2+2*N] = (idx, gep) pairs, [last-2] = undef, [last-1] = withPtr, [last] = result
+/// SSAs: [0] = count const, [1] = alloca, [2..2+3*N] = (idx, gep, indexZero) triples, [last-2] = undef, [last-1] = withPtr, [last] = result
 let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
         let count = List.length elements
-        let expectedSSAs = 2 + (2 * count) + 3  // count, alloca, (idx,gep)*N, undef, withPtr, result
+        let expectedSSAs = 2 + (3 * count) + 3  // count, alloca, (idx,gep,indexZero)*N, undef, withPtr, result
 
         do! ensure (ssas.Length >= expectedSSAs) $"pBuildArray: Expected {expectedSSAs} SSAs, got {ssas.Length}"
 
@@ -184,12 +186,14 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
             |> List.indexed
             |> List.map (fun (i, elem) ->
                 parser {
-                    let idxSSA = ssas.[2 + i * 2]
-                    let gepSSA = ssas.[2 + i * 2 + 1]
+                    let idxSSA = ssas.[2 + i * 3]
+                    let gepSSA = ssas.[2 + i * 3 + 1]
+                    let indexZeroSSA = ssas.[2 + i * 3 + 2]
                     let! idxOp = pConstI idxSSA (int64 i) indexTy
                     let! gepOp = pGEP gepSSA allocaSSA [(idxSSA, TInt I64)]
-                    let! storeOp = pStore elem.SSA gepSSA [] elemType
-                    return [idxOp; gepOp; storeOp]
+                    let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
+                    let! storeOp = pStore elem.SSA gepSSA [indexZeroSSA] elemType
+                    return [idxOp; gepOp; indexZeroOp; storeOp]
                 })
             |> sequence
 
@@ -241,12 +245,13 @@ let pNativePtrStackAlloc (resultSSA: SSA) : PSGParser<MLIROp list * TransferResu
 /// Writes a value to a pointer location
 ///
 /// NativePtr.write (ptr: nativeptr<'T>) (value: 'T) : unit
-let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) (elemType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) (elemType: MLIRType) (indexSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Emit memref.store operation
-        let! storeOp = pStore valueSSA ptrSSA [] elemType
+        // Emit memref.store operation with index
+        let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storeOp = pStore valueSSA ptrSSA [indexSSA] elemType
 
-        return ([storeOp], TRVoid)
+        return ([indexOp; storeOp], TRVoid)
     }
 
 /// Convert memref to pointer for FFI boundaries

@@ -33,6 +33,26 @@ open Alex.CodeGeneration.TypeMapping
 let pfail msg : PSGParser<'a> = fail (Message msg)
 
 // ═══════════════════════════════════════════════════════════
+// PSG STRUCTURAL TRAVERSAL
+// ═══════════════════════════════════════════════════════════
+
+/// Traverse Sequential structure to find the last value-producing child.
+/// Sequential nodes are structural scaffolding that organize the PSG tree.
+/// They are NOT witnesses and do not bind results.
+/// This pattern extracts the actual value-producing node from Sequential nesting.
+let rec findLastValueNode nodeId graph =
+    match FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core.SemanticGraph.tryGetNode nodeId graph with
+    | Some node ->
+        match node.Kind with
+        | FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types.SemanticKind.Sequential childIds ->
+            // Sequential is structural - recursively find last value child
+            match List.tryLast childIds with
+            | Some lastChild -> findLastValueNode lastChild graph
+            | None -> nodeId  // Empty sequential - return self (caller will handle TRVoid)
+        | _ -> nodeId  // Non-Sequential node is the actual value node
+    | None -> nodeId  // Node not found - return original (error will occur downstream)
+
+// ═══════════════════════════════════════════════════════════
 // MEMORY PATTERNS
 // ═══════════════════════════════════════════════════════════
 
@@ -45,14 +65,15 @@ let pFieldAccess (structPtr: SSA) (fieldIndex: int) (gepSSA: SSA) (loadSSA: SSA)
     }
 
 /// Field set via StructGEP + Store
-let pFieldSet (structPtr: SSA) (fieldIndex: int) (value: SSA) (gepSSA: SSA) : PSGParser<MLIROp list> =
+let pFieldSet (structPtr: SSA) (fieldIndex: int) (value: SSA) (gepSSA: SSA) (indexSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! state = getUserState
         let elemType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
 
         let! gepOp = pStructGEP gepSSA structPtr fieldIndex
-        let! storeOp = pStore value gepSSA [] elemType
-        return [gepOp; storeOp]
+        let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storeOp = pStore value gepSSA [indexSSA] elemType
+        return [gepOp; indexOp; storeOp]
     }
 
 /// Array element access via GEP + Load
@@ -64,14 +85,15 @@ let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) 
     }
 
 /// Array element set via GEP + Store
-let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gepSSA: SSA) : PSGParser<MLIROp list> =
+let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gepSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! state = getUserState
         let elemType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
 
         let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
-        let! storeOp = pStore value gepSSA [] elemType
-        return [gepOp; storeOp]
+        let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storeOp = pStore value gepSSA [indexZeroSSA] elemType
+        return [gepOp; indexZeroOp; storeOp]
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -188,7 +210,9 @@ let pClosureCall (closureSSA: SSA) (closureTy: MLIRType) (captureTypes: MLIRType
         // Call with captures prepended to args
         let captureVals = List.zip (extractSSAs.[1..]) captureTypes |> List.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
         let allArgs = captureVals @ args
-        let! callOp = pIndirectCall resultSSA codePtrSSA (allArgs |> List.map (fun v -> (v.SSA, v.Type)))
+        let! state = getUserState
+        let retType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        let! callOp = pFuncCallIndirect (Some resultSSA) codePtrSSA allArgs retType
 
         return extractCodeOp :: extractCaptureOps @ [callOp]
     }
@@ -251,7 +275,7 @@ let pBuildLazyStruct (valueTy: MLIRType) (codePtrTy: MLIRType) (codePtr: SSA) (c
 /// Build lazy force: Call lazy thunk via struct pointer passing
 ///
 /// LazyForce is a SIMPLE operation (not elaborated by FNCS).
-/// SSA cost: Fixed 4 (extract code_ptr, const 1, alloca, call)
+/// SSA cost: Fixed 5 (extract code_ptr, const 1, alloca, index, store, call)
 ///
 /// Calling convention: Thunk receives pointer to lazy struct
 /// 1. Extract code_ptr from lazy struct [2]
@@ -266,12 +290,13 @@ let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy
                     (ssas: SSA list) (arch: Architecture)
                     : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // SSAs: [0] = code_ptr, [1] = const 1, [2] = alloca'd ptr
-        do! ensure (ssas.Length >= 3) $"pBuildLazyForce: Expected at least 3 SSAs, got {ssas.Length}"
+        // SSAs: [0] = code_ptr, [1] = const 1, [2] = alloca'd ptr, [3] = index
+        do! ensure (ssas.Length >= 4) $"pBuildLazyForce: Expected at least 4 SSAs, got {ssas.Length}"
 
         let codePtrSSA = ssas.[0]
         let constOneSSA = ssas.[1]
         let ptrSSA = ssas.[2]
+        let indexSSA = ssas.[3]
 
         // Extract code_ptr from lazy struct [2] - it's always a ptr type
         let codePtrTy = TPtr
@@ -283,12 +308,14 @@ let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy
         let! allocaOp = pAlloca ptrSSA lazyTy None
 
         // Store lazy struct to alloca'd space
-        let! storeOp = pStore lazySSA ptrSSA [] lazyTy
+        let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storeOp = pStore lazySSA ptrSSA [indexSSA] lazyTy
 
         // Call thunk with pointer -> result
-        let! callOp = pIndirectCall resultSSA codePtrSSA [(ptrSSA, TPtr)]
+        let argVals = [{ SSA = ptrSSA; Type = TPtr }]
+        let! callOp = pFuncCallIndirect (Some resultSSA) codePtrSSA argVals resultTy
 
-        return ([extractCodePtrOp; constOneOp; allocaOp; storeOp; callOp], TRValue { SSA = resultSSA; Type = resultTy })
+        return ([extractCodePtrOp; constOneOp; allocaOp; indexOp; storeOp; callOp], TRValue { SSA = resultSSA; Type = resultTy })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -393,7 +420,10 @@ let pSeqMoveNext (seqSSA: SSA) (seqTy: MLIRType) (captureTypes: MLIRType list)
         let captureArgs = List.zip (extractSSAs.[2..2+captureCount-1] |> List.ofSeq) captureTypes
         let internalArgs = List.zip (extractSSAs.[2+captureCount..2+captureCount+internalCount-1] |> List.ofSeq) internalTypes
         let allArgs = stateArg :: codePtrArg :: (captureArgs @ internalArgs)
-        let! callOp = pIndirectCall resultSSA codePtrSSA allArgs
+        let allArgVals = allArgs |> List.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
+        let! state = getUserState
+        let retType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+        let! callOp = pFuncCallIndirect (Some resultSSA) codePtrSSA allArgVals retType
 
         return extractStateOp :: extractCodeOp :: extractCaptureOps
                @ extractInternalOps @ [callOp]
@@ -1028,7 +1058,8 @@ let pApplicationCall (resultSSA: SSA) (funcSSA: SSA) (args: (SSA * MLIRType) lis
                      : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Emit indirect call via function pointer
-        let callOp = MLIROp.LLVMOp (LLVMOp.IndirectCall (resultSSA, funcSSA, args, retType))
+        let argVals = args |> List.map (fun (ssa, ty) -> { SSA = ssa; Type = ty })
+        let! callOp = pFuncCallIndirect (Some resultSSA) funcSSA argVals retType
         return ([callOp], TRValue { SSA = resultSSA; Type = retType })
     }
 

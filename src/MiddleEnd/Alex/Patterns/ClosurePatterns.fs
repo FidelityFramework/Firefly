@@ -25,17 +25,18 @@ open Alex.Elements.FuncElements
 // ═══════════════════════════════════════════════════════════
 
 /// Allocate in global closure heap arena (bump allocator)
-/// SSAs: [0] = heap_pos_ptr, [1] = heap_pos, [2] = heap_base, [3] = result_ptr, [4] = new_pos
+/// SSAs: [0] = heap_pos_ptr, [1] = heap_pos, [2] = heap_base, [3] = result_ptr, [4] = new_pos, [5] = index
 /// Returns ops and the result pointer SSA
 let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * SSA> =
     parser {
-        do! ensure (ssas.Length >= 5) $"pAllocateInArena: Expected 5 SSAs, got {ssas.Length}"
+        do! ensure (ssas.Length >= 6) $"pAllocateInArena: Expected 6 SSAs, got {ssas.Length}"
 
         let heapPosPtrSSA = ssas.[0]
         let heapPosSSA = ssas.[1]
         let heapBaseSSA = ssas.[2]
         let resultPtrSSA = ssas.[3]
         let newPosSSA = ssas.[4]
+        let indexSSA = ssas.[5]
 
         // Load current position
         let! addressOfPosOp = pLoad heapPosPtrSSA heapPosPtrSSA  // Placeholder - need AddressOf
@@ -47,9 +48,10 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
 
         // Update position: pos + size
         let! addOp = pAddI newPosSSA heapPosSSA sizeSSA
-        let! storePosOp = pStore newPosSSA heapPosPtrSSA [] (TInt I64)
+        let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storePosOp = pStore newPosSSA heapPosPtrSSA [indexSSA] (TInt I64)
 
-        return ([addressOfPosOp; loadPosOp; addressOfBaseOp; gepOp; addOp; storePosOp], resultPtrSSA)
+        return ([addressOfPosOp; loadPosOp; addressOfBaseOp; gepOp; addOp; indexOp; storePosOp], resultPtrSSA)
     }
 
 // ═══════════════════════════════════════════════════════════

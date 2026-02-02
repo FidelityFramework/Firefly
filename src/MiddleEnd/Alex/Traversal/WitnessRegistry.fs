@@ -26,7 +26,8 @@ module PlatformWitness = Alex.Witnesses.PlatformWitness
 // Structural Witnesses (January 2026 - parallel fan-out)
 module BindingWitness = Alex.Witnesses.BindingWitness
 module VarRefWitness = Alex.Witnesses.VarRefWitness
-module SequentialWitness = Alex.Witnesses.SequentialWitness
+// REMOVED: SequentialWitness - Sequential is structural scaffolding, NOT a witness
+// LambdaWitness now traverses Sequential structure directly via findLastValueNode
 module ApplicationWitness = Alex.Witnesses.ApplicationWitness
 
 // Priority 2: Collection Witnesses
@@ -69,7 +70,6 @@ let initializeRegistry () =
         // Structural Witnesses (parallel fan-out)
         |> NanopassRegistry.register BindingWitness.nanopass
         |> NanopassRegistry.register VarRefWitness.nanopass
-        |> NanopassRegistry.register SequentialWitness.nanopass
         |> NanopassRegistry.register ApplicationWitness.nanopass
 
         // Priority 2: Collection Witnesses
@@ -83,6 +83,9 @@ let initializeRegistry () =
 
         // Priority 5: Advanced Features
         |> NanopassRegistry.register LazyWitness.nanopass
+        
+        // REMOVED: SequentialWitness registration (Sequential is not a witness)
+        // Sequential nodes are structural scaffolding traversed directly by LambdaWitness
         // |> NanopassRegistry.register SeqWitness.nanopass
 
     // Now create composite witnesses (Lambda, ControlFlow) that need sub-graph traversal

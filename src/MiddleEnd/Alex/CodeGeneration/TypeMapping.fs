@@ -31,7 +31,9 @@ let rec mlirTypeSize (ty: MLIRType) : int =
     | TStruct fields -> fields |> List.sumBy mlirTypeSize
     | TArray (count, elemTy) -> count * mlirTypeSize elemTy
     | TFunc _ -> 16  // Function pointer + closure = 2 words
-    | TMemRef _ -> 8  // Pointer-sized
+    | TMemRef _ -> 8  // Pointer-sized (dynamic memref)
+    | TMemRefStatic _ -> 8  // Pointer-sized (static memref)
+    | TMemRefScalar _ -> 8  // Pointer-sized (scalar memref)
     | TVector (_, elemTy) -> mlirTypeSize elemTy  // Vector element size (shape is complex)
     | TIndex -> 8  // Platform word
     | TUnit -> 0
@@ -40,6 +42,34 @@ let rec mlirTypeSize (ty: MLIRType) : int =
 /// Compute max payload size in bytes for heterogeneous DUs
 let maxPayloadBytes (ty1: MLIRType) (ty2: MLIRType) : int =
     max (mlirTypeSize ty1) (mlirTypeSize ty2)
+
+/// Architecture-aware type size computation
+/// Uses platform word width for pointer-sized types (TPtr, TIndex, memrefs)
+let rec mlirTypeSizeForArch (arch: Architecture) (ty: MLIRType) : int =
+    let wordBytes =
+        match platformWordWidth arch with
+        | I32 -> 4  // 32-bit platforms (ARM32, WASM32, etc.)
+        | I64 -> 8  // 64-bit platforms (x64, ARM64, WASM64, etc.)
+        | _ -> failwith "Unexpected platform word width for size calculation"
+    match ty with
+    | TInt I1 -> 1
+    | TInt I8 -> 1
+    | TInt I16 -> 2
+    | TInt I32 -> 4
+    | TInt I64 -> 8
+    | TFloat F32 -> 4
+    | TFloat F64 -> 8
+    | TPtr -> wordBytes              // Platform-sized
+    | TIndex -> wordBytes            // Platform-sized
+    | TStruct fields -> fields |> List.sumBy (mlirTypeSizeForArch arch)
+    | TArray (count, elemTy) -> count * mlirTypeSizeForArch arch elemTy
+    | TFunc _ -> 2 * wordBytes       // Function pointer + closure = 2 words
+    | TMemRef _ -> wordBytes         // Pointer-sized (dynamic memref)
+    | TMemRefStatic _ -> wordBytes   // Pointer-sized (static memref)
+    | TMemRefScalar _ -> wordBytes   // Pointer-sized (scalar memref)
+    | TVector (_, elemTy) -> mlirTypeSizeForArch arch elemTy
+    | TUnit -> 0
+    | TError _ -> 0
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NTUKind DIRECT MAPPING (for literals)
@@ -173,55 +203,40 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
                 // PRD-13a: list<'T> is a pointer to cons cell (linked list)
                 TPtr
             | "array" | "Array" ->
-                // Array<T> is a fat pointer {ptr, len} - platform-aware length
-                TStruct [TPtr; TInt wordWidth]
+                // Array<T>: Following string migration pattern - use memref descriptor (ptr + len implicit)
+                // Phase 2: memref<?xT> represents array with runtime length
+                match args with
+                | [elemTy] -> TMemRef (mapNativeTypeForArch arch elemTy)
+                | _ -> failwithf "array<'T> requires exactly one type argument, got %d" args.Length
             | _ ->
                 // Check FieldCount for record types
                 if tycon.FieldCount > 0 then
-                    match tycon.Layout with
-                    | TypeLayout.Inline (size, align) when size > 0 && align > 0 ->
-                        // Infer struct layout from size/align/fieldCount
-                        match size, align, tycon.FieldCount with
-                        | 16, 8, 2 -> TStruct [TPtr; TPtr]  // Two pointers
-                        | 24, 8, 2 -> TStruct [TPtr; TInt I64; TInt I64]  // Fat pointer (string) + int
-                        | 32, 8, 2 -> TStruct [TPtr; TInt I64; TPtr; TInt I64]  // Two fat pointers (strings)
-                        | 32, 8, 3 -> TStruct [TPtr; TInt I64; TInt I64]  // Fat pointer + int + padding or ptr
-                        | 40, 8, 3 -> TStruct [TPtr; TInt I64; TPtr; TInt I64; TInt I64]  // 3 fat ptrs (24+16)
-                        | 48, 8, 3 -> TStruct [TPtr; TInt I64; TPtr; TInt I64; TPtr; TInt I64]  // 3 fat pointers
-                        | 56, 8, 3 -> TStruct [TPtr; TInt I64; TPtr; TInt I64; TPtr; TInt I64; TInt I64]  // 3 strings + int
-                        | _ ->
-                            // Fallback: estimate fields based on word-aligned size
-                            let numWords = size / 8
-                            TStruct (List.replicate numWords TPtr)
-                    | TypeLayout.NTUCompound n when n = tycon.FieldCount ->
-                        TStruct (List.replicate n TPtr)
-                    | _ ->
-                        failwithf "Record '%s' has unsupported layout: %A" tycon.Name tycon.Layout
+                    // Record types MUST be resolved via graph-aware mapping (mapNativeTypeWithGraphForArch)
+                    // If we reach here, it means FNCS didn't provide proper TypeDef metadata
+                    // FAIL LOUDLY - no guessing struct layout from size/align heuristics
+                    failwithf "Record type '%s' (fields=%d, layout=%A) lacks proper TypeDef metadata - use mapNativeTypeWithGraphForArch or fix FNCS"
+                        tycon.Name tycon.FieldCount tycon.Layout
                 else
                     match tycon.Layout with
                     | TypeLayout.Inline (size, align) when size > 8 ->
-                        // DU layout: tag + payload, computed from FNCS
-                        // Tag size inferred from (size mod align): 1=i8, 2=i16
-                        // Payload fills remaining space up to alignment
-                        let tagSize = size % align
-                        let tagType =
-                            match tagSize with
-                            | 1 -> TInt I8
-                            | 2 -> TInt I16
-                            | _ -> TInt I8  // Default to i8 for unusual layouts
-                        let payloadSize = size - tagSize
-                        let payloadType =
-                            match payloadSize with
-                            | 1 -> TInt I8
-                            | 2 -> TInt I16
-                            | 4 -> TInt I32
-                            | 8 -> TInt I64
-                            | n -> TArray (n, TInt I8)  // Larger payloads as byte array
-                        TStruct [tagType; payloadType]
+                        // DU layout: FNCS provides size & align - type uses size, allocation uses align
+                        // Heterogeneous struct → TMemRefStatic (size, TInt I8)
+                        // This is the CORRECT portable representation for WASM and other backends
+                        TMemRefStatic (size, TInt I8)
                     | TypeLayout.Inline (size, align) when size > 0 ->
                         failwithf "TApp with unknown Inline layout (%d, %d): %s" size align tycon.Name
                     | TypeLayout.FatPointer ->
-                        TStruct [TPtr; TInt wordWidth]
+                        // FatPointer types should have been handled earlier by NTUKind or name
+                        // Strings: TypeLayout.FatPointer + NTUKind.NTUstring → TMemRef (line 151)
+                        // Arrays: Name match "array"|"Array" → TStruct (line 177-179)
+                        // If we reach here, check if it's a string by name (defensive)
+                        if tycon.Name.ToLowerInvariant().Contains("string") then
+                            // String without proper NTUKind - use memref but warn
+                            printfn "WARNING: String type '%s' lacks NTUKind.NTUstring - fix FNCS intrinsic definition" tycon.Name
+                            TMemRef <| TInt I8
+                        else
+                            // Unknown FatPointer type - fail loudly
+                            failwithf "FatPointer type '%s' lacks proper NTUKind or name match - fix FNCS metadata" tycon.Name
                     | TypeLayout.PlatformWord ->
                         // Should have been handled by NTU-aware code at top; this is a fallback
                         TInt wordWidth
@@ -231,15 +246,23 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
                         failwithf "Reference type not yet implemented: %s" tycon.Name
                     | TypeLayout.NTUCompound n ->
                         // Arena<'lifetime> and similar compound types: N platform words
+                        // Phase 2: Use memref array for multiple pointer fields (homogeneous)
                         if n = 1 then TPtr
-                        else TStruct (List.replicate n TPtr)
+                        else TMemRefStatic (n, TIndex)  // Array of N indices (portable)
                     | TypeLayout.Inline _ ->
                         failwithf "Unknown inline type '%s' with no fields" tycon.Name
 
-    | NativeType.TFun _ -> TStruct [TPtr; TPtr]  // Function pointer + closure
+    | NativeType.TFun _ ->
+        // Closures: {codePtr: ptr, envPtr: ptr} - homogeneous, use memref array
+        // Phase 2: Memref-backed pattern - array of 2 indices (portable, platform-sized)
+        // Use TIndex (not TPtr) because !llvm.ptr can't be memref element type
+        TMemRefStatic (2, TIndex)
 
     | NativeType.TTuple(elements, _) ->
-        TStruct (elements |> List.map (mapNativeTypeForArch arch))
+        // Tuple: Product of element types - convert to byte-level memref
+        let elemTypes = elements |> List.map (mapNativeTypeForArch arch)
+        let totalSize = elemTypes |> List.sumBy (mlirTypeSizeForArch arch)
+        TMemRefStatic (totalSize, TInt I8)
 
     | NativeType.TVar tvar ->
         // Use Union-Find to resolve type variable chains
@@ -256,19 +279,25 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
     // Captures are added dynamically at witness time, not in type mapping
     | NativeType.TLazy elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
-        TStruct [TInt I1; elemMlir; TPtr]  // Flat: just code_ptr, no env_ptr
+        // Base layout: i1 + T + ptr - convert to byte-level memref
+        let totalSize = mlirTypeSizeForArch arch (TInt I1) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch TPtr
+        TMemRefStatic (totalSize, TInt I8)
 
     // PRD-15: Seq<T> - FLAT CLOSURE: { state: i32, current: T, moveNext_ptr: ptr }
     // Captures are added dynamically at witness time, not in type mapping
     | NativeType.TSeq elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
-        TStruct [TInt I32; elemMlir; TPtr]  // Flat: state, current, moveNext_ptr
+        // Base layout: i32 + T + ptr - convert to byte-level memref
+        let totalSize = mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch TPtr
+        TMemRefStatic (totalSize, TInt I8)
 
     // PRD-15/16: SeqEnumerator<T> - mutable iteration state over a seq
     // { seq_ptr: ptr, state: i32, current: T, hasValue: i1 }
     | NativeType.TSeqEnumerator elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
-        TStruct [TPtr; TInt I32; elemMlir; TInt I1]  // seq_ptr, state, current, hasValue
+        // Layout: ptr + i32 + T + i1 - convert to byte-level memref
+        let totalSize = mlirTypeSizeForArch arch TPtr + mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch (TInt I1)
+        TMemRefStatic (totalSize, TInt I8)
 
     // PRD-13a: Immutable collection types - all are reference types (pointer to nodes)
     | NativeType.TList _ -> TPtr  // Pointer to cons cell
@@ -302,10 +331,15 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
             |> List.tryHead
             |> Option.defaultValue (TInt I8)  // Empty union fallback
 
-        TStruct [tagType; payloadType]
+        // Convert to byte-level memref: tag + payload
+        let totalSize = mlirTypeSizeForArch arch tagType + mlirTypeSizeForArch arch payloadType
+        TMemRefStatic (totalSize, TInt I8)
 
     | NativeType.TAnon(fields, _) ->
-        TStruct (fields |> List.map (fun (_, ty) -> mapNativeTypeForArch arch ty))
+        // Anonymous records - convert to byte-level memref
+        let fieldTypes = fields |> List.map (fun (_, ty) -> mapNativeTypeForArch arch ty)
+        let totalSize = fieldTypes |> List.sumBy (mlirTypeSizeForArch arch)
+        TMemRefStatic (totalSize, TInt I8)
 
     | NativeType.TMeasure _ ->
         failwith "Measure type should have been stripped - this is an FNCS issue"

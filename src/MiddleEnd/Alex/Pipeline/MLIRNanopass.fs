@@ -429,9 +429,9 @@ let typeNormalizationPass (operations: MLIROp list) : MLIROp list =
         operations
         |> List.choose (function
             | MLIROp.FuncOp (FuncOp.FuncDecl (name, paramTypes, _, _)) -> Some (name, paramTypes)
-            | MLIROp.FuncOp (FuncOp.FuncDef (name, params, _, _, _)) ->
+            | MLIROp.FuncOp (FuncOp.FuncDef (name, funcParameters, _, _, _)) ->
                 // Extract types from (SSA * MLIRType) list
-                let paramTypes = params |> List.map snd
+                let paramTypes = funcParameters |> List.map snd
                 Some (name, paramTypes)
             | _ -> None)
         |> Map.ofList
