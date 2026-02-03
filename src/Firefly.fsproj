@@ -91,6 +91,7 @@
       <Compile Include="MiddleEnd/Alex/Patterns/ClosurePatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/ControlFlowPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/LiteralPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/StringPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/ApplicationPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/PlatformPatterns.fs" />
 

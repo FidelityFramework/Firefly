@@ -17,6 +17,8 @@ open Alex.XParsec.PSGCombinators
 open Alex.Patterns.MemoryPatterns
 open Alex.Patterns.PlatformPatterns
 open Alex.Patterns.ApplicationPatterns
+open Alex.Patterns.LiteralPatterns
+open Alex.Patterns.StringPatterns
 open Alex.Elements.ArithElements
 open Alex.CodeGeneration.TypeMapping
 
@@ -79,20 +81,47 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             let ptrNodeId = argIds.[0]
                             match SemanticGraph.tryGetNode ptrNodeId ctx.Graph with
                             | Some ptrNode ->
-                                let elemType =
-                                    match ptrNode.Type with
-                                    | NativeType.TApp(tycon, [innerTy]) when tycon.Name = "nativeptr" ->
-                                        mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch innerTy
-                                    | _ ->
-                                        // Fallback to i8 if type extraction fails
-                                        TInt I8
+                                match ptrNode.Type with
+                                | NativeType.TNativePtr innerTy ->
+                                    let elemType = mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch innerTy
 
-                                // Allocate temporary SSA for index constant
-                                let indexSSA = SSA.V 999990  // Temporary SSA for index 0
-                                match tryMatch (pNativePtrWrite valueSSA ptrSSA elemType indexSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                                | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                                | None -> WitnessOutput.error "NativePtr.write pattern failed"
+                                    // Check if ptrNode is NativePtr.add(base, offset) - operation fusion pattern
+                                    let basePtrSSA, offsetSSA, needsBinding =
+                                        match ptrNode.Kind with
+                                        | SemanticKind.Application (funcId, addArgIds) when addArgIds.Length = 2 ->
+                                            // Check if function is NativePtr.add
+                                            match SemanticGraph.tryGetNode funcId ctx.Graph with
+                                            | Some funcNode ->
+                                                match funcNode.Kind with
+                                                | SemanticKind.Intrinsic info when info.Module = IntrinsicModule.NativePtr && info.Operation = "add" ->
+                                                    // This is NativePtr.add(base, offset) - extract base and offset SSAs
+                                                    let baseId = addArgIds.[0]
+                                                    let offsetId = addArgIds.[1]
+                                                    match MLIRAccumulator.recallNode baseId ctx.Accumulator, MLIRAccumulator.recallNode offsetId ctx.Accumulator with
+                                                    | Some (baseSSA, _), Some (offSSA, _) ->
+                                                        // Mark NativePtr.add node as visited (operation fusion - consumed by write)
+                                                        ctx.GlobalVisited.Value <- Set.add ptrNodeId ctx.GlobalVisited.Value
+                                                        // Bind NativePtr.add result to offset SSA (for correctness)
+                                                        MLIRAccumulator.bindNode ptrNodeId offSSA TIndex ctx.Accumulator
+                                                        (baseSSA, offSSA, false)  // No additional binding needed
+                                                    | _ -> (ptrSSA, SSA.V 999990, false)  // Fallback to constant 0
+                                                | _ -> (ptrSSA, SSA.V 999990, false)  // Not NativePtr.add, use constant 0
+                                            | None -> (ptrSSA, SSA.V 999990, false)
+                                        | _ -> (ptrSSA, SSA.V 999990, false)  // Not an application, use constant 0
+
+                                    match tryMatch (pNativePtrWrite valueSSA basePtrSSA elemType offsetSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                    | None -> WitnessOutput.error "NativePtr.write pattern failed"
+
+                                | otherTy ->
+                                    WitnessOutput.error (sprintf "NativePtr.write: Expected nativeptr<'T>, got %A" otherTy)
                             | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"
+
+                        | IntrinsicModule.NativePtr, "add", [basePtrSSA; offsetSSA] ->
+                            // NativePtr.add(ptr, offset) returns offset as index for later use with write/read
+                            // We just return the offset SSA - NativePtr.write/read will use it as the index
+                            // Record the result as the offset (for compound pattern with write/read)
+                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = offsetSSA; Type = TIndex } }
 
                         | IntrinsicModule.NativePtr, "read", [ptrSSA] ->
                             // NativePtr.read needs an index SSA for memref.load - get additional SSA
@@ -136,6 +165,40 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "Sys.read pattern failed"
                             | None -> WitnessOutput.error "Sys.read: buffer argument not yet witnessed"
+
+                        | IntrinsicModule.NativeStr, "fromPointer", [ptrSSA; lengthSSA] ->
+                            // NativeStr.fromPointer(ptr, len) constructs a string fat pointer
+                            // String is struct {ptr: nativeptr<byte>, length: int}
+                            // Platform word size (8 on x86_64) + int32 size (4) = 12 bytes (or 8+8=16 for alignment)
+                            let arch = ctx.Coeffects.Platform.TargetArch
+                            let ptrTy = TIndex  // Pointer represented as index
+                            let lengthTy = mapNativeTypeForArch arch Types.intType  // Use platform int
+
+                            // Allocate SSAs for struct construction (undef, insert1, insert2)
+                            let ssas = [
+                                MLIRAccumulator.freshMLIRTemp ctx.Accumulator  // undef
+                                MLIRAccumulator.freshMLIRTemp ctx.Accumulator  // after insert ptr
+                                resultSSA  // final result after insert length
+                            ]
+
+                            match tryMatch (pStringConstruct ptrTy lengthTy ptrSSA lengthSSA ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some (ops, _) ->
+                                // String is represented as a fat pointer struct (index + i32)
+                                // Size depends on platform: typically 16 bytes (8+4+padding) on 64-bit
+                                let stringSize = if arch = Architecture.X86_64 then 16 else 12
+                                let stringTy = TMemRefStatic(stringSize, TInt I8)
+                                { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = stringTy } }
+                            | None -> WitnessOutput.error "NativeStr.fromPointer pattern failed"
+
+                        // String operations (IntrinsicModule.String)
+                        | IntrinsicModule.String, "concat2", [str1SSA; str2SSA] ->
+                            // Get string types from arguments
+                            let str1Type = argTypes.[0]
+                            let str2Type = argTypes.[1]
+
+                            match tryMatch (pStringConcat2 resultSSA str1SSA str2SSA str1Type str2Type) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                            | None -> WitnessOutput.error "String.concat2 pattern failed"
 
                         // Binary arithmetic intrinsics (+, -, *, /, %)
                         | IntrinsicModule.Operators, _, [lhsSSA; rhsSSA] ->
@@ -194,6 +257,35 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                 { InlineOps = [op]; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = resultType } }
                             | None ->
                                 WitnessOutput.error $"Unknown or unsupported binary operator: {info.Operation} (category: {category})"
+
+                        // Unary operators (single operand)
+                        | IntrinsicModule.Operators, _, [operandSSA] ->
+                            let arch = ctx.Coeffects.Platform.TargetArch
+                            let resultType = mapNativeTypeForArch arch node.Type
+
+                            // Use classification from PSGCombinators for principled operator dispatch
+                            let category = classifyAtomicOp info
+                            let opResult =
+                                match category with
+                                // Unary operations
+                                | UnaryArith "xori" ->
+                                    // Boolean NOT: xori %operand, 1
+                                    // Allocate temporary SSA for constant 1
+                                    let constSSA = MLIRAccumulator.freshMLIRTemp ctx.Accumulator
+                                    // Emit constant 1 (for i1 boolean type)
+                                    let constOp = MLIROp.ArithOp (ArithOp.ConstI (constSSA, 1L, TInt I1))
+                                    // Emit XOR operation
+                                    match tryMatch (pXorI resultSSA operandSSA constSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                    | Some (xorOp, _) -> Some [constOp; xorOp]
+                                    | None -> None
+
+                                | _ -> None
+
+                            match opResult with
+                            | Some ops ->
+                                { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = resultType } }
+                            | None ->
+                                WitnessOutput.error $"Unknown or unsupported unary operator: {info.Operation} (category: {category})"
 
                         | _ -> WitnessOutput.error $"Atomic operation not yet implemented: {info.FullName} with {argSSAs.Length} args"
 
