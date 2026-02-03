@@ -108,6 +108,7 @@ let rec visitAllNodes
             | TRVoid -> ()
             | TRError diag ->
                 MLIRAccumulator.addError diag accumulator
+            | TRSkip -> ()  // Should never reach here (combineWitnesses filters out TRSkip)
 
 /// REMOVED: witnessSubgraph and witnessSubgraphWithResult
 ///
@@ -198,9 +199,12 @@ let private combineWitnesses (nanopasses: Nanopass list) : (WitnessContext -> Se
                 WitnessOutput.error (sprintf "No witness handled node %A (%A)" node.Id node.Kind)
             | nanopass :: rest ->
                 let result = nanopass.Witness ctx node
-                if result = WitnessOutput.skip then
+                match result.Result with
+                | TRSkip ->
+                    // This witness doesn't handle this node kind - try next witness
                     tryWitnesses rest
-                else
+                | _ ->
+                    // Witness handled the node (TRValue, TRVoid, or TRError) - stop trying
                     result
         tryWitnesses nanopasses
 

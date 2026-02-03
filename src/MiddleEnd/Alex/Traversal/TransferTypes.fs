@@ -304,6 +304,7 @@ type TransferResult =
     | TRValue of Val                    // Produces a value (SSA + type)
     | TRVoid                             // Produces no value (effect only)
     | TRError of Diagnostic              // Error with structured context
+    | TRSkip                             // Node not handled (try next witness)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // WITNESS OUTPUT (What witnesses return)
@@ -328,7 +329,7 @@ module WitnessOutput =
     let errorDiag diag = { InlineOps = []; TopLevelOps = []; Result = TRError diag }
 
     /// Skip this node (not handled by this nanopass)
-    let skip = empty
+    let skip = { InlineOps = []; TopLevelOps = []; Result = TRSkip }
 
     let withTopLevel topOps (output: WitnessOutput) : WitnessOutput = 
         { output with TopLevelOps = topOps @ output.TopLevelOps }
