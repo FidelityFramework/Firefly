@@ -222,88 +222,11 @@ let memrefOpToString (op: MemRefOp) : string =
         sprintf "%s = memref.cast %s : %s to %s"
             (ssaToString result) (ssaToString source) (typeToString srcType) (typeToString destType)
 
-/// Serialize LLVMOp to MLIR text
-let llvmOpToString (op: LLVMOp) : string =
-    match op with
-    | Undef (result, ty) ->
-        sprintf "%s = llvm.mlir.undef : %s" (ssaToString result) (typeToString ty)
-    | InsertValue (result, struct_, value, indices, ty) ->
-        let indicesStr = indices |> List.map string |> String.concat ", "
-        sprintf "%s = llvm.insertvalue %s, %s[%s] : %s"
-            (ssaToString result) (ssaToString value) (ssaToString struct_) indicesStr (typeToString ty)
-    | ExtractValue (result, struct_, indices, ty) ->
-        let indicesStr = indices |> List.map string |> String.concat ", "
-        sprintf "%s = llvm.extractvalue %s[%s] : %s"
-            (ssaToString result) (ssaToString struct_) indicesStr (typeToString ty)
-    | Alloca (result, ty, countOpt) ->
-        match countOpt with
-        | Some count -> sprintf "%s = llvm.alloca %d x %s : !llvm.ptr" (ssaToString result) count (typeToString ty)
-        | None -> sprintf "%s = llvm.alloca %s : !llvm.ptr" (ssaToString result) (typeToString ty)
-    | Load (result, ptr, ty, _ordering) ->
-        sprintf "%s = llvm.load %s : !llvm.ptr -> %s"
-            (ssaToString result) (ssaToString ptr) (typeToString ty)
-    | Store (value, ptr, ty, _ordering) ->
-        sprintf "llvm.store %s, %s : %s, !llvm.ptr"
-            (ssaToString value) (ssaToString ptr) (typeToString ty)
-    | GEP (result, ptr, indices, _ty, _inbounds) ->
-        let indicesStr = indices |> List.map (fun (s, _t) -> ssaToString s) |> String.concat ", "
-        sprintf "%s = llvm.getelementptr %s[%s] : (!llvm.ptr) -> !llvm.ptr"
-            (ssaToString result) (ssaToString ptr) indicesStr
-    | StructGEP (result, ptr, fieldIndex, _structTy, _resultTy) ->
-        sprintf "%s = llvm.getelementptr %s[0, %d] : (!llvm.ptr) -> !llvm.ptr"
-            (ssaToString result) (ssaToString ptr) fieldIndex
-    | BitCast (result, value, ty) ->
-        sprintf "%s = llvm.bitcast %s : !llvm.ptr to %s"
-            (ssaToString result) (ssaToString value) (typeToString ty)
-    | PtrToInt (result, ptr, ty) ->
-        sprintf "%s = llvm.ptrtoint %s : !llvm.ptr to %s"
-            (ssaToString result) (ssaToString ptr) (typeToString ty)
-    | IntToPtr (result, value, _ty) ->
-        sprintf "%s = llvm.inttoptr %s : !llvm.ptr to !llvm.ptr"
-            (ssaToString result) (ssaToString value)
-    | Call (result, callee, args, retTy) ->
-        let argsStr = args |> List.map (fst >> ssaToString) |> String.concat ", "
-        let argTypesStr = args |> List.map (snd >> typeToString) |> String.concat ", "
-        sprintf "%s = llvm.call @%s(%s) : (%s) -> %s"
-            (ssaToString result) callee argsStr argTypesStr (typeToString retTy)
-    | IndirectCall (result, funcPtr, args, retTy) ->
-        let argsStr = args |> List.map (fst >> ssaToString) |> String.concat ", "
-        let argTypesStr = args |> List.map (snd >> typeToString) |> String.concat ", "
-        sprintf "%s = llvm.call %s(%s) : (%s) -> %s"
-            (ssaToString result) (ssaToString funcPtr) argsStr argTypesStr (typeToString retTy)
-    | Branch label ->
-        sprintf "llvm.br ^%s" label
-    | CondBranch (cond, trueLabel, falseLabel) ->
-        sprintf "llvm.cond_br %s, ^%s, ^%s" (ssaToString cond) trueLabel falseLabel
-    | Phi (result, predecessors, ty) ->
-        let predsStr = predecessors |> List.map (fun (v, l) -> sprintf "[%s, ^%s]" (ssaToString v) l) |> String.concat ", "
-        sprintf "%s = llvm.phi %s : %s" (ssaToString result) predsStr (typeToString ty)
-    | And (result, lhs, rhs, ty) ->
-        sprintf "%s = llvm.and %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
-    | Or (result, lhs, rhs, ty) ->
-        sprintf "%s = llvm.or %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
-    | Xor (result, lhs, rhs, ty) ->
-        sprintf "%s = llvm.xor %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
-    | Shl (result, lhs, rhs, ty) ->
-        sprintf "%s = llvm.shl %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
-    | LShr (result, lhs, rhs, ty) ->
-        sprintf "%s = llvm.lshr %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
-    | AShr (result, lhs, rhs, ty) ->
-        sprintf "%s = llvm.ashr %s, %s : %s" (ssaToString result) (ssaToString lhs) (ssaToString rhs) (typeToString ty)
-    | InlineAsm (template, constraints, _sideEffects, result, args) ->
-        let argsStr = args |> List.map ssaToString |> String.concat ", "
-        sprintf "%s = llvm.inline_asm \"%s\" \"%s\"(%s)" (ssaToString result) template constraints argsStr
-    | LLVMOp.Return vOpt ->
-        match vOpt with
-        | Some v -> sprintf "llvm.return %s" (ssaToString v)
-        | None -> "llvm.return"
-
 /// Serialize top-level MLIROp to MLIR text
 let rec opToString (op: MLIROp) : string =
     match op with
     | MLIROp.ArithOp aop -> arithOpToString aop
     | MLIROp.MemRefOp mop -> memrefOpToString mop
-    | MLIROp.LLVMOp lop -> llvmOpToString lop
     | MLIROp.FuncOp fop ->
         match fop with
         | FuncDef (name, args, retTy, body, _visibility) ->

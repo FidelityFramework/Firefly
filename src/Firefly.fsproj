@@ -76,10 +76,9 @@
       <Compile Include="MiddleEnd/Alex/XParsec/Extensions.fs" />
 
       <!-- Alex Elements - Atomic MLIR ops (internal, XParsec-based) -->
-      <Compile Include="MiddleEnd/Alex/Elements/MLIRElements.fs" />
+      <Compile Include="MiddleEnd/Alex/Elements/MLIRAtomics.fs" />
       <Compile Include="MiddleEnd/Alex/Elements/MemRefElements.fs" />
       <Compile Include="MiddleEnd/Alex/Elements/ArithElements.fs" />
-      <Compile Include="MiddleEnd/Alex/Elements/LLVMElements.fs" />
       <Compile Include="MiddleEnd/Alex/Elements/SCFElements.fs" />
       <Compile Include="MiddleEnd/Alex/Elements/CFElements.fs" />
       <Compile Include="MiddleEnd/Alex/Elements/FuncElements.fs" />

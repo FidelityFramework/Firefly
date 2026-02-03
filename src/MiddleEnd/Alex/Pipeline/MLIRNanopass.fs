@@ -221,11 +221,6 @@ let structuralFoldingPass (operations: MLIROp list) : MLIROp list =
         | MLIROp.MemRefOp (MemRefOp.Load (ssa, _, _, _)) -> [ssa]
         | MLIROp.MemRefOp (MemRefOp.ExtractBasePtr (ssa, _, _)) -> [ssa]
 
-        // LLVMOp - operations that define SSAs
-        | MLIROp.LLVMOp (LLVMOp.ExtractValue (ssa, _, _, _)) -> [ssa]
-        | MLIROp.LLVMOp (LLVMOp.InsertValue (ssa, _, _, _, _)) -> [ssa]
-        | MLIROp.LLVMOp (LLVMOp.Undef (ssa, _)) -> [ssa]
-
         // Other operations that define SSAs
         | MLIROp.FuncOp (FuncOp.FuncCall (Some ssa, _, _, _)) -> [ssa]
 

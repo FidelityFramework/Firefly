@@ -11,9 +11,8 @@ open Alex.XParsec.PSGCombinators
 open Alex.XParsec.Extensions // sequence combinator
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
-open Alex.Elements.MLIRElements
+open Alex.Elements.MLIRAtomics
 open Alex.Elements.MemRefElements
-open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
 open Alex.Elements.FuncElements
 open Alex.CodeGeneration.TypeMapping
@@ -42,19 +41,19 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
         let indexSSA = ssas.[5]
 
         // Load current position
-        let! addressOfPosOp = pLoad heapPosPtrSSA heapPosPtrSSA  // Placeholder - need AddressOf
-        let! loadPosOp = pLoad heapPosSSA heapPosPtrSSA
+        let! addressOfPosOp = pLoad heapPosPtrSSA heapPosPtrSSA []  // Placeholder - need AddressOf
+        let! loadPosOp = pLoad heapPosSSA heapPosPtrSSA []
 
         // Compute result pointer: heap_base + pos
-        let! addressOfBaseOp = pLoad heapBaseSSA heapBaseSSA  // Placeholder - need AddressOf
-        let! gepOp = pGEP resultPtrSSA heapBaseSSA [(heapPosSSA, TInt I64)]
+        let! addressOfBaseOp = pLoad heapBaseSSA heapBaseSSA []  // Placeholder - need AddressOf
+        let! subViewOp = pSubView resultPtrSSA heapBaseSSA [heapPosSSA]
 
         // Update position: pos + size
         let! addOp = pAddI newPosSSA heapPosSSA sizeSSA
         let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
         let! storePosOp = pStore newPosSSA heapPosPtrSSA [indexSSA] (TInt I64)
 
-        return ([addressOfPosOp; loadPosOp; addressOfBaseOp; gepOp; addOp; indexOp; storePosOp], resultPtrSSA)
+        return ([addressOfPosOp; loadPosOp; addressOfBaseOp; subViewOp; addOp; indexOp; storePosOp], resultPtrSSA)
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -88,7 +87,7 @@ let pExtractCaptures (baseIndex: int) (captureTypes: MLIRType list) (structType:
         let envPtrSSA = Arg 0  // First argument is always env_ptr for closures
 
         // Load struct from env_ptr
-        let! loadOp = pLoad structLoadSSA envPtrSSA
+        let! loadOp = pLoad structLoadSSA envPtrSSA []
 
         // Extract each capture
         let! extractOps =

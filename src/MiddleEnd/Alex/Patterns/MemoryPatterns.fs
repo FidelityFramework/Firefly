@@ -11,9 +11,8 @@ open Alex.XParsec.PSGCombinators
 open Alex.XParsec.Extensions // sequence combinator
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
-open Alex.Elements.MLIRElements
+open Alex.Elements.MLIRAtomics
 open Alex.Elements.MemRefElements
-open Alex.Elements.LLVMElements
 open Alex.Elements.ArithElements
 open Alex.Elements.IndexElements
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
@@ -124,9 +123,9 @@ let pConvertType (srcSSA: SSA) (srcType: MLIRType) (dstType: MLIRType) (resultSS
                 // Int to float
                 | TInt _, TFloat _ ->
                     pSIToFP resultSSA srcSSA srcType dstType
-                // Bitcast (reinterpret bits)
+                // Unsupported conversion (bitcast removed - no portable memref equivalent)
                 | _, _ ->
-                    pBitCast resultSSA srcSSA dstType
+                    fail (Message $"Unsupported type conversion: {srcType} -> {dstType}")
             return [convOp]
     }
 
@@ -142,7 +141,7 @@ let pExtractDUTag (duSSA: SSA) (duType: MLIRType) (tagSSA: SSA) : PSGParser<MLIR
         match duType with
         | TPtr ->
             // Pointer-based DU: load tag byte from offset 0
-            let! loadOp = pLoad tagSSA duSSA
+            let! loadOp = pLoad tagSSA duSSA []
             return [loadOp]
         | _ ->
             // Inline struct DU: extract tag from field 0
@@ -236,7 +235,7 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
                     let gepSSA = ssas.[2 + i * 3 + 1]
                     let indexZeroSSA = ssas.[2 + i * 3 + 2]
                     let! idxOp = pConstI idxSSA (int64 i) indexTy
-                    let! gepOp = pGEP gepSSA allocaSSA [(idxSSA, TInt I64)]
+                    let! gepOp = pSubView gepSSA allocaSSA [idxSSA]
                     let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
                     let! storeOp = pStore elem.SSA gepSSA [indexZeroSSA] elemType
                     return [idxOp; gepOp; indexZeroOp; storeOp]
@@ -258,24 +257,24 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
         return [countOp; allocaOp] @ storeOps @ [undefOp; insertPtrOp; insertCountOp]
     }
 
-/// Array element access via GEP + Load
+/// Array element access via SubView + Load
 let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) (loadSSA: SSA) : PSGParser<MLIROp list> =
     parser {
-        let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
-        let! loadOp = pLoad loadSSA gepSSA
-        return [gepOp; loadOp]
+        let! subViewOp = pSubView gepSSA arrayPtr [index]
+        let! loadOp = pLoad loadSSA gepSSA []
+        return [subViewOp; loadOp]
     }
 
-/// Array element set via GEP + Store
+/// Array element set via SubView + Store
 let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gepSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! state = getUserState
         let elemType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
 
-        let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
+        let! subViewOp = pSubView gepSSA arrayPtr [index]
         let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
         let! storeOp = pStore value gepSSA [indexZeroSSA] elemType
-        return [gepOp; indexZeroOp; storeOp]
+        return [subViewOp; indexZeroOp; storeOp]
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -345,7 +344,7 @@ let pMemRefToPtr (resultSSA: SSA) (memrefSSA: SSA) (memrefTy: MLIRType) : PSGPar
 let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Emit memref.load operation
-        let! loadOp = pLoad resultSSA ptrSSA
+        let! loadOp = pLoad resultSSA ptrSSA []
 
         return ([loadOp], TRValue { SSA = resultSSA; Type = TPtr })
     }

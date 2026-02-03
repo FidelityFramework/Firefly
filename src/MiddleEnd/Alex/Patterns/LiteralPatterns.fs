@@ -11,7 +11,7 @@ open XParsec.Combinators
 open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
-open Alex.Elements.MLIRElements  // pConstI, pConstF, pUndef, pInsertValue
+open Alex.Elements.MLIRAtomics  // pConstI, pConstF, pUndef, pInsertValue
 open Alex.Elements.MemRefElements  // pMemRefGetGlobal, pExtractBasePtr, pMemRefDim
 open Alex.Elements.IndexElements  // pIndexCastS
 open Alex.CodeGeneration.TypeMapping

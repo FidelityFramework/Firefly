@@ -155,40 +155,6 @@ type MemRefOp =
     | Dim of SSA * SSA * SSA * MLIRType                                // result, memref, dimIndex, memrefType (returns index)
     | Cast of SSA * SSA * MLIRType * MLIRType                          // result, source, srcType, destType (memref type cast)
 
-/// LLVM dialect operations
-type LLVMOp =
-    // Memory operations
-    | Load of SSA * SSA * MLIRType * AtomicOrdering                     // result, ptr, type, ordering
-    | Store of SSA * SSA * MLIRType * AtomicOrdering                    // value, ptr, type, ordering
-    | GEP of SSA * SSA * (SSA * MLIRType) list * MLIRType * bool option // result, ptr, indices, type, inbounds
-    | StructGEP of SSA * SSA * int * MLIRType * MLIRType                // result, ptr, fieldIndex, structType, resultType
-    | Alloca of SSA * MLIRType * int option                             // result, type, count
-    // Pointer conversions
-    | BitCast of SSA * SSA * MLIRType                                   // result, value, destType
-    | IntToPtr of SSA * SSA * MLIRType                                  // result, value, ptrType
-    | PtrToInt of SSA * SSA * MLIRType                                  // result, ptr, intType
-    // Calls
-    | Call of SSA * string * (SSA * MLIRType) list * MLIRType          // result, callee, args (typed), retType
-    | IndirectCall of SSA * SSA * (SSA * MLIRType) list * MLIRType     // result, funcPtr, args (typed), retType
-    | Return of SSA option                                              // value
-    // Control flow
-    | Branch of string                                                   // label
-    | CondBranch of SSA * string * string                               // cond, trueLabel, falseLabel
-    | Phi of SSA * (SSA * string) list * MLIRType                       // result, predecessors, type
-    // Struct operations
-    | ExtractValue of SSA * SSA * int list * MLIRType                   // result, struct, indices, type
-    | InsertValue of SSA * SSA * SSA * int list * MLIRType              // result, struct, value, indices, type
-    | Undef of SSA * MLIRType                                           // result, type
-    // Bitwise operations
-    | And of SSA * SSA * SSA * MLIRType                                 // result, lhs, rhs, type
-    | Or of SSA * SSA * SSA * MLIRType                                  // result, lhs, rhs, type
-    | Xor of SSA * SSA * SSA * MLIRType                                 // result, lhs, rhs, type
-    | Shl of SSA * SSA * SSA * MLIRType                                 // result, lhs, rhs, type (shift left)
-    | LShr of SSA * SSA * SSA * MLIRType                                // result, lhs, rhs, type (logical shift right)
-    | AShr of SSA * SSA * SSA * MLIRType                                // result, lhs, rhs, type (arithmetic shift right)
-    // Other
-    | InlineAsm of string * string * bool * SSA * SSA list              // template, constraints, sideEffects, result, args
-
 /// Arithmetic dialect operations
 type ArithOp =
     // Constants
@@ -291,7 +257,6 @@ type VectorOp =
 /// Single-phase execution with nested accumulators - no scope markers needed
 type MLIROp =
     | MemRefOp of MemRefOp
-    | LLVMOp of LLVMOp
     | ArithOp of ArithOp
     | SCFOp of SCFOp
     | CFOp of CFOp

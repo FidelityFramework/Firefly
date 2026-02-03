@@ -9,7 +9,7 @@ open XParsec.Parsers
 open XParsec.Combinators
 open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
-open Alex.Elements.MLIRElements  // pExtractValue, pConstI
+open Alex.Elements.MLIRAtomics  // pExtractValue, pConstI
 open Alex.Elements.ArithElements  // pCmpI
 open Alex.Patterns.MemoryPatterns  // pDUCase - DU construction foundation
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
