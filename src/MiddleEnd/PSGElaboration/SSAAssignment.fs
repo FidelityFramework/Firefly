@@ -1275,62 +1275,68 @@ let assignSSA (arch: Architecture) (graph: SemanticGraph) : SSAAssignment =
     for kvp in graph.Nodes do
         let node = kvp.Value
         match node.Kind with
-        | SemanticKind.Lambda(params', bodyId, captures, _, _context) ->
-            let nodeIdVal = NodeId.value node.Id
-            let isMain = Set.contains nodeIdVal entryPoints &&
-                         (mainLambdaIdOpt |> Option.map (fun id -> NodeId.value id = nodeIdVal) |> Option.defaultValue false)
+        | SemanticKind.Lambda(params', bodyId, captures, enclosingFuncOpt, _context) ->
+            // FIX (January 2026): Only process top-level Lambdas to avoid double-processing
+            // Nested Lambdas (with enclosingFuncOpt = Some _) are already handled recursively
+            // by assignFunctionBody when processing their enclosing Lambda's body
+            let isTopLevel = Option.isNone enclosingFuncOpt
 
-            // Main Lambda continues from module-level counter; others start fresh
-            let initialCounter = if isMain then moduleLevelCounter else 0
-            let initialScope = { FunctionScope.empty with Counter = initialCounter }
+            if isTopLevel then
+                let nodeIdVal = NodeId.value node.Id
+                let isMain = Set.contains nodeIdVal entryPoints &&
+                             (mainLambdaIdOpt |> Option.map (fun id -> NodeId.value id = nodeIdVal) |> Option.defaultValue false)
 
-            // Assign SSAs to parameter PatternBindings (Arg 0, Arg 1, etc.)
-            let paramScope =
-                params'
-                |> List.mapi (fun i (_name, _ty, nodeId) -> i, nodeId)
-                |> List.fold (fun (scope: FunctionScope) (i, nodeId) ->
-                    FunctionScope.assign nodeId (NodeSSAAllocation.single (Arg i)) scope
-                ) initialScope
+                // Main Lambda continues from module-level counter; others start fresh
+                let initialCounter = if isMain then moduleLevelCounter else 0
+                let initialScope = { FunctionScope.empty with Counter = initialCounter }
 
-            // Assign SSAs to body nodes
-            // This will also compute ClosureLayouts for any nested lambdas found in the body
-            let bodyScope = assignFunctionBody arch graph mutableClosureLayouts mutableDULayouts paramScope bodyId
+                // Assign SSAs to parameter PatternBindings (Arg 0, Arg 1, etc.)
+                let paramScope =
+                    params'
+                    |> List.mapi (fun i (_name, _ty, nodeId) -> i, nodeId)
+                    |> List.fold (fun (scope: FunctionScope) (i, nodeId) ->
+                        FunctionScope.assign nodeId (NodeSSAAllocation.single (Arg i)) scope
+                    ) initialScope
 
-            // Merge into global assignments (including parameter SSAs)
-            for kvp in paramScope.Assignments do
-                allAssignments <- Map.add kvp.Key kvp.Value allAssignments
-            for kvp in bodyScope.Assignments do
-                allAssignments <- Map.add kvp.Key kvp.Value allAssignments
+                // Assign SSAs to body nodes
+                // This will also compute ClosureLayouts for any nested lambdas found in the body
+                let bodyScope = assignFunctionBody arch graph mutableClosureLayouts mutableDULayouts paramScope bodyId
 
-            // Assign SSAs to the Lambda node itself (for closure value)
-            // Top-level Lambdas (not visited during body traversal) need SSA assignments
-            // for closure construction if they have captures
-            let cost = computeLambdaSSACost captures
-            if cost > 0 then
-                // Lambda with captures needs SSAs for closure struct construction
-                let ssas = List.init cost (fun i -> V (topLevelCounter + i))
-                let alloc = NodeSSAAllocation.multi ssas
-                allAssignments <- Map.add nodeIdVal alloc allAssignments
-                topLevelCounter <- topLevelCounter + cost
-            // Note: Lambdas with no captures (cost=0) don't need SSA assignments
-            // They are emitted as direct function symbols
+                // Merge into global assignments (including parameter SSAs)
+                for kvp in paramScope.Assignments do
+                    allAssignments <- Map.add kvp.Key kvp.Value allAssignments
+                for kvp in bodyScope.Assignments do
+                    allAssignments <- Map.add kvp.Key kvp.Value allAssignments
 
-            // Assign SSAs to parent Binding if this Lambda has one
-            // Lambda Bindings are filtered out of Pass 1, so they need SSA assignment here
-            match node.Parent with
-            | Some parentId ->
-                match Map.tryFind parentId graph.Nodes with
-                | Some parentNode when (match parentNode.Kind with SemanticKind.Binding _ -> true | _ -> false) ->
-                    let parentIdVal = NodeId.value parentId
-                    if not (Map.containsKey parentIdVal allAssignments) then
-                        // Binding needs SSAs (fixed cost of 3)
-                        let bindingCost = 3
-                        let bindingSSAs = List.init bindingCost (fun i -> V (topLevelCounter + i))
-                        let bindingAlloc = NodeSSAAllocation.multi bindingSSAs
-                        allAssignments <- Map.add parentIdVal bindingAlloc allAssignments
-                        topLevelCounter <- topLevelCounter + bindingCost
-                | _ -> ()
-            | None -> ()
+                // Assign SSAs to the Lambda node itself (for closure value)
+                // Top-level Lambdas (not visited during body traversal) need SSA assignments
+                // for closure construction if they have captures
+                let cost = computeLambdaSSACost captures
+                if cost > 0 then
+                    // Lambda with captures needs SSAs for closure struct construction
+                    let ssas = List.init cost (fun i -> V (topLevelCounter + i))
+                    let alloc = NodeSSAAllocation.multi ssas
+                    allAssignments <- Map.add nodeIdVal alloc allAssignments
+                    topLevelCounter <- topLevelCounter + cost
+                // Note: Lambdas with no captures (cost=0) don't need SSA assignments
+                // They are emitted as direct function symbols
+
+                // Assign SSAs to parent Binding if this Lambda has one
+                // Lambda Bindings are filtered out of Pass 1, so they need SSA assignment here
+                match node.Parent with
+                | Some parentId ->
+                    match Map.tryFind parentId graph.Nodes with
+                    | Some parentNode when (match parentNode.Kind with SemanticKind.Binding _ -> true | _ -> false) ->
+                        let parentIdVal = NodeId.value parentId
+                        if not (Map.containsKey parentIdVal allAssignments) then
+                            // Binding needs SSAs (fixed cost of 3)
+                            let bindingCost = 3
+                            let bindingSSAs = List.init bindingCost (fun i -> V (topLevelCounter + i))
+                            let bindingAlloc = NodeSSAAllocation.multi bindingSSAs
+                            allAssignments <- Map.add parentIdVal bindingAlloc allAssignments
+                            topLevelCounter <- topLevelCounter + bindingCost
+                    | _ -> ()
+                | None -> ()
 
         // PRD-15 FIX (January 2026): SeqExpr MoveNext bodies need their own SSA scope
         // MoveNext is a separate function with seqPtr as %arg0, body SSAs start at 1

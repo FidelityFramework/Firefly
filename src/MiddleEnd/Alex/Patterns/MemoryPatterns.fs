@@ -347,11 +347,16 @@ let pMemRefToPtr (resultSSA: SSA) (memrefSSA: SSA) (memrefTy: MLIRType) : PSGPar
 /// SSAs: resultSSA for loaded value, indexZeroSSA for memref index
 let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Emit memref.load operation with index (MLIR memrefs require indices)
-        let! indexZeroOp = pConstI indexZeroSSA 0L TIndex
+        // Get result type from XParsec state (type of value being loaded)
+        let! state = getUserState
+        let arch = state.Platform.TargetArch
+        let resultType = mapNativeTypeForArch arch state.Current.Type
+
+        // Emit memref.load operation with index
+        // indexZeroSSA should be pre-assigned by coeffects and already witnessed (constant 0)
         let! loadOp = pLoad resultSSA ptrSSA [indexZeroSSA]
 
-        return ([indexZeroOp; loadOp], TRValue { SSA = resultSSA; Type = TIndex })
+        return ([loadOp], TRValue { SSA = resultSSA; Type = resultType })
     }
 
 // ═══════════════════════════════════════════════════════════
