@@ -48,9 +48,11 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             // Not FieldGet - try DU operations: GetTag, Eliminate, Construct
             match tryMatch pDUGetTag ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some ((duValueId, _duType), _) ->
-                match MLIRAccumulator.recallNode duValueId ctx.Accumulator, SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
-                | Some (duSSA, duType), Some tagSSA ->
-                    match tryMatch (pExtractDUTag duSSA duType tagSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                match MLIRAccumulator.recallNode duValueId ctx.Accumulator, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+                | Some (duSSA, duType), Some ssas when ssas.Length >= 2 ->
+                    let indexZeroSSA = ssas.[0]
+                    let tagSSA = ssas.[1]
+                    match tryMatch (pExtractDUTag duSSA duType tagSSA indexZeroSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = tagSSA; Type = TInt I8 } }
                     | None -> WitnessOutput.error "DUGetTag pattern emission failed"
                 | _ -> WitnessOutput.error "DUGetTag: DU value or tag SSA not available"

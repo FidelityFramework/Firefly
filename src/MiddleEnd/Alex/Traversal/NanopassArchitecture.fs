@@ -110,12 +110,15 @@ let rec visitAllNodes
             MLIRAccumulator.addOps output.TopLevelOps focusedCtx.RootAccumulator
 
             // Bind result if value (global binding)
+            printfn "[visitAllNodes] About to match on output.Result for node %A - Result is: %A" currentNode.Id output.Result
             match output.Result with
             | TRValue v ->
                 MLIRAccumulator.bindNode currentNode.Id v.SSA v.Type focusedCtx.Accumulator
             | TRVoid -> ()
             | TRError diag ->
+                printfn "[visitAllNodes] Handling TRError for node %A: %s" currentNode.Id diag.Message
                 MLIRAccumulator.addError diag focusedCtx.Accumulator
+                printfn "[visitAllNodes] After addError, accumulator has %d errors" (List.length focusedCtx.Accumulator.Errors)
             | TRSkip -> ()  // Should never reach here (combineWitnesses filters out TRSkip)
 
 /// REMOVED: witnessSubgraph and witnessSubgraphWithResult

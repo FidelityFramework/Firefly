@@ -136,13 +136,15 @@ let pConvertType (srcSSA: SSA) (srcType: MLIRType) (dstType: MLIRType) (resultSS
 /// Extract DU tag (handles both inline and pointer-based DUs)
 /// Pointer-based: Load tag byte from offset 0
 /// Inline: ExtractValue at index 0
-let pExtractDUTag (duSSA: SSA) (duType: MLIRType) (tagSSA: SSA) : PSGParser<MLIROp list> =
+/// SSAs: tagSSA for result, indexZeroSSA for memref index
+let pExtractDUTag (duSSA: SSA) (duType: MLIRType) (tagSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         match duType with
         | TIndex ->
             // Pointer-based DU: load tag byte from offset 0
-            let! loadOp = pLoad tagSSA duSSA []
-            return [loadOp]
+            let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // MLIR memrefs require indices
+            let! loadOp = pLoad tagSSA duSSA [indexZeroSSA]
+            return [indexZeroOp; loadOp]
         | _ ->
             // Inline struct DU: extract tag from field 0
             let tagTy = TInt I8  // DU tags are always i8
@@ -257,11 +259,13 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
     }
 
 /// Array element access via SubView + Load
-let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) (loadSSA: SSA) : PSGParser<MLIROp list> =
+/// SSAs: gepSSA for subview, loadSSA for result, indexZeroSSA for memref index
+let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) (loadSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! subViewOp = pSubView gepSSA arrayPtr [index]
-        let! loadOp = pLoad loadSSA gepSSA []
-        return [subViewOp; loadOp]
+        let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // MLIR memrefs require indices
+        let! loadOp = pLoad loadSSA gepSSA [indexZeroSSA]
+        return [subViewOp; indexZeroOp; loadOp]
     }
 
 /// Array element set via SubView + Store
@@ -340,12 +344,14 @@ let pMemRefToPtr (resultSSA: SSA) (memrefSSA: SSA) (memrefTy: MLIRType) : PSGPar
 /// Reads a value from a pointer location
 ///
 /// NativePtr.read (ptr: nativeptr<'T>) : 'T
-let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+/// SSAs: resultSSA for loaded value, indexZeroSSA for memref index
+let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Emit memref.load operation
-        let! loadOp = pLoad resultSSA ptrSSA []
+        // Emit memref.load operation with index (MLIR memrefs require indices)
+        let! indexZeroOp = pConstI indexZeroSSA 0L TIndex
+        let! loadOp = pLoad resultSSA ptrSSA [indexZeroSSA]
 
-        return ([loadOp], TRValue { SSA = resultSSA; Type = TIndex })
+        return ([indexZeroOp; loadOp], TRValue { SSA = resultSSA; Type = TIndex })
     }
 
 // ═══════════════════════════════════════════════════════════

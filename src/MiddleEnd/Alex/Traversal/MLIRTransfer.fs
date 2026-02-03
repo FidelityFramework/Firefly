@@ -53,7 +53,8 @@ let transfer
         // Debug: Print accumulator stats with recursive counts
         let totalOps = MLIRAccumulator.totalOperations accumulator
         let allOpsCount = List.length accumulator.AllOps
-        printfn "[MLIRTransfer] Accumulator: %d total ops in %d stream items, %d errors"
+        printfn "[MLIRTransfer] Accumulator (hash: %d): %d total ops in %d stream items, %d errors"
+            (accumulator.GetHashCode())
             totalOps
             allOpsCount
             (List.length accumulator.Errors)

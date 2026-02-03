@@ -75,11 +75,10 @@ let pRemUI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
     }
 
 /// Emit CmpI (integer comparison)
-let pCmpI (ssa: SSA) (pred: ICmpPred) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+/// Takes operand type explicitly since comparison result type (i1) differs from operand type (i64/i32/etc)
+let pCmpI (ssa: SSA) (pred: ICmpPred) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.CmpI (ssa, pred, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.CmpI (ssa, pred, lhs, rhs, operandTy))
     }
 
 // ═══════════════════════════════════════════════════════════

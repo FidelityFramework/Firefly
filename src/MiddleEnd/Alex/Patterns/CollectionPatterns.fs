@@ -32,7 +32,7 @@ let pOptionIsSome (optionSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (resultSSA: SSA) 
         let tagTy = TInt I8  // DU tags are always i8
         let! extractTagOp = pExtractValue tagSSA optionSSA [0] tagTy
         let! oneConstOp = pConstI oneSSA 1L tagTy
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA oneSSA
+        let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA oneSSA tagTy
         return [extractTagOp; oneConstOp; cmpOp]
     }
 
@@ -42,7 +42,7 @@ let pOptionIsNone (optionSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA)
         let tagTy = TInt I8  // DU tags are always i8
         let! extractTagOp = pExtractValue tagSSA optionSSA [0] tagTy
         let! zeroConstOp = pConstI zeroSSA 0L tagTy
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA
+        let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA tagTy
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
@@ -71,7 +71,7 @@ let pListIsEmpty (listSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : 
         let tagTy = TInt I8  // DU tags are always i8
         let! extractTagOp = pExtractValue tagSSA listSSA [0] tagTy
         let! zeroConstOp = pConstI zeroSSA 0L tagTy
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA
+        let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA tagTy
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
@@ -96,7 +96,7 @@ let pMapKeyCompare (mapNodeSSA: SSA) (searchKey: SSA) (keySSA: SSA) (keyTy: MLIR
         // Extract key from node (index 1, after tag at index 0)
         let! extractKeyOp = pExtractValue keySSA mapNodeSSA [1] keyTy
         // Compare search key with node key
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq searchKey keySSA
+        let! cmpOp = pCmpI resultSSA ICmpPred.Eq searchKey keySSA keyTy
         return [extractKeyOp; cmpOp]
     }
 
@@ -127,7 +127,7 @@ let pSetElementCompare (setNodeSSA: SSA) (searchElem: SSA) (elemSSA: SSA) (elemT
         // Extract element from node (index 1, after tag at index 0)
         let! extractElemOp = pExtractValue elemSSA setNodeSSA [1] elemTy
         // Compare search element with node element
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq searchElem elemSSA
+        let! cmpOp = pCmpI resultSSA ICmpPred.Eq searchElem elemSSA elemTy
         return [extractElemOp; cmpOp]
     }
 
@@ -160,7 +160,7 @@ let pResultIsOk (resultSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (cmpSSA: SSA) : PS
         let tagTy = TInt I8  // DU tags are always i8
         let! extractTagOp = pExtractValue tagSSA resultSSA [0] tagTy
         let! zeroConstOp = pConstI zeroSSA 0L tagTy
-        let! cmpOp = pCmpI cmpSSA ICmpPred.Eq tagSSA zeroSSA
+        let! cmpOp = pCmpI cmpSSA ICmpPred.Eq tagSSA zeroSSA tagTy
         return [extractTagOp; zeroConstOp; cmpOp]
     }
 
@@ -170,6 +170,6 @@ let pResultIsError (resultSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (cmpSSA: SSA) : 
         let tagTy = TInt I8  // DU tags are always i8
         let! extractTagOp = pExtractValue tagSSA resultSSA [0] tagTy
         let! oneConstOp = pConstI oneSSA 1L tagTy
-        let! cmpOp = pCmpI cmpSSA ICmpPred.Eq tagSSA oneSSA
+        let! cmpOp = pCmpI cmpSSA ICmpPred.Eq tagSSA oneSSA tagTy
         return [extractTagOp; oneConstOp; cmpOp]
     }

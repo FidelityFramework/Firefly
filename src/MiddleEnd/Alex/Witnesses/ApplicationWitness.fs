@@ -61,6 +61,7 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                     WitnessOutput.error $"Application node {node.Id}: Atomic operation {info.FullName} arguments not yet witnessed: {unwitnessedArgs}"
                 else
                     let argSSAs = argsResult |> List.choose id |> List.map fst
+                    let argTypes = argsResult |> List.choose id |> List.map snd  // Extract types for comparisons
 
                     // Get result SSA
                     match SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
@@ -94,9 +95,15 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"
 
                         | IntrinsicModule.NativePtr, "read", [ptrSSA] ->
-                            match tryMatch (pNativePtrRead resultSSA ptrSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                            | None -> WitnessOutput.error "NativePtr.read pattern failed"
+                            // NativePtr.read needs an index SSA for memref.load - get additional SSA
+                            match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+                            | Some ssas when ssas.Length >= 2 ->
+                                let indexZeroSSA = ssas.[0]
+                                let readResultSSA = ssas.[1]
+                                match tryMatch (pNativePtrRead readResultSSA ptrSSA indexZeroSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                | None -> WitnessOutput.error "NativePtr.read pattern failed"
+                            | _ -> WitnessOutput.error "NativePtr.read: Need 2 SSAs (index, result)"
 
                         | IntrinsicModule.Sys, "write", [fdSSA; bufferSSA; countSSA] ->
                             // Witness observes actual buffer type (no declaration coordination)
@@ -119,14 +126,27 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "Sys.write: buffer argument not yet witnessed"
 
                         | IntrinsicModule.Sys, "read", [fdSSA; bufferSSA; countSSA] ->
-                            match tryMatch (pSysRead resultSSA fdSSA bufferSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                            | None -> WitnessOutput.error "Sys.read pattern failed"
+                            // Recall buffer argument to get its actual type (memref or ptr)
+                            let bufferNodeId = argIds.[1]
+                            match MLIRAccumulator.recallNode bufferNodeId ctx.Accumulator with
+                            | Some (_, bufferType) ->
+                                // Emit call with actual buffer type
+                                // Pattern will normalize memref→ptr at FFI boundary
+                                match tryMatch (pSysRead resultSSA fdSSA bufferSSA bufferType countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                | None -> WitnessOutput.error "Sys.read pattern failed"
+                            | None -> WitnessOutput.error "Sys.read: buffer argument not yet witnessed"
 
                         // Binary arithmetic intrinsics (+, -, *, /, %)
                         | IntrinsicModule.Operators, _, [lhsSSA; rhsSSA] ->
                             let arch = ctx.Coeffects.Platform.TargetArch
                             let resultType = mapNativeTypeForArch arch node.Type
+
+                            // For comparisons, we need operand type (not result type which is always i1)
+                            let operandType =
+                                match argTypes with
+                                | operandTy :: _ -> operandTy  // Type of first operand
+                                | [] -> resultType  // Fallback (shouldn't happen for binary ops)
 
                             // Use classification from PSGCombinators for principled operator dispatch
                             let category = classifyAtomicOp info
@@ -155,17 +175,17 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                 | BinaryArith "shrui" -> tryMatch (pShRUI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
                                 | BinaryArith "shrsi" -> tryMatch (pShRSI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
 
-                                // Comparison operations (NEW: was missing!)
-                                | Comparison "eq" -> tryMatch (pCmpI resultSSA ICmpPred.Eq lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "ne" -> tryMatch (pCmpI resultSSA ICmpPred.Ne lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "slt" -> tryMatch (pCmpI resultSSA ICmpPred.Slt lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "sle" -> tryMatch (pCmpI resultSSA ICmpPred.Sle lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "sgt" -> tryMatch (pCmpI resultSSA ICmpPred.Sgt lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "sge" -> tryMatch (pCmpI resultSSA ICmpPred.Sge lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "ult" -> tryMatch (pCmpI resultSSA ICmpPred.Ult lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "ule" -> tryMatch (pCmpI resultSSA ICmpPred.Ule lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "ugt" -> tryMatch (pCmpI resultSSA ICmpPred.Ugt lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                                | Comparison "uge" -> tryMatch (pCmpI resultSSA ICmpPred.Uge lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                // Comparison operations - pass OPERAND type, not result type
+                                | Comparison "eq" -> tryMatch (pCmpI resultSSA ICmpPred.Eq lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "ne" -> tryMatch (pCmpI resultSSA ICmpPred.Ne lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "slt" -> tryMatch (pCmpI resultSSA ICmpPred.Slt lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "sle" -> tryMatch (pCmpI resultSSA ICmpPred.Sle lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "sgt" -> tryMatch (pCmpI resultSSA ICmpPred.Sgt lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "sge" -> tryMatch (pCmpI resultSSA ICmpPred.Sge lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "ult" -> tryMatch (pCmpI resultSSA ICmpPred.Ult lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "ule" -> tryMatch (pCmpI resultSSA ICmpPred.Ule lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "ugt" -> tryMatch (pCmpI resultSSA ICmpPred.Ugt lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | Comparison "uge" -> tryMatch (pCmpI resultSSA ICmpPred.Uge lhsSSA rhsSSA operandType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
 
                                 | _ -> None
 

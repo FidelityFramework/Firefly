@@ -63,34 +63,34 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
 
         if isEntryPoint then
             // Entry point Lambda: generate func.func @main wrapper
-            // Create NESTED accumulator for body operations
-            // Bindings still go to GLOBAL NodeBindings (shared with parent)
-            let bodyAcc = MLIRAccumulator.empty()
+            // Record operation count BEFORE witnessing body (shared accumulator pattern)
+            let opsBefore = List.length ctx.Accumulator.AllOps
 
-            // THEN: Witness body nodes into nested accumulator with GLOBAL visited set
+            // THEN: Witness body nodes using SAME accumulator with GLOBAL visited set
             // This prevents duplicate visitation by top-level traversal
+            // Errors and bindings automatically accumulate in shared ctx.Accumulator
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
-                    // Body context: nested accumulator, but shared global bindings via ctx.Accumulator.NodeAssoc
-                    let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
+                    // Body context: uses SAME accumulator (no nesting!)
+                    let bodyCtx = { ctx with Zipper = bodyZipper }
                     visitAllNodes combinator bodyCtx bodyNode ctx.GlobalVisited
-                    
-                    // Copy bindings from body accumulator to parent (for cross-scope lookups)
-                    bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
-                        ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
                 | None -> ()
             | None -> ()
 
+            // Extract operations added during body witnessing (list diff pattern)
+            let opsAfter = List.length ctx.Accumulator.AllOps
+            let bodyOpsAllReversed = ctx.Accumulator.AllOps |> List.take (opsAfter - opsBefore)
+
             // Separate body ops from module-level ops, and REVERSE to get correct order
-            // bodyAcc.AllOps accumulates in reverse (newest first), so reverse to get def-before-use order
-            let bodyOps = 
-                bodyAcc.AllOps 
+            // bodyOpsAllReversed accumulates in reverse (newest first), so reverse to get def-before-use order
+            let bodyOps =
+                bodyOpsAllReversed
                 |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
                 |> List.rev
-            let moduleOps = 
-                bodyAcc.AllOps 
+            let moduleOps =
+                bodyOpsAllReversed
                 |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
                 |> List.rev
 
@@ -168,33 +168,34 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
                     | None -> sprintf "lambda_%d" nodeIdValue
                 | None -> sprintf "lambda_%d" nodeIdValue
 
-            // Create NESTED accumulator for body operations
-            let bodyAcc = MLIRAccumulator.empty()
-            
-            // Witness body nodes into nested accumulator with GLOBAL visited set
+            // Record operation count BEFORE witnessing body (shared accumulator pattern)
+            let opsBefore = List.length ctx.Accumulator.AllOps
+
+            // Witness body nodes using SAME accumulator with GLOBAL visited set
             // This prevents duplicate visitation by top-level traversal
+            // Errors and bindings automatically accumulate in shared ctx.Accumulator
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
-                    // Body context: nested accumulator, shared global bindings
-                    let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
+                    // Body context: uses SAME accumulator (no nesting!)
+                    let bodyCtx = { ctx with Zipper = bodyZipper }
                     visitAllNodes combinator bodyCtx bodyNode ctx.GlobalVisited
-                    
-                    // Copy bindings from body accumulator to parent
-                    bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
-                        ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
                 | None -> ()
             | None -> ()
 
+            // Extract operations added during body witnessing (list diff pattern)
+            let opsAfter = List.length ctx.Accumulator.AllOps
+            let bodyOpsAllReversed = ctx.Accumulator.AllOps |> List.take (opsAfter - opsBefore)
+
             // Separate body ops from module-level ops, and REVERSE to get correct order
-            // bodyAcc.AllOps accumulates in reverse (newest first), so reverse to get def-before-use order
-            let bodyOps = 
-                bodyAcc.AllOps 
+            // bodyOpsAllReversed accumulates in reverse (newest first), so reverse to get def-before-use order
+            let bodyOps =
+                bodyOpsAllReversed
                 |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> false | _ -> true)
                 |> List.rev
-            let moduleOps = 
-                bodyAcc.AllOps 
+            let moduleOps =
+                bodyOpsAllReversed
                 |> List.filter (fun op -> match op with MLIROp.GlobalString _ | MLIROp.FuncOp (FuncOp.FuncDef _) -> true | _ -> false)
                 |> List.rev
 

@@ -34,19 +34,15 @@ open Alex.Patterns.ControlFlowPatterns
 
 /// Helper: Witness a branch/scope by marking boundaries and extracting operations
 /// Witness a branch scope (if-then, if-else, while-cond, while-body, for-body)
-/// Uses nested accumulator to collect branch operations without markers
+/// Collects operations from the branch while using the SAME accumulator for bindings/errors
 /// Combinator passed through from top-level via Y-combinator fixed point
 let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) (combinator: WitnessContext -> SemanticNode -> WitnessOutput) : MLIROp list =
     printfn "[ControlFlowWitness] witnessBranchScope: Starting visitation of branch root node %A" (NodeId.value rootId)
 
-    // Create NESTED accumulator for branch operations
-    // CRITICAL: Inherit parent bindings so VarRefs can resolve to outer scope bindings
-    let branchAcc = MLIRAccumulator.empty()
-    printfn "[ControlFlowWitness] witnessBranchScope: Parent accumulator has %d bindings" (Map.count ctx.Accumulator.NodeAssoc)
-    branchAcc.NodeAssoc <- ctx.Accumulator.NodeAssoc  // Inherit parent bindings for lookup
-    printfn "[ControlFlowWitness] witnessBranchScope: Branch accumulator now has %d bindings" (Map.count branchAcc.NodeAssoc)
+    // Record current operation count to extract only branch operations
+    let opsBefore = List.length ctx.Accumulator.AllOps
 
-    // Witness branch nodes into nested accumulator
+    // Witness branch nodes using SAME accumulator (errors and bindings are global)
     match SemanticGraph.tryGetNode rootId ctx.Graph with
     | Some branchNode ->
         printfn "[ControlFlowWitness] witnessBranchScope: Found branch node %A (kind: %s)"
@@ -56,25 +52,26 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) (combinato
         match focusOn rootId ctx.Zipper with
         | Some branchZipper ->
             printfn "[ControlFlowWitness] witnessBranchScope: Successfully focused on node %A, calling visitAllNodes" (NodeId.value rootId)
-            let branchCtx = { ctx with Zipper = branchZipper; Accumulator = branchAcc }
+            let branchCtx = { ctx with Zipper = branchZipper }
             // Use GLOBAL visited set to prevent duplicate visitation by top-level traversal
             visitAllNodes combinator branchCtx branchNode ctx.GlobalVisited
 
-            printfn "[ControlFlowWitness] witnessBranchScope: Completed visitation of node %A - collected %d ops, %d bindings"
+            let opsAfter = List.length ctx.Accumulator.AllOps
+            printfn "[ControlFlowWitness] witnessBranchScope: Completed visitation of node %A - added %d ops"
                 (NodeId.value rootId)
-                (List.length branchAcc.AllOps)
-                (Map.count branchAcc.NodeAssoc)
-
-            // Copy bindings from branch accumulator to parent
-            branchAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
-                ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
+                (opsAfter - opsBefore)
         | None ->
             printfn "[ControlFlowWitness] witnessBranchScope: Failed to focus on node %A" (NodeId.value rootId)
     | None ->
         printfn "[ControlFlowWitness] witnessBranchScope: Node %A not found in graph" (NodeId.value rootId)
 
-    // Return branch operations directly from nested accumulator
-    branchAcc.AllOps
+    // Extract branch operations (everything added since opsBefore)
+    let opsAfter = List.length ctx.Accumulator.AllOps
+    let branchOpsReversed = ctx.Accumulator.AllOps |> List.take (opsAfter - opsBefore)
+
+    // Return branch operations in correct SSA order
+    // Post-order traversal accumulates in reverse, so reverse to restore program order
+    List.rev branchOpsReversed
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)

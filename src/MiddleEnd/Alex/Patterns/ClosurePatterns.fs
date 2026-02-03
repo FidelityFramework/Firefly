@@ -40,17 +40,19 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
         let newPosSSA = ssas.[4]
         let indexSSA = ssas.[5]
 
+        // Generate index constant for memref operations (MLIR requires indices)
+        let! indexOp = pConstI indexSSA 0L TIndex
+
         // Load current position
-        let! addressOfPosOp = pLoad heapPosPtrSSA heapPosPtrSSA []  // Placeholder - need AddressOf
-        let! loadPosOp = pLoad heapPosSSA heapPosPtrSSA []
+        let! addressOfPosOp = pLoad heapPosPtrSSA heapPosPtrSSA [indexSSA]  // TODO: Placeholder - need AddressOf
+        let! loadPosOp = pLoad heapPosSSA heapPosPtrSSA [indexSSA]
 
         // Compute result pointer: heap_base + pos
-        let! addressOfBaseOp = pLoad heapBaseSSA heapBaseSSA []  // Placeholder - need AddressOf
+        let! addressOfBaseOp = pLoad heapBaseSSA heapBaseSSA [indexSSA]  // TODO: Placeholder - need AddressOf
         let! subViewOp = pSubView resultPtrSSA heapBaseSSA [heapPosSSA]
 
         // Update position: pos + size
         let! addOp = pAddI newPosSSA heapPosSSA sizeSSA
-        let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
         let! storePosOp = pStore newPosSSA heapPosPtrSSA [indexSSA] (TInt I64)
 
         return ([addressOfPosOp; loadPosOp; addressOfBaseOp; subViewOp; addOp; indexOp; storePosOp], resultPtrSSA)
@@ -77,31 +79,33 @@ let pFunctionDef (name: string) (params': (SSA * MLIRType) list) (retTy: MLIRTyp
 
 /// Extract captures from closure struct at function entry
 /// Arg 0 is env_ptr, load struct, extract captures at baseIndex + slotIndex
-/// SSAs: [0] = struct load, [1..N] = extracted captures
+/// SSAs: [0] = index zero, [1] = struct load, [2..N+1] = extracted captures
 let pExtractCaptures (baseIndex: int) (captureTypes: MLIRType list) (structType: MLIRType) (ssas: SSA list) : PSGParser<MLIROp list> =
     parser {
         let captureCount = captureTypes.Length
-        do! ensure (ssas.Length >= captureCount + 1) $"pExtractCaptures: Expected {captureCount + 1} SSAs, got {ssas.Length}"
+        do! ensure (ssas.Length >= captureCount + 2) $"pExtractCaptures: Expected {captureCount + 2} SSAs, got {ssas.Length}"
 
-        let structLoadSSA = ssas.[0]
+        let indexZeroSSA = ssas.[0]
+        let structLoadSSA = ssas.[1]
         let envPtrSSA = Arg 0  // First argument is always env_ptr for closures
 
-        // Load struct from env_ptr
-        let! loadOp = pLoad structLoadSSA envPtrSSA []
+        // Load struct from env_ptr (MLIR memrefs require indices)
+        let! indexZeroOp = pConstI indexZeroSSA 0L TIndex
+        let! loadOp = pLoad structLoadSSA envPtrSSA [indexZeroSSA]
 
         // Extract each capture
         let! extractOps =
             captureTypes
             |> List.mapi (fun i capTy ->
                 parser {
-                    let extractSSA = ssas.[i + 1]
+                    let extractSSA = ssas.[i + 2]  // +2 because [0]=indexZero, [1]=structLoad
                     let extractIndex = baseIndex + i
                     let! extractOp = pExtractValue extractSSA structLoadSSA [extractIndex] capTy
                     return extractOp
                 })
             |> sequence
 
-        return loadOp :: extractOps
+        return indexZeroOp :: loadOp :: extractOps
     }
 
 // ═══════════════════════════════════════════════════════════

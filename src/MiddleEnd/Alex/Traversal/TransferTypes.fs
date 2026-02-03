@@ -193,26 +193,23 @@ module Diagnostic =
 /// Flat accumulator - all operations in single stream with scope markers
 /// SSA bindings are global (shared across all witnesses and scopes)
 /// NOTE: Visited set is NOT in accumulator - each nanopass gets its own visited set
-type MLIRAccumulator = {
-    mutable AllOps: MLIROp list                      // Flat operation stream with markers
-    mutable Errors: Diagnostic list
-    mutable NodeAssoc: Map<NodeId, SSA * MLIRType>  // Global SSA bindings (PSG nodes)
-    mutable MLIRTempCounter: int                      // For MLIR-level temporary SSAs (NOT PSG nodes)
+/// CRITICAL: This is a CLASS (reference type) not a record, so mutations propagate correctly
+[<AllowNullLiteral>]
+type MLIRAccumulator() =
+    member val AllOps: MLIROp list = [] with get, set                      // Flat operation stream with markers
+    member val Errors: Diagnostic list = [] with get, set
+    member val NodeAssoc: Map<NodeId, SSA * MLIRType> = Map.empty with get, set  // Global SSA bindings (PSG nodes)
+    member val MLIRTempCounter: int = 0 with get, set                      // For MLIR-level temporary SSAs (NOT PSG nodes)
 
     // Witnessing Coordination State (Dependent Transparency)
-    mutable EmittedGlobals: Set<string>              // Track emitted global strings (by symbol name)
+    member val EmittedGlobals: Set<string> = Set.empty with get, set              // Track emitted global strings (by symbol name)
     // NOTE: Function declarations now handled by MLIR Declaration Collection Pass (no coordination needed)
-}
 
 module MLIRAccumulator =
     let empty () : MLIRAccumulator =
-        {
-            AllOps = []
-            Errors = []
-            NodeAssoc = Map.empty
-            MLIRTempCounter = 0
-            EmittedGlobals = Set.empty
-        }
+        let acc = MLIRAccumulator()
+        printfn "[MLIRAccumulator.empty] Created new accumulator instance (hash: %d)" (acc.GetHashCode())
+        acc
 
     /// Add a single operation to the flat stream
     let addOp (op: MLIROp) (acc: MLIRAccumulator) =
@@ -225,7 +222,9 @@ module MLIRAccumulator =
 
     /// Add an error diagnostic
     let addError (err: Diagnostic) (acc: MLIRAccumulator) =
+        printfn "[MLIRAccumulator.addError] Adding error to accumulator (hash: %d): %s" (acc.GetHashCode()) err.Message
         acc.Errors <- err :: acc.Errors
+        printfn "[MLIRAccumulator.addError] Accumulator (hash: %d) now has %d errors" (acc.GetHashCode()) (List.length acc.Errors)
 
     /// Bind a PSG node to its SSA value (global binding)
     let bindNode (nodeId: NodeId) (ssa: SSA) (ty: MLIRType) (acc: MLIRAccumulator) =
