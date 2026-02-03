@@ -16,8 +16,8 @@ open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
 open Alex.Patterns.MemoryPatterns
 open Alex.Patterns.PlatformPatterns
-open Alex.Patterns.ArithmeticPatterns
 open Alex.Patterns.ApplicationPatterns
+open Alex.Elements.ArithElements
 open Alex.CodeGeneration.TypeMapping
 
 module SSAAssign = PSGElaboration.SSAAssignment
@@ -126,9 +126,41 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                         // Binary arithmetic intrinsics (+, -, *, /, %)
                         | IntrinsicModule.Operators, _, [lhsSSA; rhsSSA] ->
                             let arch = ctx.Coeffects.Platform.TargetArch
-                            match tryMatch (pBuildBinaryArith resultSSA lhsSSA rhsSSA arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                            | None -> WitnessOutput.error $"Binary arithmetic pattern failed for {info.Operation}"
+                            let resultType = mapNativeTypeForArch arch node.Type
+
+                            // Call ArithElements directly based on info.Operation
+                            let opResult =
+                                match info.Operation with
+                                // Integer arithmetic
+                                | "add" -> tryMatch (pAddI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "sub" -> tryMatch (pSubI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "mul" -> tryMatch (pMulI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "div" -> tryMatch (pDivSI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "divu" -> tryMatch (pDivUI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "rem" -> tryMatch (pRemSI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "remu" -> tryMatch (pRemUI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+
+                                // Floating-point arithmetic
+                                | "addf" -> tryMatch (pAddF resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "subf" -> tryMatch (pSubF resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "mulf" -> tryMatch (pMulF resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "divf" -> tryMatch (pDivF resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+
+                                // Bitwise operations
+                                | "and" -> tryMatch (pAndI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "or" -> tryMatch (pOrI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "xor" -> tryMatch (pXorI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "shl" -> tryMatch (pShLI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "shru" -> tryMatch (pShRUI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                                | "shrs" -> tryMatch (pShRSI resultSSA lhsSSA rhsSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+
+                                | opName -> None
+
+                            match opResult with
+                            | Some (op, _) ->
+                                { InlineOps = [op]; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = resultType } }
+                            | None ->
+                                WitnessOutput.error $"Unknown or unsupported binary operator: {info.Operation}"
 
                         | _ -> WitnessOutput.error $"Atomic operation not yet implemented: {info.FullName} with {argSSAs.Length} args"
 

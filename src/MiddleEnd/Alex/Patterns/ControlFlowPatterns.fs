@@ -18,9 +18,6 @@ open Alex.CodeGeneration.TypeMapping
 // XPARSEC HELPERS
 // ═══════════════════════════════════════════════════════════
 
-/// Create parser failure with error message
-let pfail msg : PSGParser<'a> = fail (Message msg)
-
 // ═══════════════════════════════════════════════════════════
 // SEQ FOREACH LOOP
 // ═══════════════════════════════════════════════════════════
@@ -41,7 +38,7 @@ let pBuildForEachLoop (collectionSSA: SSA) (bodyOps: MLIROp list)
         // Implementation: Use SCF.While with:
         //   - Condition region: call MoveNext, extract result
         //   - Body region: extract current, execute bodyOps, yield
-        return! pfail "ForEach MoveNext implementation gap - needs: extract code_ptr[2], alloca/store seq, indirect call"
+        return! fail (Message "ForEach MoveNext implementation gap - needs: extract code_ptr[2], alloca/store seq, indirect call")
     }
 
 // ═══════════════════════════════════════════════════════════

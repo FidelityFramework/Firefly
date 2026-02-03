@@ -90,7 +90,6 @@
       <Compile Include="MiddleEnd/Alex/Patterns/MemoryPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/CollectionPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/ClosurePatterns.fs" />
-      <Compile Include="MiddleEnd/Alex/Patterns/ArithmeticPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/ControlFlowPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/LiteralPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/ApplicationPatterns.fs" />
@@ -111,7 +110,6 @@
       <Compile Include="MiddleEnd/Alex/Witnesses/PlatformWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/BindingWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/VarRefWitness.fs" />
-      <Compile Include="MiddleEnd/Alex/Witnesses/SequentialWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/ApplicationWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/LambdaWitness.fs" />
 

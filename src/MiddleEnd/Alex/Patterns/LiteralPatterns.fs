@@ -21,9 +21,6 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 // XPARSEC HELPERS
 // ═══════════════════════════════════════════════════════════
 
-/// Create parser failure with error message
-let pfail msg : PSGParser<'a> = fail (Message msg)
-
 // ═══════════════════════════════════════════════════════════
 // LITERAL PATTERNS
 // ═══════════════════════════════════════════════════════════
@@ -66,10 +63,10 @@ let pBuildLiteral (lit: NativeLiteral) (ssa: SSA) (arch: Architecture) : PSGPars
         | NativeLiteral.String _ ->
             // String literals require witness-level handling with multiple SSAs
             // Use pBuildStringLiteral pattern instead
-            return! pfail "String literals require pBuildStringLiteral pattern with SSA list"
+            return! fail (Message "String literals require pBuildStringLiteral pattern with SSA list")
 
         | _ ->
-            return! pfail $"Unsupported literal: {lit}"
+            return! fail (Message $"Unsupported literal: {lit}")
     }
 
 // ═══════════════════════════════════════════════════════════
