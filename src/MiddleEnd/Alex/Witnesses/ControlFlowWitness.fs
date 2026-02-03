@@ -22,27 +22,21 @@ open Alex.XParsec.PSGCombinators
 open Alex.Patterns.ControlFlowPatterns
 
 // ═══════════════════════════════════════════════════════════════════════════
-// SUB-GRAPH COMBINATOR
+// Y-COMBINATOR PATTERN
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// Build sub-graph combinator from nanopass list
-/// Folds over all witnesses, returning first non-skip result
-let private makeSubGraphCombinator (nanopasses: Nanopass list) : (WitnessContext -> SemanticNode -> WitnessOutput) =
-    fun ctx node ->
-        let rec tryWitnesses witnesses =
-            match witnesses with
-            | [] -> WitnessOutput.skip
-            | nanopass :: rest ->
-                match nanopass.Witness ctx node with
-                | output when output = WitnessOutput.skip ->
-                    tryWitnesses rest
-                | output -> output
-        tryWitnesses nanopasses
+//
+// Scope witnesses need to handle nested scopes (e.g., IfThenElse inside WhileLoop).
+// This requires recursive self-reference: the combinator must include itself.
+//
+// Solution: Y-combinator fixed point via thunk (unit -> Combinator)
+// The combinator getter is passed from WitnessRegistry, allowing deferred evaluation
+// and creating a proper fixed point where witnesses can recursively invoke themselves.
 
 /// Helper: Witness a branch/scope by marking boundaries and extracting operations
 /// Witness a branch scope (if-then, if-else, while-cond, while-body, for-body)
 /// Uses nested accumulator to collect branch operations without markers
-let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) combinator : MLIROp list =
+/// Combinator passed through from top-level via Y-combinator fixed point
+let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) (combinator: WitnessContext -> SemanticNode -> WitnessOutput) : MLIROp list =
     // Create NESTED accumulator for branch operations
     let branchAcc = MLIRAccumulator.empty()
 
@@ -54,7 +48,7 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) combinator
             let branchCtx = { ctx with Zipper = branchZipper; Accumulator = branchAcc }
             // Use GLOBAL visited set to prevent duplicate visitation by top-level traversal
             visitAllNodes combinator branchCtx branchNode branchAcc ctx.GlobalVisited
-            
+
             // Copy bindings from branch accumulator to parent
             branchAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
                 ctx.Accumulator.NodeAssoc <- Map.add nodeId binding ctx.Accumulator.NodeAssoc)
@@ -69,17 +63,23 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) combinator
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Witness control flow operations - category-selective (handles only control flow nodes)
-/// Takes nanopass list to build sub-graph combinator for branch witnessing
-let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    let subGraphCombinator = makeSubGraphCombinator nanopasses
+/// Takes combinator getter (Y-combinator thunk) for recursive self-reference
+let private witnessControlFlowWith (getCombinator: unit -> (WitnessContext -> SemanticNode -> WitnessOutput)) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
+    // Get the full combinator (including ourselves) via Y-combinator fixed point
+    let combinator = getCombinator()
 
     match tryMatch pIfThenElse ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((condId, thenId, elseIdOpt), _) ->
+        // Visit condition as branch scope (like WhileLoop does)
+        // Condition may contain complex expressions that need witnessing
+        let _condOps = witnessBranchScope condId ctx combinator
+
+        // Now recall the condition result
         match MLIRAccumulator.recallNode condId ctx.Accumulator with
-        | None -> WitnessOutput.error "IfThenElse: Condition not yet witnessed"
+        | None -> WitnessOutput.error "IfThenElse: Condition witnessed but no result"
         | Some (condSSA, _) ->
-            let thenOps = witnessBranchScope thenId ctx subGraphCombinator
-            let elseOps = elseIdOpt |> Option.map (fun elseId -> witnessBranchScope elseId ctx subGraphCombinator)
+            let thenOps = witnessBranchScope thenId ctx combinator
+            let elseOps = elseIdOpt |> Option.map (fun elseId -> witnessBranchScope elseId ctx combinator)
 
             match tryMatch (pBuildIfThenElse condSSA thenOps elseOps) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
@@ -88,8 +88,8 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
     | None ->
         match tryMatch pWhileLoop ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some ((condId, bodyId), _) ->
-            let condOps = witnessBranchScope condId ctx subGraphCombinator
-            let bodyOps = witnessBranchScope bodyId ctx subGraphCombinator
+            let condOps = witnessBranchScope condId ctx combinator
+            let bodyOps = witnessBranchScope bodyId ctx combinator
 
             match tryMatch (pBuildWhileLoop condOps bodyOps) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
@@ -100,7 +100,7 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
             | Some ((_, lowerId, upperId, _, bodyId), _) ->
                 match MLIRAccumulator.recallNode lowerId ctx.Accumulator, MLIRAccumulator.recallNode upperId ctx.Accumulator with
                 | Some (lowerSSA, _), Some (upperSSA, _) ->
-                    let _bodyOps = witnessBranchScope bodyId ctx subGraphCombinator
+                    let _bodyOps = witnessBranchScope bodyId ctx combinator
                     WitnessOutput.error "ForLoop needs step constant - gap in patterns"
 
                 | _ -> WitnessOutput.error "ForLoop: Loop bounds not yet witnessed"
@@ -111,15 +111,16 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
 // NANOPASS REGISTRATION (Public)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Create control flow nanopass with nanopass list for sub-graph traversal
-/// This must be called AFTER all other nanopasses are registered
-let createNanopass (nanopasses: Nanopass list) : Nanopass = {
+/// Create control flow nanopass with Y-combinator thunk for recursive self-reference
+/// The combinator getter allows deferred evaluation, creating a fixed point where
+/// this witness can handle nested control flow (e.g., IfThenElse inside WhileLoop)
+let createNanopass (getCombinator: unit -> (WitnessContext -> SemanticNode -> WitnessOutput)) : Nanopass = {
     Name = "ControlFlow"
-    Witness = witnessControlFlowWith nanopasses
+    Witness = witnessControlFlowWith getCombinator
 }
 
 /// Placeholder nanopass export - will be replaced by createNanopass call in registry
 let nanopass : Nanopass = {
     Name = "ControlFlow"
-    Witness = fun _ _ -> WitnessOutput.error "ControlFlow nanopass not properly initialized - use createNanopass"
+    Witness = fun _ _ -> WitnessOutput.error "ControlFlow nanopass not properly initialized - use createNanopass with Y-combinator"
 }

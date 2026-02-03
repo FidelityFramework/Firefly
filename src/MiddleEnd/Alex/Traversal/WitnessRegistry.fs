@@ -7,6 +7,10 @@
 /// As each witness is migrated, uncomment its registration below.
 module Alex.Traversal.WitnessRegistry
 
+// Suppress FS0040: Y-combinator uses delayed initialization for recursive scope witnesses
+// This is safe - Lazy<_> ensures proper initialization order
+#nowarn "40"
+
 open Alex.Traversal.NanopassArchitecture
 open Alex.Traversal.TransferTypes
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
@@ -87,26 +91,52 @@ let initializeRegistry () =
         // Priority 5: Seq Witness
         |> NanopassRegistry.register SeqWitness.nanopass
 
-    // Now create composite witnesses (Lambda, ControlFlow) that need sub-graph traversal
-    // These witnesses need access to ALL other witnesses for witnessing sub-graphs
-    let mutable workingRegistry = leafRegistry
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Y-COMBINATOR FIXED POINT FOR RECURSIVE SCOPE WITNESSES
+    // ═══════════════════════════════════════════════════════════════════════════
+    //
+    // Problem: Scope witnesses (Lambda, ControlFlow) need to handle nested scopes
+    // of their own kind (e.g., IfThenElse inside WhileLoop, nested lambdas).
+    // This requires the combinator to include a reference to itself.
+    //
+    // Solution: Y-combinator via lazy recursive binding
+    // Use Lazy<_> to ensure safe initialization - the combinator is computed once
+    // on first access, after all nanopasses are defined. This breaks the initialization
+    // cycle while maintaining referential transparency.
+    //
+    // This is purely functional - the lazy value acts as a safe fixed point.
 
-    // Add LambdaWitness (needs to witness function bodies)
-    let lambdaNanopass = LambdaWitness.createNanopass (workingRegistry.Nanopasses)
-    workingRegistry <- NanopassRegistry.register lambdaNanopass workingRegistry
+    // Lazy combinator ensures initialization happens after nanopass list is built
+    let rec lazyCombinator : Lazy<WitnessContext -> SemanticNode -> WitnessOutput> =
+        lazy (
+            fun ctx node ->
+                let rec tryWitnesses witnesses =
+                    match witnesses with
+                    | [] -> WitnessOutput.skip
+                    | nanopass :: rest ->
+                        match nanopass.Witness ctx node with
+                        | output when output.Result = TRSkip -> tryWitnesses rest
+                        | output -> output
+                tryWitnesses allNanopasses.Value
+        )
 
-    // Add ControlFlowWitness (needs to witness branch bodies)
-    let controlFlowNanopass = ControlFlowWitness.createNanopass (workingRegistry.Nanopasses)
-    workingRegistry <- NanopassRegistry.register controlFlowNanopass workingRegistry
+    // Build nanopass list with thunks that access the lazy combinator
+    and allNanopasses : Lazy<Nanopass list> =
+        lazy (
+            // Leaf witnesses (don't need combinator access)
+            leafRegistry.Nanopasses @
+            // Scope witnesses (receive combinator thunk for recursion)
+            [
+                LambdaWitness.createNanopass (fun () -> lazyCombinator.Value)
+                ControlFlowWitness.createNanopass (fun () -> lazyCombinator.Value)
+            ]
+        )
 
-    // Re-create composite witnesses with FULL registry (including themselves for recursion)
-    let lambdaNanopassRecursive = LambdaWitness.createNanopass (workingRegistry.Nanopasses)
-    let controlFlowNanopassRecursive = ControlFlowWitness.createNanopass (workingRegistry.Nanopasses)
+    let finalRegistry = { leafRegistry with Nanopasses = allNanopasses.Value }
 
-    let finalRegistry = { workingRegistry with
-                            Nanopasses = workingRegistry.Nanopasses
-                                         |> List.filter (fun np -> np.Name <> "Lambda" && np.Name <> "ControlFlow")
-                                         |> List.append [lambdaNanopassRecursive; controlFlowNanopassRecursive] }
+    printfn "[WitnessRegistry] Final registry has %d nanopasses: %s"
+        (List.length finalRegistry.Nanopasses)
+        (finalRegistry.Nanopasses |> List.map (fun np -> np.Name) |> String.concat ", ")
 
     globalRegistry <- finalRegistry
 

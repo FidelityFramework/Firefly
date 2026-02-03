@@ -24,7 +24,8 @@ let private witnessStructural (ctx: WitnessContext) (node: SemanticNode) : Witne
         // Return TRVoid per Domain Responsibility Principle
         { InlineOps = []; TopLevelOps = []; Result = TRVoid }
 
-    | SemanticKind.Sequential _ ->
+    | SemanticKind.Sequential childIds ->
+        printfn "[StructuralWitness] Handling Sequential node %A with children %A" node.Id childIds
         // Sequential node - structural container for imperative sequences
         // Children already witnessed in post-order, return TRVoid
         { InlineOps = []; TopLevelOps = []; Result = TRVoid }

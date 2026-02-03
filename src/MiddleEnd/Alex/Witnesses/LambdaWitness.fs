@@ -7,7 +7,7 @@
 /// All other nodes return WitnessOutput.skip for other nanopasses to handle.
 ///
 /// SPECIAL CASE: Entry point Lambdas need to witness function bodies (sub-graphs)
-/// that can contain ANY category of nodes. Uses subGraphCombinator to fold over
+/// that can contain ANY category of nodes. Uses combinator to fold over
 /// all registered witnesses.
 module Alex.Witnesses.LambdaWitness
 
@@ -25,36 +25,38 @@ open Alex.XParsec.PSGCombinators  // For findLastValueNode
 module SSAAssign = PSGElaboration.SSAAssignment
 
 // ═══════════════════════════════════════════════════════════
-// SUB-GRAPH COMBINATOR
+// Y-COMBINATOR PATTERN
 // ═══════════════════════════════════════════════════════════
-
-/// Build sub-graph combinator from nanopass list
-/// Folds over all witnesses, returning first non-skip result
-let private makeSubGraphCombinator (nanopasses: Nanopass list) : (WitnessContext -> SemanticNode -> WitnessOutput) =
-    fun ctx node ->
-        let rec tryWitnesses witnesses =
-            match witnesses with
-            | [] -> WitnessOutput.skip
-            | nanopass :: rest ->
-                match nanopass.Witness ctx node with
-                | output when output = WitnessOutput.skip ->
-                    tryWitnesses rest
-                | output -> output
-        tryWitnesses nanopasses
+//
+// Lambda witnesses need to handle nested lambdas (closures, higher-order functions).
+// This requires recursive self-reference: the combinator must include itself.
+//
+// Solution: Y-combinator fixed point via thunk (unit -> Combinator)
+// The combinator getter is passed from WitnessRegistry, allowing deferred evaluation
+// and creating a proper fixed point where witnesses can recursively invoke themselves.
 
 // ═══════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════
 
 /// Witness Lambda operations - category-selective (handles only Lambda nodes)
-/// Takes nanopass list to build sub-graph combinator for body witnessing
-let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    // Single-phase: Use ALL witnesses for sub-graph traversal
-    // No phase filtering needed - all witnesses run together in post-order
-    let subGraphCombinator = makeSubGraphCombinator nanopasses
+/// Takes combinator getter (Y-combinator thunk) for recursive self-reference
+let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> SemanticNode -> WitnessOutput)) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
+    // Get the full combinator (including ourselves) via Y-combinator fixed point
+    let combinator = getCombinator()
 
     match tryMatch pLambdaWithCaptures ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((params', bodyId, captureInfos), _) ->
+        // FIRST: Visit parameter nodes (PatternBindings) to mark them as witnessed
+        // ALL Lambdas must visit their parameters for coverage validation
+        // Parameters are structural (SSA comes from coeffects), but must be visited
+        for (_, _, paramNodeId) in params' do
+            match SemanticGraph.tryGetNode paramNodeId ctx.Graph with
+            | Some paramNode ->
+                // Visit parameter with sub-graph combinator (will hit StructuralWitness)
+                visitAllNodes combinator ctx paramNode ctx.Accumulator ctx.GlobalVisited
+            | None -> ()
+
         // Check if this is an entry point Lambda
         let nodeIdValue = NodeId.value node.Id
         let isEntryPoint = Set.contains nodeIdValue ctx.Coeffects.EntryPointLambdaIds
@@ -65,15 +67,6 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Bindings still go to GLOBAL NodeBindings (shared with parent)
             let bodyAcc = MLIRAccumulator.empty()
 
-            // FIRST: Visit parameter nodes (PatternBindings) to mark them as witnessed
-            // Parameters are structural (SSA comes from coeffects), but must be visited for coverage
-            for (_, _, paramNodeId) in params' do
-                match SemanticGraph.tryGetNode paramNodeId ctx.Graph with
-                | Some paramNode ->
-                    // Visit parameter with sub-graph combinator (will hit StructuralWitness)
-                    visitAllNodes subGraphCombinator ctx paramNode ctx.Accumulator ctx.GlobalVisited
-                | None -> ()
-
             // THEN: Witness body nodes into nested accumulator with GLOBAL visited set
             // This prevents duplicate visitation by top-level traversal
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
@@ -82,7 +75,7 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | Some bodyZipper ->
                     // Body context: nested accumulator, but shared global bindings via ctx.Accumulator.NodeAssoc
                     let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
-                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
+                    visitAllNodes combinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
                     
                     // Copy bindings from body accumulator to parent (for cross-scope lookups)
                     bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
@@ -186,7 +179,7 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
                 | Some bodyZipper ->
                     // Body context: nested accumulator, shared global bindings
                     let bodyCtx = { ctx with Zipper = bodyZipper; Accumulator = bodyAcc }
-                    visitAllNodes subGraphCombinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
+                    visitAllNodes combinator bodyCtx bodyNode bodyAcc ctx.GlobalVisited
                     
                     // Copy bindings from body accumulator to parent
                     bodyAcc.NodeAssoc |> Map.iter (fun nodeId binding ->
@@ -268,15 +261,16 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
 // NANOPASS REGISTRATION (Public)
 // ═══════════════════════════════════════════════════════════
 
-/// Create Lambda nanopass with nanopass list for sub-graph traversal (body witnessing)
-/// This must be called AFTER all other nanopasses are registered
-let createNanopass (nanopasses: Nanopass list) : Nanopass = {
+/// Create Lambda nanopass with Y-combinator thunk for recursive self-reference
+/// The combinator getter allows deferred evaluation, creating a fixed point where
+/// this witness can handle nested lambdas (closures, higher-order functions)
+let createNanopass (getCombinator: unit -> (WitnessContext -> SemanticNode -> WitnessOutput)) : Nanopass = {
     Name = "Lambda"
-    Witness = witnessLambdaWith nanopasses
+    Witness = witnessLambdaWith getCombinator
 }
 
 /// Placeholder nanopass export - will be replaced by createNanopass call in registry
 let nanopass : Nanopass = {
     Name = "Lambda"
-    Witness = fun _ _ -> WitnessOutput.error "Lambda nanopass not properly initialized - use createNanopass"
+    Witness = fun _ _ -> WitnessOutput.error "Lambda nanopass not properly initialized - use createNanopass with Y-combinator"
 }

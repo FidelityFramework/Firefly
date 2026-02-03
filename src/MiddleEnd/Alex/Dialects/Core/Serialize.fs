@@ -205,7 +205,7 @@ let memrefOpToString (op: MemRefOp) : string =
             (ssaToString result) (ssaToString memref) (typeToString ty)
     | MemRefOp.GetGlobal (result, globalName, memrefType) ->
         // memref.get_global @symbol_name : memref<...>
-        sprintf "%s = memref.get_global %s : %s"
+        sprintf "%s = memref.get_global @%s : %s"
             (ssaToString result) globalName (typeToString memrefType)
     | MemRefOp.Dim (result, memref, index, memrefType) ->
         // memref.dim %memref, %index : memref<...>
@@ -256,12 +256,12 @@ let rec opToString (op: MLIROp) : string =
     | MLIROp.GlobalString (name, content, byteLength) ->
         // Escape the string content for MLIR
         let escaped = content.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n").Replace("\t", "\\t")
-        // Name already contains @ prefix from deriveGlobalRef
+        // Add @ prefix for MLIR global symbol naming convention
         // Emit memref.global (portable MLIR) instead of llvm.mlir.global
         // Use dense<...> for array literal initialization
         let bytes = System.Text.Encoding.UTF8.GetBytes(content)
         let denseStr = bytes |> Array.map (sprintf "%d") |> String.concat ", "
-        sprintf "memref.global \"private\" constant %s : memref<%dxi8> = dense<[%s]>" name byteLength denseStr
+        sprintf "memref.global \"private\" constant @%s : memref<%dxi8> = dense<[%s]>" name byteLength denseStr
     | MLIROp.IndexOp iop ->
         match iop with
         | IndexOp.IndexCastS (result, operand, destTy) ->

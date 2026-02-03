@@ -59,6 +59,7 @@ let rec visitAllNodes
 
     // Check if already visited
     if Set.contains currentNode.Id !visited then
+        printfn "[visitAllNodes] Node %A already visited - skipping" currentNode.Id
         ()
     else
         // Mark as visited
@@ -66,18 +67,24 @@ let rec visitAllNodes
 
         // Focus zipper on this node
         match PSGZipper.focusOn currentNode.Id visitedCtx.Zipper with
-        | None -> ()
+        | None ->
+            printfn "[visitAllNodes] WARNING: Failed to focus zipper on node %A" currentNode.Id
+            ()
         | Some focusedZipper ->
+            printfn "[visitAllNodes] Successfully focused on node %A" currentNode.Id
             // Shadow context with focused zipper
             let focusedCtx = { visitedCtx with Zipper = focusedZipper }
 
             // POST-ORDER Phase 1: Visit children FIRST (tree edges)
             // This ensures children's SSA bindings are available when parent witnesses
             if not (isScopeBoundary currentNode) then
+                printfn "[visitAllNodes] Node %A is NOT a scope boundary - visiting %d children" currentNode.Id currentNode.Children.Length
                 for childId in currentNode.Children do
+                    printfn "[visitAllNodes] Visiting child %A of parent %A" childId currentNode.Id
                     match SemanticGraph.tryGetNode childId visitedCtx.Graph with
                     | Some childNode -> visitAllNodes witness focusedCtx childNode accumulator visited
-                    | None -> ()
+                    | None ->
+                        printfn "[visitAllNodes] WARNING: Child node %A not found in graph!" childId
 
             // POST-ORDER Phase 2: Visit VarRef binding targets (reference edges)
             // VarRef nodes reference Bindings that may not be in child structure - visit those too
@@ -90,7 +97,9 @@ let rec visitAllNodes
             | _ -> ()
 
             // THEN witness current node (after ALL dependencies - children AND references)
+            printfn "[visitAllNodes] Invoking witness on node %A" currentNode.Id
             let output = witness focusedCtx currentNode
+            printfn "[visitAllNodes] Witness returned %A for node %A" output.Result currentNode.Id
 
             // Add operations to appropriate accumulators
             // InlineOps go to current scope accumulator (may be nested)
