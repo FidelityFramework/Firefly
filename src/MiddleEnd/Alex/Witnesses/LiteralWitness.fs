@@ -12,7 +12,7 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns
+open Alex.Patterns.LiteralPatterns
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -22,7 +22,7 @@ module SSAAssign = PSGElaboration.SSAAssignment
 
 /// Witness Literal nodes - category-selective (handles only Literal nodes)
 let private witnessLiteralNode (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pLiteral ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pLiteral ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some (lit, _) ->
         let arch = ctx.Coeffects.Platform.TargetArch
 
@@ -35,7 +35,7 @@ let private witnessLiteralNode (ctx: WitnessContext) (node: SemanticNode) : Witn
                 WitnessOutput.errorDiag diag
             | Some ssas when ssas.Length >= 5 ->
                 // Use trace-enabled variant to capture full execution path
-                match tryMatchWithTrace (pBuildStringLiteral content ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatchWithTrace (pBuildStringLiteral content ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Result.Ok (((inlineOps, globalName, strContent, byteLength), result), _, _trace) ->
                     // Success - emit GlobalString via coordination (dependent transparency)
                     let topLevelOps =
@@ -62,7 +62,7 @@ let private witnessLiteralNode (ctx: WitnessContext) (node: SemanticNode) : Witn
                 let diag = Diagnostic.error (Some node.Id) (Some "Literal") (Some "SSA lookup") "Literal: No SSA assigned"
                 WitnessOutput.errorDiag diag
             | Some ssa ->
-                match tryMatch (pBuildLiteral lit ssa arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatch (pBuildLiteral lit ssa arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None ->
                     let diag = Diagnostic.error (Some node.Id) (Some "Literal") (Some "pBuildLiteral") "Literal pattern emission failed"

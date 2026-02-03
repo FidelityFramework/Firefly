@@ -31,6 +31,52 @@ let pExtractField (structSSA: SSA) (fieldIndex: int) (resultSSA: SSA) (structTy:
     }
 
 // ═══════════════════════════════════════════════════════════
+// FIELD ACCESS PATTERNS (Byte-Offset)
+// ═══════════════════════════════════════════════════════════
+
+/// Field access via byte-offset memref operations
+/// structType: The NativeType of the struct (for calculating field offset)
+let pFieldAccess (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (gepSSA: SSA) (loadSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        let! state = getUserState
+        let arch = state.Platform.TargetArch
+
+        // Calculate byte offset for the field using FNCS-provided type structure
+        let fieldOffset = calculateFieldOffsetForArch arch structType fieldIndex
+
+        // Allocate SSA for offset constant
+        let offsetSSA = match gepSSA with | V n -> V (n - 1) | Arg n -> V (n + 1000)
+        let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
+
+        // Memref.load with byte offset
+        // Note: This assumes structPtr is memref<Nxi8> and we load at byte offset
+        let! loadOp = Alex.Elements.MemRefElements.pLoad loadSSA structPtr [offsetSSA]
+
+        return [offsetOp; loadOp]
+    }
+
+/// Field set via byte-offset memref operations
+/// structType: The NativeType of the struct (for calculating field offset)
+let pFieldSet (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (value: SSA) (_gepSSA: SSA) (_indexSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        let! state = getUserState
+        let arch = state.Platform.TargetArch
+        let elemType = mapNativeTypeForArch arch state.Current.Type
+
+        // Calculate byte offset for the field using FNCS-provided type structure
+        let fieldOffset = calculateFieldOffsetForArch arch structType fieldIndex
+
+        // Allocate SSA for offset constant
+        let offsetSSA = match value with | V n -> V (n + 100) | Arg n -> V (n + 2000)
+        let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
+
+        // Memref.store with byte offset
+        let! storeOp = pStore value structPtr [offsetSSA] elemType
+
+        return [offsetOp; storeOp]
+    }
+
+// ═══════════════════════════════════════════════════════════
 // ALLOCATION PATTERNS
 // ═══════════════════════════════════════════════════════════
 
@@ -212,6 +258,26 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
         return [countOp; allocaOp] @ storeOps @ [undefOp; insertPtrOp; insertCountOp]
     }
 
+/// Array element access via GEP + Load
+let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) (loadSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
+        let! loadOp = pLoad loadSSA gepSSA
+        return [gepOp; loadOp]
+    }
+
+/// Array element set via GEP + Store
+let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gepSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        let! state = getUserState
+        let elemType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+
+        let! gepOp = pGEP gepSSA arrayPtr [(index, indexTy)]
+        let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
+        let! storeOp = pStore value gepSSA [indexZeroSSA] elemType
+        return [gepOp; indexZeroOp; storeOp]
+    }
+
 // ═══════════════════════════════════════════════════════════
 // NATIVEPTR OPERATIONS (FNCS Intrinsics)
 // ═══════════════════════════════════════════════════════════
@@ -348,4 +414,66 @@ let pStructFieldGet (resultSSA: SSA) (structSSA: SSA) (fieldName: string) (struc
             // Extract field value - pass struct type for MLIR type annotation
             let! ops = pExtractField structSSA fieldIndex resultSSA structTy
             return (ops, TRValue { SSA = resultSSA; Type = fieldTy })
+    }
+
+// ═══════════════════════════════════════════════════════════
+// STRUCT CONSTRUCTION PATTERNS
+// ═══════════════════════════════════════════════════════════
+
+/// Record struct via Undef + InsertValue chain
+let pRecordStruct (fields: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
+    parser {
+        do! ensure (ssas.Length = fields.Length + 1) $"pRecordStruct: Expected {fields.Length + 1} SSAs, got {ssas.Length}"
+
+        // Compute struct type from field types
+        let structTy = TStruct (fields |> List.map (fun f -> f.Type))
+        let! undefOp = pUndef ssas.[0] structTy
+
+        let! insertOps =
+            fields
+            |> List.mapi (fun i field ->
+                parser {
+                    let targetSSA = ssas.[i+1]
+                    let sourceSSA = if i = 0 then ssas.[0] else ssas.[i]
+                    return! pInsertValue targetSSA sourceSSA field.SSA [i] structTy
+                })
+            |> sequence
+
+        return undefOp :: insertOps
+    }
+
+/// Tuple struct via Undef + InsertValue chain (same as record, but semantically different)
+let pTupleStruct (elements: Val list) (ssas: SSA list) : PSGParser<MLIROp list> =
+    pRecordStruct elements ssas  // Same implementation, different semantic context
+
+// ═══════════════════════════════════════════════════════════
+// DU CONSTRUCTION
+// ═══════════════════════════════════════════════════════════
+
+/// DU case construction: tag field (index 0) + payload fields
+/// CRITICAL: This is the foundation for all collection patterns (Option, List, Map, Set, Result)
+let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+    parser {
+        do! ensure (ssas.Length >= 2 + payload.Length) $"pDUCase: Expected at least {2 + payload.Length} SSAs, got {ssas.Length}"
+
+        // Create undef struct
+        let! undefOp = pUndef ssas.[0] ty
+
+        // Insert tag at index 0
+        let tagTy = TInt I8  // DU tags are always i8
+        let! tagConstOp = pConstI ssas.[1] tag tagTy
+        let! insertTagOp = pInsertValue ssas.[2] ssas.[0] ssas.[1] [0] ty
+
+        // Insert payload fields starting at index 1
+        let! payloadOps =
+            payload
+            |> List.mapi (fun i field ->
+                parser {
+                    let targetSSA = ssas.[3 + i]
+                    let sourceSSA = if i = 0 then ssas.[2] else ssas.[2 + i]
+                    return! pInsertValue targetSSA sourceSSA field.SSA [i + 1] ty
+                })
+            |> sequence
+
+        return undefOp :: tagConstOp :: insertTagOp :: payloadOps
     }

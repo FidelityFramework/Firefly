@@ -13,7 +13,6 @@ open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
 open Alex.Patterns.MemoryPatterns
-open Alex.Patterns.ElisionPatterns
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -29,7 +28,7 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
     | SemanticKind.Intrinsic _ -> WitnessOutput.skip
     | _ ->
         // Try FieldGet first (struct field access like s.Pointer, s.Length)
-        match tryMatch pFieldGet ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+        match tryMatch pFieldGet ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some ((structId, fieldName), _) ->
             // Recall struct SSA
             match MLIRAccumulator.recallNode structId ctx.Accumulator with
@@ -39,7 +38,7 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                 | Some resultSSA ->
                     let arch = ctx.Coeffects.Platform.TargetArch
                     let fieldTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    match tryMatch (pStructFieldGet resultSSA structSSA fieldName structTy fieldTy) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pStructFieldGet resultSSA structSSA fieldName structTy fieldTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error $"FieldGet pattern failed for field '{fieldName}'"
                 | None -> WitnessOutput.error $"FieldGet: No SSA for result (field '{fieldName}')"
@@ -47,27 +46,27 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
 
         | None ->
             // Not FieldGet - try DU operations: GetTag, Eliminate, Construct
-            match tryMatch pDUGetTag ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            match tryMatch pDUGetTag ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some ((duValueId, _duType), _) ->
                 match MLIRAccumulator.recallNode duValueId ctx.Accumulator, SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
                 | Some (duSSA, duType), Some tagSSA ->
-                    match tryMatch (pExtractDUTag duSSA duType tagSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pExtractDUTag duSSA duType tagSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = tagSSA; Type = TInt I8 } }
                     | None -> WitnessOutput.error "DUGetTag pattern emission failed"
                 | _ -> WitnessOutput.error "DUGetTag: DU value or tag SSA not available"
 
             | None ->
-            match tryMatch pDUEliminate ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            match tryMatch pDUEliminate ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some ((duValueId, caseIndex, _caseName, _payloadType), _) ->
                 match MLIRAccumulator.recallNode duValueId ctx.Accumulator, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
                 | Some (duSSA, duType), Some ssas ->
-                    match tryMatch (pExtractDUPayload duSSA duType caseIndex duType ssas) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pExtractDUPayload duSSA duType caseIndex duType ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = duType } }
                     | None -> WitnessOutput.error "DUEliminate pattern emission failed"
                 | _ -> WitnessOutput.error "DUEliminate: DU value or SSAs not available"
 
             | None ->
-                match tryMatch pDUConstruct ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatch pDUConstruct ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((_caseName, caseIndex, payloadOpt, _arenaHintOpt), _) ->
                     match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
                     | None -> WitnessOutput.error "DUConstruct: No SSAs assigned"
@@ -83,7 +82,7 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
 
                         let arch = ctx.Coeffects.Platform.TargetArch
                         let duTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                        match tryMatch (pDUCase tag payload ssas duTy) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                        match tryMatch (pDUCase tag payload ssas duTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                         | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = duTy } }
                         | None -> WitnessOutput.error "DUConstruct pattern emission failed"
 

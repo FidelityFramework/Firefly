@@ -20,7 +20,7 @@ open Alex.Traversal.NanopassArchitecture
 open Alex.Traversal.PSGZipper
 open Alex.XParsec.PSGCombinators
 open Alex.Patterns.ClosurePatterns
-open Alex.Patterns.ElisionPatterns  // For findLastValueNode
+open Alex.XParsec.PSGCombinators  // For findLastValueNode
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -53,7 +53,7 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
     // No phase filtering needed - all witnesses run together in post-order
     let subGraphCombinator = makeSubGraphCombinator nanopasses
 
-    match tryMatch pLambdaWithCaptures ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pLambdaWithCaptures ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((params', bodyId, captureInfos), _) ->
         // Check if this is an entry point Lambda
         let nodeIdValue = NodeId.value node.Id
@@ -94,7 +94,7 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
 
             // Get body result for return value
             // Traverse Sequential structure to find actual value-producing node
-            let actualValueNode = Alex.Patterns.ElisionPatterns.findLastValueNode bodyId ctx.Graph
+            let actualValueNode = findLastValueNode bodyId ctx.Graph
             let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
 
             // Determine return type from Lambda type signature
@@ -198,7 +198,7 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
 
             // Get body result for return value
             // Traverse Sequential structure to find actual value-producing node
-            let actualValueNode = Alex.Patterns.ElisionPatterns.findLastValueNode bodyId ctx.Graph
+            let actualValueNode = findLastValueNode bodyId ctx.Graph
             let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
 
             // Map parameters to MLIR types and build parameter list with SSAs

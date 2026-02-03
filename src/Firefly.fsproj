@@ -87,9 +87,13 @@
       <Compile Include="MiddleEnd/Alex/Elements/VectorElements.fs" />
 
       <!-- Alex Elision Patterns - Composable MLIR templates (public, XParsec-based) -->
-      <Compile Include="MiddleEnd/Alex/Patterns/ElisionPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/MemoryPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/CollectionPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/ClosurePatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/ArithmeticPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/ControlFlowPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/LiteralPatterns.fs" />
+      <Compile Include="MiddleEnd/Alex/Patterns/ApplicationPatterns.fs" />
       <Compile Include="MiddleEnd/Alex/Patterns/PlatformPatterns.fs" />
 
       <!-- Alex Witnesses - Category-based MLIR generation -->

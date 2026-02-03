@@ -25,7 +25,7 @@ module SSAAssign = PSGElaboration.SSAAssignment
 
 /// Witness variable reference nodes - forwards binding's SSA
 let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pVarRef ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pVarRef ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((name, bindingIdOpt), _) ->
         match bindingIdOpt with
         | Some bindingId ->

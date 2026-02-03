@@ -12,7 +12,7 @@ open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns
+open Alex.Patterns.ClosurePatterns
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -23,7 +23,7 @@ module SSAAssign = PSGElaboration.SSAAssignment
 /// Witness Lazy operations - category-selective (handles only Lazy nodes)
 let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     // Try LazyExpr pattern
-    match tryMatch pLazyExpr ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pLazyExpr ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((bodyId, captureInfos), _) ->
         match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
         | None -> WitnessOutput.error "LazyExpr: No SSAs assigned"
@@ -44,13 +44,13 @@ let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
                 let valueTy = match lazyTy with
                               | TStruct (_::vt::_) -> vt  // {computed: i1, value: T, ...}
                               | _ -> TPtr  // fallback
-                match tryMatch (pBuildLazyStruct valueTy codePtrTy codePtr captures ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatch (pBuildLazyStruct valueTy codePtrTy codePtr captures ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "LazyExpr pattern emission failed"
 
     | None ->
         // Try LazyForce pattern
-        match tryMatch pLazyForce ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+        match tryMatch pLazyForce ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some (lazyNodeId, _) ->
             match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
             | None -> WitnessOutput.error "LazyForce: No SSAs assigned"
@@ -63,7 +63,7 @@ let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
                     let resultSSA = ssas.[3]
                     let intermediateSsas = [ssas.[0]; ssas.[1]; ssas.[2]]
                     let resultTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    match tryMatch (pBuildLazyForce lazySSA lazyTy resultSSA resultTy intermediateSsas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pBuildLazyForce lazySSA lazyTy resultSSA resultTy intermediateSsas arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error "LazyForce pattern emission failed"
             | Some ssas -> WitnessOutput.error $"LazyForce: Expected 4 SSAs, got {ssas.Length}"

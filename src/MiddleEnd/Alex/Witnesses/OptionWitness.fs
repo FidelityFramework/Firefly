@@ -12,7 +12,7 @@ open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns
+open Alex.Patterns.CollectionPatterns
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -22,7 +22,7 @@ module SSAAssign = PSGElaboration.SSAAssignment
 
 /// Witness Option operations - category-selective (handles only Option intrinsic nodes)
 let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pIntrinsic ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pIntrinsic ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | None -> WitnessOutput.skip
     | Some (info, _) when info.Module <> IntrinsicModule.Option -> WitnessOutput.skip
     | Some (info, _) ->
@@ -34,7 +34,7 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                 | Some (valSSA, valType) ->
                     let value = { SSA = valSSA; Type = valType }
                     let optionTy = TStruct [TInt I8; valType]
-                    match tryMatch (pOptionSome value ssas optionTy) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pOptionSome value ssas optionTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = optionTy } }
                     | None -> WitnessOutput.error "Option.Some pattern emission failed"
                 | None -> WitnessOutput.error "Option.Some: Value not yet witnessed"
@@ -46,7 +46,7 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             | Some ssas ->
                 let arch = ctx.Coeffects.Platform.TargetArch
                 let optionType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                match tryMatch (pOptionNone ssas optionType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatch (pOptionNone ssas optionType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some (ops, _) ->
                     { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = optionType } }
                 | None -> WitnessOutput.error "Option.None pattern emission failed"
@@ -56,7 +56,7 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             | [childId], Some ssas when ssas.Length >= 3 ->
                 match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (optSSA, _) ->
-                    match tryMatch (pOptionIsSome optSSA ssas.[0] ssas.[1] ssas.[2]) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pOptionIsSome optSSA ssas.[0] ssas.[1] ssas.[2]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[2]; Type = TInt I1 } }
                     | None -> WitnessOutput.error "Option.isSome pattern emission failed"
                 | None -> WitnessOutput.error "Option.isSome: Option not yet witnessed"
@@ -67,7 +67,7 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             | [childId], Some ssas when ssas.Length >= 3 ->
                 match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (optSSA, _) ->
-                    match tryMatch (pOptionIsNone optSSA ssas.[0] ssas.[1] ssas.[2]) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pOptionIsNone optSSA ssas.[0] ssas.[1] ssas.[2]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[2]; Type = TInt I1 } }
                     | None -> WitnessOutput.error "Option.isNone pattern emission failed"
                 | None -> WitnessOutput.error "Option.isNone: Option not yet witnessed"
@@ -81,7 +81,7 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                     let valueType = match optType with
                                     | TStruct [_; vt] -> vt
                                     | _ -> TPtr
-                    match tryMatch (pOptionGet optSSA resultSSA valueType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pOptionGet optSSA resultSSA valueType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) ->
                         { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = valueType } }
                     | None -> WitnessOutput.error "Option.get pattern emission failed"

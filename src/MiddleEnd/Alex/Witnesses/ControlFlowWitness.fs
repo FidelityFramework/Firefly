@@ -19,7 +19,7 @@ open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.Traversal.PSGZipper
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns
+open Alex.Patterns.ControlFlowPatterns
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SUB-GRAPH COMBINATOR
@@ -73,7 +73,7 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) combinator
 let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     let subGraphCombinator = makeSubGraphCombinator nanopasses
 
-    match tryMatch pIfThenElse ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pIfThenElse ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((condId, thenId, elseIdOpt), _) ->
         match MLIRAccumulator.recallNode condId ctx.Accumulator with
         | None -> WitnessOutput.error "IfThenElse: Condition not yet witnessed"
@@ -81,22 +81,22 @@ let private witnessControlFlowWith (nanopasses: Nanopass list) (ctx: WitnessCont
             let thenOps = witnessBranchScope thenId ctx subGraphCombinator
             let elseOps = elseIdOpt |> Option.map (fun elseId -> witnessBranchScope elseId ctx subGraphCombinator)
 
-            match tryMatch (pBuildIfThenElse condSSA thenOps elseOps) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            match tryMatch (pBuildIfThenElse condSSA thenOps elseOps) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
             | None -> WitnessOutput.error "IfThenElse pattern emission failed"
 
     | None ->
-        match tryMatch pWhileLoop ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+        match tryMatch pWhileLoop ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some ((condId, bodyId), _) ->
             let condOps = witnessBranchScope condId ctx subGraphCombinator
             let bodyOps = witnessBranchScope bodyId ctx subGraphCombinator
 
-            match tryMatch (pBuildWhileLoop condOps bodyOps) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            match tryMatch (pBuildWhileLoop condOps bodyOps) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
             | None -> WitnessOutput.error "WhileLoop pattern emission failed"
 
         | None ->
-            match tryMatch pForLoop ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+            match tryMatch pForLoop ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some ((_, lowerId, upperId, _, bodyId), _) ->
                 match MLIRAccumulator.recallNode lowerId ctx.Accumulator, MLIRAccumulator.recallNode upperId ctx.Accumulator with
                 | Some (lowerSSA, _), Some (upperSSA, _) ->

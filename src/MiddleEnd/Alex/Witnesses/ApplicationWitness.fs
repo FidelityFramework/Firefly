@@ -14,9 +14,10 @@ open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns
 open Alex.Patterns.MemoryPatterns
 open Alex.Patterns.PlatformPatterns
+open Alex.Patterns.ArithmeticPatterns
+open Alex.Patterns.ApplicationPatterns
 open Alex.CodeGeneration.TypeMapping
 
 module SSAAssign = PSGElaboration.SSAAssignment
@@ -38,7 +39,7 @@ let private resolveFunctionNode funcId graph =
 
 /// Witness application nodes - emits function calls
 let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pApplication ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pApplication ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((funcId, argIds), _) ->
         // Resolve actual function node (unwrap TypeAnnotation if present)
         match resolveFunctionNode funcId ctx.Graph with
@@ -68,7 +69,7 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                         // Dispatch based on intrinsic module and operation
                         match info.Module, info.Operation, argSSAs with
                         | IntrinsicModule.NativePtr, "stackalloc", [countSSA] ->
-                            match tryMatch (pNativePtrStackAlloc resultSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                            match tryMatch (pNativePtrStackAlloc resultSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                             | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                             | None -> WitnessOutput.error "NativePtr.stackalloc pattern failed"
 
@@ -87,13 +88,13 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
 
                                 // Allocate temporary SSA for index constant
                                 let indexSSA = SSA.V 999990  // Temporary SSA for index 0
-                                match tryMatch (pNativePtrWrite valueSSA ptrSSA elemType indexSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                                match tryMatch (pNativePtrWrite valueSSA ptrSSA elemType indexSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "NativePtr.write pattern failed"
                             | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"
 
                         | IntrinsicModule.NativePtr, "read", [ptrSSA] ->
-                            match tryMatch (pNativePtrRead resultSSA ptrSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                            match tryMatch (pNativePtrRead resultSSA ptrSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                             | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                             | None -> WitnessOutput.error "NativePtr.read pattern failed"
 
@@ -112,20 +113,20 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                 // Emit call with actual buffer type
                                 // Declaration will be collected and emitted by MLIR Declaration Collection Pass
                                 // Pattern will normalize memref→ptr at FFI boundary if needed
-                                match tryMatch (pSysWriteTyped resultSSA fdSSA bufferSSA bufferType countSSA conversionSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                                match tryMatch (pSysWriteTyped resultSSA fdSSA bufferSSA bufferType countSSA conversionSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "Sys.write pattern failed"
                             | None -> WitnessOutput.error "Sys.write: buffer argument not yet witnessed"
 
                         | IntrinsicModule.Sys, "read", [fdSSA; bufferSSA; countSSA] ->
-                            match tryMatch (pSysRead resultSSA fdSSA bufferSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                            match tryMatch (pSysRead resultSSA fdSSA bufferSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                             | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                             | None -> WitnessOutput.error "Sys.read pattern failed"
 
                         // Binary arithmetic intrinsics (+, -, *, /, %)
                         | IntrinsicModule.Operators, _, [lhsSSA; rhsSSA] ->
                             let arch = ctx.Coeffects.Platform.TargetArch
-                            match tryMatch (pBuildBinaryArith resultSSA lhsSSA rhsSSA arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                            match tryMatch (pBuildBinaryArith resultSSA lhsSSA rhsSSA arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                             | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                             | None -> WitnessOutput.error $"Binary arithmetic pattern failed for {info.Operation}"
 
@@ -185,7 +186,7 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
 
                     // Emit direct function call by name (no declaration coordination)
                     // Declaration will be collected and emitted by MLIR Declaration Collection Pass
-                    match tryMatch (pDirectCall resultSSA funcName args retType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                    match tryMatch (pDirectCall resultSSA funcName args retType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error "Direct function call pattern emission failed"
 
@@ -215,7 +216,7 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                         let retType = mapNativeTypeForArch arch node.Type
 
                         // Emit indirect call
-                        match tryMatch (pApplicationCall resultSSA funcSSA args retType) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                        match tryMatch (pApplicationCall resultSSA funcSSA args retType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                         | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                         | None -> WitnessOutput.error "Application pattern emission failed"
     | None ->

@@ -31,25 +31,41 @@ open PSGElaboration.PlatformConfig
 
 /// Parser state threaded through pattern matching
 ///
-/// PLATFORM-AWARE (January 2026):
-/// Platform info flows through parser state, enabling type resolution
-/// without hard-coded values in witnesses. Use `platformWordType` and
-/// `platformWordBits` for architecture-appropriate types.
+/// UNIFIED STATE ARCHITECTURE (January 2026):
+/// State unification enables pure compositional flow through all three layers.
+/// Everything needed for pattern matching and MLIR emission flows through a single
+/// state structure - no manual parameter passing, no helper functions.
 ///
-/// The `Platform` field contains `PlatformResolutionResult` which has:
-/// - TargetArch: Architecture (X86_64, ARM64, etc.)
-/// - PlatformWordType: MLIRType (already resolved!)
-/// - TargetOS: OSFamily
-/// - RuntimeMode: Freestanding or Console
+/// The Four Pillars (see four_pillars_of_transfer memory):
+/// - Pillar A (Coeffects): Pre-computed mise-en-place (SSA, Platform, Mutability, etc.)
+/// - Pillar B (XParsec & Patterns): Monadic composition via parser { }, let!, <|>
+/// - Pillar C (Zipper): Bidirectional navigation with focus
+/// - Pillar D (Templates): Reusable patterns that elide boilerplate
+///
+/// NO HELPER FUNCTIONS - Only composition:
+/// - Elements compose into Patterns
+/// - Patterns compose into Witnesses
+/// - All composition via `parser { }` CE, `let!` binding, `<|>` choice
+/// - State accessed via `getUserState` inline
 type PSGParserState = {
     Graph: SemanticGraph
     Zipper: PSGZipper
     /// Currently focused node
     Current: SemanticNode
-    /// Platform resolution result (architecture, OS, word type, bindings)
-    /// This is a coeffect - already computed, just look it up
+
+    /// Pillar A: Pre-computed coeffects (mise-en-place, not computation)
+    /// Includes: SSA assignment, Platform, Mutability, Strings, etc.
+    /// This is the photograph that witnesses observe (codata principle)
+    Coeffects: Alex.Traversal.TransferTypes.TransferCoeffects
+
+    /// Accumulator for binding recall and operation collection
+    /// Enables post-order dependency: recall child results to compose parent
+    Accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator
+
+    /// Platform resolution result (DEPRECATED - use Coeffects.Platform instead)
+    /// Kept for backward compatibility during migration
     Platform: PlatformResolutionResult
-    
+
     /// Optional execution trace collector (only enabled for diagnostic runs)
     ExecutionTrace: Alex.Traversal.TransferTypes.TraceCollector option
     /// Current depth in hierarchy (0=Witness, 1=Pattern, 2=Element)
@@ -547,17 +563,21 @@ let pForEach : PSGParser<string * NodeId * NodeId> =
 // RUNNER (create Reader with empty string and custom state)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Run a parser on a node with platform context
-/// Platform info flows through state for type resolution
+/// Run a parser on a node with full context (UNIFIED STATE)
 ///
 /// CRITICAL: Uses Reader.ofString with EMPTY STRING.
 /// PSG parsers don't consume characters - they navigate graph structure.
-let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
-    let state = { 
+///
+/// State unification (January 2026): Coeffects and Accumulator flow through
+/// PSGParserState, enabling pure compositional patterns with no helper functions.
+let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) =
+    let state = {
         Graph = graph
         Zipper = zipper
         Current = node
-        Platform = platform
+        Coeffects = coeffects
+        Accumulator = accumulator
+        Platform = coeffects.Platform  // Backward compatibility - use Coeffects.Platform in new code
         ExecutionTrace = None  // No tracing by default
         CurrentDepth = 0
     }
@@ -565,12 +585,14 @@ let runParser (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode
     parser reader
 
 /// Run parser with execution trace enabled (for diagnostics)
-let runParserWithTrace (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) (traceCollector: Alex.Traversal.TransferTypes.TraceCollector) =
+let runParserWithTrace (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) (traceCollector: Alex.Traversal.TransferTypes.TraceCollector) =
     let state = {
         Graph = graph
         Zipper = zipper
         Current = node
-        Platform = platform
+        Coeffects = coeffects
+        Accumulator = accumulator
+        Platform = coeffects.Platform  // Backward compatibility
         ExecutionTrace = Some traceCollector
         CurrentDepth = 0
     }
@@ -578,31 +600,33 @@ let runParserWithTrace (parser: PSGParser<'T>) (graph: SemanticGraph) (node: Sem
     parser reader
 
 /// Try to match a pattern, returning option
-/// Platform info flows through state for type resolution
-let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
-    match runParser parser graph node zipper platform with
+/// Full context flows through unified state
+let tryMatch (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) =
+    match runParser parser graph node zipper coeffects accumulator with
     | Ok success -> Some (success.Parsed, zipper)
     | Error _ -> None
 
 /// Try to match a pattern with diagnostic error capture
 /// Returns Result with detailed error information on failure
 /// Use this for debugging pattern match failures
-let tryMatchWithDiagnostics (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
-    match runParser parser graph node zipper platform with
+let tryMatchWithDiagnostics (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) =
+    match runParser parser graph node zipper coeffects accumulator with
     | Ok success -> Result.Ok (success.Parsed, zipper)
-    | Error err -> 
+    | Error err ->
         // XParsec error contains position, expected, and messages
         let errorMsg = sprintf "Pattern match failed at position %d. Error: %A" err.Position.Index err
         Result.Error errorMsg
 
 /// Create initial parser state from zipper
-/// Platform must be passed explicitly (coeffect, not part of zipper)
-let stateFromZipper (zipper: PSGZipper) (node: SemanticNode) (platform: PlatformResolutionResult) : PSGParserState =
+/// Coeffects and Accumulator must be passed explicitly (not part of zipper)
+let stateFromZipper (zipper: PSGZipper) (node: SemanticNode) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) : PSGParserState =
     {
         Graph = zipper.Graph
         Zipper = zipper
         Current = node
-        Platform = platform
+        Coeffects = coeffects
+        Accumulator = accumulator
+        Platform = coeffects.Platform  // Backward compatibility
         ExecutionTrace = None
         CurrentDepth = 0
     }
@@ -632,17 +656,17 @@ let ensure (condition: bool) (errorMsg: string) : PSGParser<unit> =
         fail (Message errorMsg)
 
 /// Run a parser using zipper
-/// Platform must be passed explicitly (coeffect, not part of zipper)
-let runParserWithZipper (parser: PSGParser<'T>) (zipper: PSGZipper) (node: SemanticNode) (platform: PlatformResolutionResult) =
-    let state = stateFromZipper zipper node platform
+/// Coeffects and Accumulator must be passed explicitly (not part of zipper)
+let runParserWithZipper (parser: PSGParser<'T>) (zipper: PSGZipper) (node: SemanticNode) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) =
+    let state = stateFromZipper zipper node coeffects accumulator
     let reader = Reader.ofString "" state
     parser reader
 
 /// Try to match with diagnostic trace enabled
 /// Returns Result with trace attached on failure
-let tryMatchWithTrace (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (platform: PlatformResolutionResult) =
+let tryMatchWithTrace (parser: PSGParser<'T>) (graph: SemanticGraph) (node: SemanticNode) (zipper: PSGZipper) (coeffects: Alex.Traversal.TransferTypes.TransferCoeffects) (accumulator: Alex.Traversal.TransferTypes.MLIRAccumulator) =
     let traceCollector = Alex.Traversal.TransferTypes.TraceCollector.create()
-    match runParserWithTrace parser graph node zipper platform traceCollector with
+    match runParserWithTrace parser graph node zipper coeffects accumulator traceCollector with
     | Ok success -> Result.Ok (success.Parsed, zipper, Alex.Traversal.TransferTypes.TraceCollector.toList traceCollector)
     | Error err ->
         let trace = Alex.Traversal.TransferTypes.TraceCollector.toList traceCollector
@@ -674,3 +698,23 @@ let tryMatchWithTrace (parser: PSGParser<'T>) (graph: SemanticGraph) (node: Sema
 //
 // Until this is resolved, ControlFlowWitness, LambdaWitness, and similar witnesses
 // that need sub-graph witnessing remain stubbed.
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PSG STRUCTURAL TRAVERSAL UTILITIES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Traverse Sequential structure to find the last value-producing child.
+/// Sequential nodes are structural scaffolding that organize the PSG tree.
+/// They are NOT witnesses and do not bind results.
+/// This pattern extracts the actual value-producing node from Sequential nesting.
+let rec findLastValueNode nodeId graph =
+    match SemanticGraph.tryGetNode nodeId graph with
+    | Some node ->
+        match node.Kind with
+        | SemanticKind.Sequential childIds ->
+            // Sequential is structural - recursively find last value child
+            match List.tryLast childIds with
+            | Some lastChild -> findLastValueNode lastChild graph
+            | None -> nodeId  // Empty sequential - return self (caller will handle TRVoid)
+        | _ -> nodeId  // Non-Sequential node is the actual value node
+    | None -> nodeId  // Node not found - return original (error will occur downstream)

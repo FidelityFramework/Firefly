@@ -13,7 +13,8 @@ open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns
+open Alex.Patterns.ClosurePatterns
+open Alex.Patterns.ControlFlowPatterns
 
 module SSAAssign = PSGElaboration.SSAAssignment
 
@@ -23,7 +24,7 @@ module SSAAssign = PSGElaboration.SSAAssignment
 
 /// Witness Seq operations - category-selective (handles only Seq nodes)
 let private witnessSeq (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pSeqExpr ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pSeqExpr ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((bodyId, captures), _) ->
         match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
         | None -> WitnessOutput.error "SeqExpr: No SSAs assigned"
@@ -63,19 +64,19 @@ let private witnessSeq (ctx: WitnessContext) (node: SemanticNode) : WitnessOutpu
                 let currentTy = match seqTy with
                                 | TStruct (_::ct::_) -> ct  // {state: i32, current: T, ...}
                                 | _ -> TPtr  // fallback
-                match tryMatch (pBuildSeqStruct currentTy codePtrTy codePtr captureVals internalState ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatch (pBuildSeqStruct currentTy codePtrTy codePtr captureVals internalState ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "SeqExpr pattern emission failed"
 
     | None ->
-        match tryMatch pForEach ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+        match tryMatch pForEach ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some ((_, collectionId, _), _) ->
             match MLIRAccumulator.recallNode collectionId ctx.Accumulator with
             | None -> WitnessOutput.error "ForEach: Collection not yet witnessed"
             | Some (collectionSSA, _) ->
                 let arch = ctx.Coeffects.Platform.TargetArch
                 let bodyOps = []
-                match tryMatch (pBuildForEachLoop collectionSSA bodyOps arch) ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+                match tryMatch (pBuildForEachLoop collectionSSA bodyOps arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "ForEach pattern emission failed"
 

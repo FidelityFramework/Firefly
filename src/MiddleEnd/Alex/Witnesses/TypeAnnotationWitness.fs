@@ -15,7 +15,7 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ElisionPatterns  // For findLastValueNode
+open Alex.XParsec.PSGCombinators  // For findLastValueNode
 
 // ═══════════════════════════════════════════════════════════
 // WITNESS IMPLEMENTATION (XParsec patterns only)
@@ -25,11 +25,11 @@ open Alex.Patterns.ElisionPatterns  // For findLastValueNode
 /// This witness demonstrates proper monadic parser combinator structure
 let private witnessTypeAnnotation (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     // Use XParsec pattern to extract wrapped node ID
-    match tryMatch pTypeAnnotation ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pTypeAnnotation ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((wrappedId, annotatedType), _) ->
         // Traverse Sequential structure to find actual value-producing node
         // Sequential nodes are structural scaffolding - not witnesses
-        let actualValueNode = Alex.Patterns.ElisionPatterns.findLastValueNode wrappedId ctx.Graph
+        let actualValueNode = findLastValueNode wrappedId ctx.Graph
         
         // Recall the actual value node's result from accumulator
         // TypeAnnotation is transparent - it forwards whatever the wrapped node produced

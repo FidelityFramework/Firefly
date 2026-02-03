@@ -22,7 +22,7 @@ open Alex.XParsec.PSGCombinators
 
 /// Witness binding nodes - forwards bound value's SSA
 let private witnessBinding (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match tryMatch pBinding ctx.Graph node ctx.Zipper ctx.Coeffects.Platform with
+    match tryMatch pBinding ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((name, _isMut, _isRec, isEntry), _) ->
         // Binding has one child - the value being bound
         match node.Children with
