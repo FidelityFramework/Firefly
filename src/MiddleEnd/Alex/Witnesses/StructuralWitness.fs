@@ -1,6 +1,6 @@
 /// StructuralWitness - Transparent witness for structural container nodes
 ///
-/// Structural nodes (ModuleDef, Sequential) organize the PSG tree but don't emit MLIR.
+/// Structural nodes (ModuleDef, Sequential, PatternBinding) organize the PSG tree but don't emit MLIR.
 /// They need to be "witnessed" per the Domain Responsibility Principle to avoid coverage gaps.
 ///
 /// NANOPASS: This witness handles ONLY structural container nodes.
@@ -19,6 +19,7 @@ open Alex.Traversal.NanopassArchitecture
 let private witnessStructural (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     match node.Kind with
     | SemanticKind.ModuleDef (moduleName, _) ->
+        printfn "[StructuralWitness] Handling ModuleDef: %s (node %A)" moduleName node.Id
         // Module definition - structural container, children already witnessed
         // Return TRVoid per Domain Responsibility Principle
         { InlineOps = []; TopLevelOps = []; Result = TRVoid }
@@ -26,6 +27,12 @@ let private witnessStructural (ctx: WitnessContext) (node: SemanticNode) : Witne
     | SemanticKind.Sequential _ ->
         // Sequential node - structural container for imperative sequences
         // Children already witnessed in post-order, return TRVoid
+        { InlineOps = []; TopLevelOps = []; Result = TRVoid }
+
+    | SemanticKind.PatternBinding _ ->
+        // Function parameter binding - SSA pre-assigned in coeffects (no MLIR generation)
+        // This is a structural marker (like .NET/F# idiom for argv, destructured params)
+        // VarRef nodes lookup these bindings from coeffects
         { InlineOps = []; TopLevelOps = []; Result = TRVoid }
 
     | _ ->

@@ -65,8 +65,8 @@
       <Compile Include="MiddleEnd/Alex/Traversal/TransferTypes.fs" />
 
       <!-- Alex Traversal - Single-Phase Nanopasses (Post-order traversal with nested accumulators) -->
-      <Compile Include="MiddleEnd/Alex/Traversal/NanopassArchitecture.fs" />
       <Compile Include="MiddleEnd/Alex/Traversal/CoverageValidation.fs" />
+      <Compile Include="MiddleEnd/Alex/Traversal/NanopassArchitecture.fs" />
 
       <!-- Alex CodeGeneration - TypeSizing uses TypeMapping (moved earlier) -->
       <Compile Include="MiddleEnd/Alex/CodeGeneration/TypeSizing.fs" />

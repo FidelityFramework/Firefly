@@ -11,6 +11,7 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.PSGZipper
+open Alex.Traversal.CoverageValidation
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NANOPASS TYPE
@@ -268,6 +269,12 @@ let executeNanopasses
         runAllNanopasses registry.Nanopasses graph coeffects sharedAcc globalVisited
 
         // TODO: Serialize results if intermediatesDir provided
-        // TODO: Coverage validation
+
+        // Coverage validation - ensure all reachable nodes were witnessed
+        let coverageDiagnostics = CoverageValidation.validateCoverage graph !globalVisited
+        if not (List.isEmpty coverageDiagnostics) then
+            // Add coverage errors to accumulator
+            for diag in coverageDiagnostics do
+                MLIRAccumulator.addError diag sharedAcc
 
         sharedAcc

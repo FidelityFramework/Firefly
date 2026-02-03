@@ -64,8 +64,17 @@ let private witnessLambdaWith (nanopasses: Nanopass list) (ctx: WitnessContext) 
             // Create NESTED accumulator for body operations
             // Bindings still go to GLOBAL NodeBindings (shared with parent)
             let bodyAcc = MLIRAccumulator.empty()
-            
-            // Witness body nodes into nested accumulator with GLOBAL visited set
+
+            // FIRST: Visit parameter nodes (PatternBindings) to mark them as witnessed
+            // Parameters are structural (SSA comes from coeffects), but must be visited for coverage
+            for (_, _, paramNodeId) in params' do
+                match SemanticGraph.tryGetNode paramNodeId ctx.Graph with
+                | Some paramNode ->
+                    // Visit parameter with sub-graph combinator (will hit StructuralWitness)
+                    visitAllNodes subGraphCombinator ctx paramNode ctx.Accumulator ctx.GlobalVisited
+                | None -> ()
+
+            // THEN: Witness body nodes into nested accumulator with GLOBAL visited set
             // This prevents duplicate visitation by top-level traversal
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
