@@ -139,7 +139,7 @@ let pConvertType (srcSSA: SSA) (srcType: MLIRType) (dstType: MLIRType) (resultSS
 let pExtractDUTag (duSSA: SSA) (duType: MLIRType) (tagSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         match duType with
-        | TPtr ->
+        | TIndex ->
             // Pointer-based DU: load tag byte from offset 0
             let! loadOp = pLoad tagSSA duSSA []
             return [loadOp]
@@ -248,7 +248,7 @@ let pBuildArray (elements: Val list) (elemType: MLIRType) (ssas: SSA list) : PSG
         let undefSSA = ssas.[ssas.Length - 3]
         let withPtrSSA = ssas.[ssas.Length - 2]
         let resultSSA = ssas.[ssas.Length - 1]
-        let arrayType = TStruct [TPtr; TInt I64]
+        let arrayType = TStruct [TIndex; TInt I64]
 
         let! undefOp = pUndef undefSSA arrayType
         let! insertPtrOp = pInsertValue withPtrSSA undefSSA allocaSSA [0] arrayType
@@ -302,7 +302,7 @@ let pNativePtrStackAlloc (resultSSA: SSA) : PSGParser<MLIROp list * TransferResu
         let! allocaOp = pAlloca resultSSA elemType None
         let memrefTy = TMemRefScalar elemType
 
-        // Return memref type (not TPtr) - conversion to pointer happens at FFI boundary
+        // Return memref type (not TIndex) - conversion to pointer happens at FFI boundary
         return ([allocaOp], TRValue { SSA = resultSSA; Type = memrefTy })
     }
 
@@ -346,7 +346,7 @@ let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) : PSGParser<MLIROp list * Tran
         // Emit memref.load operation
         let! loadOp = pLoad resultSSA ptrSSA []
 
-        return ([loadOp], TRValue { SSA = resultSSA; Type = TPtr })
+        return ([loadOp], TRValue { SSA = resultSSA; Type = TIndex })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -365,11 +365,11 @@ let pStructFieldGet (resultSSA: SSA) (structSSA: SSA) (fieldName: string) (struc
             match fieldName with
             | "Pointer" ->
                 // Extract base pointer from memref descriptor as index, then cast to target type
-                // IMPORTANT: Convert TPtr to platform word type for portable MLIR
+                // IMPORTANT: Convert TIndex to platform word type for portable MLIR
                 let! state = getUserState
                 let targetTy =
                     match fieldTy with
-                    | TPtr -> state.Platform.PlatformWordType  // TPtr → i64/i32 (portable!)
+                    | TIndex -> state.Platform.PlatformWordType  // TIndex → i64/i32 (portable!)
                     | ty -> ty
 
                 match targetTy with

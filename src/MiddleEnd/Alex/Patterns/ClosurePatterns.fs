@@ -149,7 +149,7 @@ let pClosureCall (closureSSA: SSA) (closureTy: MLIRType) (captureTypes: MLIRType
 
         // Extract code_ptr from index 0 (first field is always ptr type)
         let codePtrSSA = extractSSAs.[0]
-        let codePtrTy = match closureTy with TStruct (ty :: _) -> ty | _ -> TPtr
+        let codePtrTy = match closureTy with TStruct (ty :: _) -> ty | _ -> TIndex
         let! extractCodeOp = pExtractValue codePtrSSA closureSSA [0] codePtrTy
 
         // Extract captures from indices 1..captureCount
@@ -198,7 +198,7 @@ let pBuildClosureLambda (name: string) (params': (SSA * MLIRType) list) (retTy: 
                         (ssas: SSA list) : PSGParser<MLIROp list * MLIROp list * SSA> =
     parser {
         // Create function definition (with env_ptr as first parameter for captures)
-        let envPtrParam = Arg 0, TPtr
+        let envPtrParam = Arg 0, TIndex
         let allParams = envPtrParam :: params'
         let! funcDefOp = pFunctionDef name allParams retTy bodyOps true
 
@@ -290,7 +290,7 @@ let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy
         let indexSSA = ssas.[3]
 
         // Extract code_ptr from lazy struct [2] - it's always a ptr type
-        let codePtrTy = TPtr
+        let codePtrTy = TIndex
         let! extractCodePtrOp = pExtractValue codePtrSSA lazySSA [2] codePtrTy
 
         // Alloca space for lazy struct
@@ -303,7 +303,7 @@ let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy
         let! storeOp = pStore lazySSA ptrSSA [indexSSA] lazyTy
 
         // Call thunk with pointer -> result
-        let argVals = [{ SSA = ptrSSA; Type = TPtr }]
+        let argVals = [{ SSA = ptrSSA; Type = TIndex }]
         let! callOp = pFuncCallIndirect (Some resultSSA) codePtrSSA argVals resultTy
 
         return ([extractCodePtrOp; constOneOp; allocaOp; indexOp; storeOp; callOp], TRValue { SSA = resultSSA; Type = resultTy })
@@ -380,7 +380,7 @@ let pSeqMoveNext (seqSSA: SSA) (seqTy: MLIRType) (captureTypes: MLIRType list)
 
         // Extract code_ptr from index 2
         let codePtrSSA = extractSSAs.[1]
-        let codePtrTy = TPtr
+        let codePtrTy = TIndex
         let! extractCodeOp = pExtractValue codePtrSSA seqSSA [2] codePtrTy
 
         // Extract captures from indices 3..3+captureCount

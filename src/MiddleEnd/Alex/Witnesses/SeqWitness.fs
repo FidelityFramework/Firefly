@@ -63,7 +63,7 @@ let private witnessSeq (ctx: WitnessContext) (node: SemanticNode) : WitnessOutpu
                 let seqTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
                 let currentTy = match seqTy with
                                 | TStruct (_::ct::_) -> ct  // {state: i32, current: T, ...}
-                                | _ -> TPtr  // fallback
+                                | _ -> TIndex  // fallback
                 match tryMatch (pBuildSeqStruct currentTy codePtrTy codePtr captureVals internalState ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "SeqExpr pattern emission failed"

@@ -104,46 +104,46 @@ let rec private mapCaptureType (arch: Architecture) (ty: NativeType) : MLIRType 
         | TypeLayout.PlatformWord, None -> TInt wordWidth  // Platform word resolved per architecture
         // Pointers
         | TypeLayout.PlatformWord, Some NTUKind.NTUptr
-        | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TPtr
-        | _, Some NTUKind.NTUptr -> TPtr
+        | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TIndex
+        | _, Some NTUKind.NTUptr -> TIndex
         // Floats
         | _, Some NTUKind.NTUfloat32 -> TFloat F32
         | _, Some NTUKind.NTUfloat64 -> TFloat F64
         // Char (Unicode codepoint)
         | _, Some NTUKind.NTUchar -> TInt I32
         // String (fat pointer)
-        | TypeLayout.FatPointer, Some NTUKind.NTUstring -> TStruct [TPtr; TInt I64]
+        | TypeLayout.FatPointer, Some NTUKind.NTUstring -> TStruct [TIndex; TInt I64]
         // SECOND: Name-based fallback for types without proper NTU metadata
         | _ ->
             match tycon.Name with
-            | "Ptr" | "nativeptr" | "byref" | "inref" | "outref" -> TPtr
-            | "array" -> TStruct [TPtr; TInt I64]  // Fat pointer
+            | "Ptr" | "nativeptr" | "byref" | "inref" | "outref" -> TIndex
+            | "array" -> TStruct [TIndex; TInt I64]  // Fat pointer
             | "option" | "voption" ->
                 match args with
                 | [innerTy] -> TStruct [TInt I1; mapCaptureType arch innerTy]
-                | _ -> TPtr  // Fallback
+                | _ -> TIndex  // Fallback
             | _ ->
                 // Records, DUs, unknown types - check if has fields or treat as pointer
                 if tycon.FieldCount > 0 then
-                    TPtr  // Records are passed by pointer
+                    TIndex  // Records are passed by pointer
                 else
-                    TPtr  // Fallback for other cases
-    | NativeType.TFun _ -> TStruct [TPtr; TPtr]  // Function = closure struct
+                    TIndex  // Fallback for other cases
+    | NativeType.TFun _ -> TStruct [TIndex; TIndex]  // Function = closure struct
     | NativeType.TTuple (elements, _) ->
         TStruct (elements |> List.map (mapCaptureType arch))
     | NativeType.TVar tvar ->
         // Resolve type variable using Union-Find
         match find tvar with
         | (_, Some boundTy) -> mapCaptureType arch boundTy
-        | (_, None) -> TPtr  // Unbound type variable - assume pointer-sized
-    | NativeType.TByref _ -> TPtr
-    | _ -> TPtr  // Fallback for other cases
+        | (_, None) -> TIndex  // Unbound type variable - assume pointer-sized
+    | NativeType.TByref _ -> TIndex
+    | _ -> TIndex  // Fallback for other cases
 
 /// Compute the MLIR type for a capture slot based on capture mode
 let private captureSlotType (arch: Architecture) (capture: CaptureInfo) : MLIRType =
     if capture.IsMutable then
         // Mutable capture: store pointer to the alloca
-        TPtr
+        TIndex
     else
         // Immutable capture: store the value directly
         mapCaptureType arch capture.Type
@@ -223,7 +223,7 @@ let private buildClosureLayout
     // Captures are inlined directly, not via env_ptr indirection
     // This eliminates lifetime issues - closure is returned by value with all state inline
     let captureTypes = captures |> List.map (captureSlotType arch)
-    let closureStructType = TStruct (TPtr :: captureTypes)
+    let closureStructType = TStruct (TIndex :: captureTypes)
 
     // PRD-14 Option B: For lazy thunks, compute the FULL lazy struct type
     // {computed: i1, value: T, code_ptr: ptr, cap0, cap1, ...}
@@ -236,7 +236,7 @@ let private buildClosureLayout
             | Some bodyNode ->
                 let elementType = mapCaptureType arch bodyNode.Type
                 // Lazy struct: {i1, T, ptr, cap0, cap1, ...}
-                Some (TStruct ([TInt I1; elementType; TPtr] @ captureTypes))
+                Some (TStruct ([TInt I1; elementType; TIndex] @ captureTypes))
             | None ->
                 failwithf "LazyThunk Lambda body node %d not found" (NodeId.value bodyNodeId)
         | _ -> None
@@ -1457,7 +1457,7 @@ let getActualFunctionReturnType (arch: Architecture) (graph: SemanticGraph) (def
                     let captureTypes = captures |> List.map (captureSlotType arch)
 
                     // Build the actual lazy struct type with captures inlined
-                    let actualLazyType = TStruct (TInt I1 :: elemMlir :: TPtr :: captureTypes)
+                    let actualLazyType = TStruct (TInt I1 :: elemMlir :: TIndex :: captureTypes)
                     Some actualLazyType
 
                 // PRD-15: Sequence expressions with captures and/or internal state
@@ -1485,7 +1485,7 @@ let getActualFunctionReturnType (arch: Architecture) (graph: SemanticGraph) (def
 
                         // Build the actual seq struct type with captures + internal state inlined
                         // Layout: {state: i32, current: T, code_ptr: ptr, cap0..., state0...}
-                        let actualSeqType = TStruct (TInt I32 :: elemMlir :: TPtr :: captureTypes @ internalStateTypes)
+                        let actualSeqType = TStruct (TInt I32 :: elemMlir :: TIndex :: captureTypes @ internalStateTypes)
                         Some actualSeqType
 
                 | _ -> None

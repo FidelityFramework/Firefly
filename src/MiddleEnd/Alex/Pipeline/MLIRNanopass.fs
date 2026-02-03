@@ -103,7 +103,7 @@ let ffiConversionPass (ctx: MLIRTransformContext) : MLIROp list =
             // Insert conversion: memref → pointer
             let ptrSSA = MLIRTransformContext.freshSSA ctx
             let convOp = MLIROp.MemRefOp (MemRefOp.ExtractBasePtr (ptrSSA, arg.SSA, arg.Type))
-            ({ SSA = ptrSSA; Type = TPtr }, Some convOp)
+            ({ SSA = ptrSSA; Type = TIndex }, Some convOp)
         | _ -> (arg, None)  // Non-memref args pass through unchanged
 
     /// Transform a single operation (recursively)

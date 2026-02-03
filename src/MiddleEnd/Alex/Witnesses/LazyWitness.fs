@@ -43,7 +43,7 @@ let private witnessLazy (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
                 let lazyTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
                 let valueTy = match lazyTy with
                               | TStruct (_::vt::_) -> vt  // {computed: i1, value: T, ...}
-                              | _ -> TPtr  // fallback
+                              | _ -> TIndex  // fallback
                 match tryMatch (pBuildLazyStruct valueTy codePtrTy codePtr captures ssas arch) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                 | None -> WitnessOutput.error "LazyExpr pattern emission failed"

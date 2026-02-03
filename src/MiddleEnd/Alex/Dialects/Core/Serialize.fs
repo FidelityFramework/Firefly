@@ -31,7 +31,6 @@ let rec typeToString (ty: MLIRType) : string =
     match ty with
     | TInt width -> intWidthToString width
     | TFloat width -> floatWidthToString width
-    | TPtr -> "!llvm.ptr"
     | TStruct fields ->
         let fieldStrs = fields |> List.map typeToString |> String.concat ", "
         sprintf "!llvm.struct<(%s)>" fieldStrs

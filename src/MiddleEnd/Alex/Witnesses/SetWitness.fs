@@ -42,7 +42,7 @@ let private witnessSet (ctx: WitnessContext) (node: SemanticNode) : WitnessOutpu
             | None -> WitnessOutput.error "Set.empty: No SSA assigned"
             | Some resultSSA ->
                 let arch = ctx.Coeffects.Platform.TargetArch
-                let codePtrTy = TPtr
+                let codePtrTy = TIndex
                 match tryMatch (pFlatClosure resultSSA codePtrTy [] [resultSSA]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some (ops, _) ->
                     let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type

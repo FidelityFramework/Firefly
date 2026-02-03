@@ -27,7 +27,6 @@ let rec mlirTypeSize (ty: MLIRType) : int =
     | TInt I64 -> 8
     | TFloat F32 -> 4
     | TFloat F64 -> 8
-    | TPtr -> 8  // 64-bit platform
     | TStruct fields -> fields |> List.sumBy mlirTypeSize
     | TArray (count, elemTy) -> count * mlirTypeSize elemTy
     | TFunc _ -> 16  // Function pointer + closure = 2 words
@@ -44,7 +43,7 @@ let maxPayloadBytes (ty1: MLIRType) (ty2: MLIRType) : int =
     max (mlirTypeSize ty1) (mlirTypeSize ty2)
 
 /// Architecture-aware type size computation
-/// Uses platform word width for pointer-sized types (TPtr, TIndex, memrefs)
+/// Uses platform word width for pointer-sized types (TIndex, TIndex, memrefs)
 let rec mlirTypeSizeForArch (arch: Architecture) (ty: MLIRType) : int =
     let wordBytes =
         match platformWordWidth arch with
@@ -59,7 +58,6 @@ let rec mlirTypeSizeForArch (arch: Architecture) (ty: MLIRType) : int =
     | TInt I64 -> 8
     | TFloat F32 -> 4
     | TFloat F64 -> 8
-    | TPtr -> wordBytes              // Platform-sized
     | TIndex -> wordBytes            // Platform-sized
     | TStruct fields -> fields |> List.sumBy (mlirTypeSizeForArch arch)
     | TArray (count, elemTy) -> count * mlirTypeSizeForArch arch elemTy
@@ -112,7 +110,7 @@ let mapNTUKindToMLIRType (arch: Architecture) (kind: NTUKind) : MLIRType =
     // Unit
     | NTUKind.NTUunit -> TInt I32  // Unit represented as i32 0
     // Pointers
-    | NTUKind.NTUptr | NTUKind.NTUfnptr -> TPtr
+    | NTUKind.NTUptr | NTUKind.NTUfnptr -> TIndex
     // String as memref (portable MLIR type, not LLVM struct)
     // memref<?xi8> represents a dynamic-sized buffer with length tracked in descriptor
     | NTUKind.NTUstring -> TMemRef (TInt I8)
@@ -165,8 +163,8 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
         | TypeLayout.PlatformWord, None -> TInt wordWidth  // Platform word resolved per architecture
         // Pointers
         | TypeLayout.PlatformWord, Some NTUKind.NTUptr
-        | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TPtr
-        | _, Some NTUKind.NTUptr -> TPtr
+        | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TIndex
+        | _, Some NTUKind.NTUptr -> TIndex
         // Floats
         | _, Some NTUKind.NTUfloat32 -> TFloat F32
         | _, Some NTUKind.NTUfloat64 -> TFloat F64
@@ -182,8 +180,8 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
         | _ ->
             match tycon.Name with
             // Byref types: all variants map to pointers
-            | "byref" | "inref" | "outref" -> TPtr
-            | "Ptr" | "nativeptr" -> TPtr
+            | "byref" | "inref" | "outref" -> TIndex
+            | "Ptr" | "nativeptr" -> TIndex
             | "option" ->
                 // Option is a DU with 2 cases (None, Some) - tag must be i8, not i1
                 // DU tags are ALWAYS i8 (or i16 for >256 cases), never boolean
@@ -198,10 +196,10 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
             | "result" ->
                 // Result<'T, 'E> is a pointer to arena-allocated case-specific storage
                 // Per architecture: "DU values are pointers"
-                TPtr
+                TIndex
             | "list" ->
                 // PRD-13a: list<'T> is a pointer to cons cell (linked list)
-                TPtr
+                TIndex
             | "array" | "Array" ->
                 // Array<T>: Following string migration pattern - use memref descriptor (ptr + len implicit)
                 // Phase 2: memref<?xT> represents array with runtime length
@@ -247,7 +245,7 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
                     | TypeLayout.NTUCompound n ->
                         // Arena<'lifetime> and similar compound types: N platform words
                         // Phase 2: Use memref array for multiple pointer fields (homogeneous)
-                        if n = 1 then TPtr
+                        if n = 1 then TIndex
                         else TMemRefStatic (n, TIndex)  // Array of N indices (portable)
                     | TypeLayout.Inline _ ->
                         failwithf "Unknown inline type '%s' with no fields" tycon.Name
@@ -255,7 +253,7 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
     | NativeType.TFun _ ->
         // Closures: {codePtr: ptr, envPtr: ptr} - homogeneous, use memref array
         // Phase 2: Memref-backed pattern - array of 2 indices (portable, platform-sized)
-        // Use TIndex (not TPtr) because !llvm.ptr can't be memref element type
+        // Use TIndex (not TIndex) because !llvm.ptr can't be memref element type
         TMemRefStatic (2, TIndex)
 
     | NativeType.TTuple(elements, _) ->
@@ -271,8 +269,8 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
         | (root, None) ->
             failwithf "Unbound type variable '%s' - type inference incomplete" root.Name
 
-    | NativeType.TByref _ -> TPtr
-    | NativeType.TNativePtr _ -> TPtr
+    | NativeType.TByref _ -> TIndex
+    | NativeType.TNativePtr _ -> TIndex
     | NativeType.TForall(_, body) -> mapNativeTypeForArch arch body
 
     // PRD-14: Lazy<T> - FLAT CLOSURE: { computed: i1, value: T, code_ptr: ptr }
@@ -280,7 +278,7 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
     | NativeType.TLazy elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
         // Base layout: i1 + T + ptr - convert to byte-level memref
-        let totalSize = mlirTypeSizeForArch arch (TInt I1) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch TPtr
+        let totalSize = mlirTypeSizeForArch arch (TInt I1) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch TIndex
         TMemRefStatic (totalSize, TInt I8)
 
     // PRD-15: Seq<T> - FLAT CLOSURE: { state: i32, current: T, moveNext_ptr: ptr }
@@ -288,7 +286,7 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
     | NativeType.TSeq elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
         // Base layout: i32 + T + ptr - convert to byte-level memref
-        let totalSize = mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch TPtr
+        let totalSize = mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch TIndex
         TMemRefStatic (totalSize, TInt I8)
 
     // PRD-15/16: SeqEnumerator<T> - mutable iteration state over a seq
@@ -296,13 +294,13 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
     | NativeType.TSeqEnumerator elemTy ->
         let elemMlir = mapNativeTypeForArch arch elemTy
         // Layout: ptr + i32 + T + i1 - convert to byte-level memref
-        let totalSize = mlirTypeSizeForArch arch TPtr + mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch (TInt I1)
+        let totalSize = mlirTypeSizeForArch arch TIndex + mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch elemMlir + mlirTypeSizeForArch arch (TInt I1)
         TMemRefStatic (totalSize, TInt I8)
 
     // PRD-13a: Immutable collection types - all are reference types (pointer to nodes)
-    | NativeType.TList _ -> TPtr  // Pointer to cons cell
-    | NativeType.TMap _ -> TPtr   // Pointer to tree root
-    | NativeType.TSet _ -> TPtr   // Pointer to tree root
+    | NativeType.TList _ -> TIndex  // Pointer to cons cell
+    | NativeType.TMap _ -> TIndex   // Pointer to tree root
+    | NativeType.TSet _ -> TIndex   // Pointer to tree root
 
     // Named records are TApp with FieldCount > 0 - handled in TApp case above
 
@@ -376,7 +374,7 @@ let calculateFieldOffsetForArch (arch: Architecture) (nativeType: NativeType) (f
         |> List.sum
 
     | NativeType.TLazy elemTy ->
-        // Layout: evaluated (I1) | value (elemTy) | thunk (TPtr)
+        // Layout: evaluated (I1) | value (elemTy) | thunk (TIndex)
         match fieldIndex with
         | 0 -> 0  // evaluated flag
         | 1 -> mlirTypeSizeForArch arch (TInt I1)  // value after flag
@@ -384,7 +382,7 @@ let calculateFieldOffsetForArch (arch: Architecture) (nativeType: NativeType) (f
         | _ -> failwith $"Invalid field index {fieldIndex} for TLazy"
 
     | NativeType.TSeq elemTy ->
-        // Layout: state (I32) | current (elemTy) | moveNext (TPtr)
+        // Layout: state (I32) | current (elemTy) | moveNext (TIndex)
         match fieldIndex with
         | 0 -> 0  // state
         | 1 -> mlirTypeSizeForArch arch (TInt I32)  // current after state
@@ -392,12 +390,12 @@ let calculateFieldOffsetForArch (arch: Architecture) (nativeType: NativeType) (f
         | _ -> failwith $"Invalid field index {fieldIndex} for TSeq"
 
     | NativeType.TSeqEnumerator elemTy ->
-        // Layout: source (TPtr) | index (I32) | current (elemTy) | hasValue (I1)
+        // Layout: source (TIndex) | index (I32) | current (elemTy) | hasValue (I1)
         match fieldIndex with
         | 0 -> 0  // source
-        | 1 -> mlirTypeSizeForArch arch TPtr  // index after source
-        | 2 -> mlirTypeSizeForArch arch TPtr + mlirTypeSizeForArch arch (TInt I32)  // current after index
-        | 3 -> mlirTypeSizeForArch arch TPtr + mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch (mapNativeTypeForArch arch elemTy)  // hasValue after current
+        | 1 -> mlirTypeSizeForArch arch TIndex  // index after source
+        | 2 -> mlirTypeSizeForArch arch TIndex + mlirTypeSizeForArch arch (TInt I32)  // current after index
+        | 3 -> mlirTypeSizeForArch arch TIndex + mlirTypeSizeForArch arch (TInt I32) + mlirTypeSizeForArch arch (mapNativeTypeForArch arch elemTy)  // hasValue after current
         | _ -> failwith $"Invalid field index {fieldIndex} for TSeqEnumerator"
 
     | NativeType.TUnion (_, cases) ->
@@ -411,17 +409,17 @@ let calculateFieldOffsetForArch (arch: Architecture) (nativeType: NativeType) (f
         | _ -> failwith $"Invalid field index {fieldIndex} for TUnion"
 
     | NativeType.TApp ({ Name = name }, _) when name = "Closure" || name = "FunctionPointer" ->
-        // Layout: codePtr (TPtr) | closure (TPtr)
+        // Layout: codePtr (TIndex) | closure (TIndex)
         match fieldIndex with
         | 0 -> 0  // codePtr
-        | 1 -> mlirTypeSizeForArch arch TPtr  // closure after codePtr
+        | 1 -> mlirTypeSizeForArch arch TIndex  // closure after codePtr
         | _ -> failwith $"Invalid field index {fieldIndex} for {name}"
 
     | NativeType.TFun _ ->
         // TFun is closures: {codePtr, envPtr} - same as Closure
         match fieldIndex with
         | 0 -> 0  // codePtr
-        | 1 -> mlirTypeSizeForArch arch TPtr  // envPtr after codePtr
+        | 1 -> mlirTypeSizeForArch arch TIndex  // envPtr after codePtr
         | _ -> failwith $"Invalid field index {fieldIndex} for TFun"
 
     | _ -> failwith $"Cannot calculate field offset for type {nativeType} - not a struct type"
@@ -467,7 +465,7 @@ let rec mapNativeTypeWithGraphForArch (arch: Architecture) (graph: SemanticGraph
     // PRD-14: Lazy<T> - FLAT CLOSURE, need recursive mapping in case T is a record
     | NativeType.TLazy elemTy ->
         let elemMlir = mapNativeTypeWithGraphForArch arch graph elemTy
-        TStruct [TInt I1; elemMlir; TPtr]  // Flat: just code_ptr, captures added at witness
+        TStruct [TInt I1; elemMlir; TIndex]  // Flat: just code_ptr, captures added at witness
     | _ ->
         // Non-record types: use standard mapping with architecture
         mapNativeTypeForArch arch ty
@@ -554,9 +552,9 @@ let isFloat (mlirType: string) : bool =
     | "f32" | "f64" -> true
     | _ -> false
 
-/// Check if a type is a pointer type
-let isPointer (mlirType: string) : bool =
-    mlirType = "!llvm.ptr" || mlirType.StartsWith("!llvm.ptr")
+/// Check if a type is an index type (platform-sized pointer/address)
+let isIndex (mlirType: string) : bool =
+    mlirType = "index"
 
 /// Get the bit width of an integer type
 let integerBitWidth (mlirType: string) : int option =

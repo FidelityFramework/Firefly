@@ -40,9 +40,8 @@ let rec computeSize (mlirType: string) : int64 =
     | "f32" -> 4L
     | "f64" -> 8L
 
-    // Pointers - platform word size
-    | "!llvm.ptr" -> wordSize
-    | s when s.StartsWith("!llvm.ptr<") -> wordSize
+    // Index type - platform word size (portable pointer/address)
+    | "index" -> wordSize
 
     // Unit/void - zero size
     | "()" -> 0L

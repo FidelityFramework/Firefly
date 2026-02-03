@@ -29,7 +29,6 @@ type FloatWidth =
 type MLIRType =
     | TInt of IntWidth
     | TFloat of FloatWidth
-    | TPtr                                  // Opaque pointer (!llvm.ptr)
     | TStruct of MLIRType list              // Struct type
     | TArray of int * MLIRType              // Fixed-size array
     | TFunc of MLIRType list * MLIRType     // Function type (args, return)

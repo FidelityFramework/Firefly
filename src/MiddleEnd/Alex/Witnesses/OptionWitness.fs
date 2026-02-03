@@ -80,7 +80,7 @@ let private witnessOption (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                 | Some (optSSA, optType) ->
                     let valueType = match optType with
                                     | TStruct [_; vt] -> vt
-                                    | _ -> TPtr
+                                    | _ -> TIndex
                     match tryMatch (pOptionGet optSSA resultSSA valueType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some (ops, _) ->
                         { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = valueType } }

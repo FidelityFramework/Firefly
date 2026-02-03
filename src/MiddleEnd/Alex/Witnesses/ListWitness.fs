@@ -28,7 +28,7 @@ let private witnessEmpty (ctx: WitnessContext) (node: SemanticNode) : WitnessOut
     | Some resultSSA ->
         let arch = ctx.Coeffects.Platform.TargetArch
         let codePtr = resultSSA
-        let codePtrTy = TPtr
+        let codePtrTy = TIndex
         match tryMatch (pFlatClosure codePtr codePtrTy [] [resultSSA]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some (ops, _) ->
             let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
@@ -86,7 +86,7 @@ let private witnessCons (ctx: WitnessContext) (node: SemanticNode) : WitnessOutp
         else
             let arch = ctx.Coeffects.Platform.TargetArch
             let codePtr = ssas.[0]
-            let codePtrTy = TPtr
+            let codePtrTy = TIndex
             match tryMatch (pFlatClosure codePtr codePtrTy childVals ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some (ops, _) ->
                 let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
