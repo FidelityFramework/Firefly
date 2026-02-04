@@ -91,11 +91,13 @@ let mapNTUKindToMLIRType (arch: Architecture) (kind: NTUKind) : MLIRType =
     // Platform-word integers - size depends on architecture
     | NTUKind.NTUint      // F# int (platform word)
     | NTUKind.NTUuint     // F# uint (platform word)
-    | NTUKind.NTUnint     // nativeint
+        -> TInt wordWidth
+    // Native pointer-sized types - map to MLIR index for memref operations
+    | NTUKind.NTUnint     // nativeint - used for buffer sizes/offsets
     | NTUKind.NTUunint    // unativeint
     | NTUKind.NTUsize     // size_t
     | NTUKind.NTUdiff     // ptrdiff_t
-        -> TInt wordWidth
+        -> TIndex
     // Floating point
     | NTUKind.NTUfloat32 -> TFloat F32
     | NTUKind.NTUfloat64 -> TFloat F64
@@ -148,15 +150,16 @@ let rec mapNativeTypeForArch (arch: Architecture) (ty: NativeType) : MLIRType =
         | _, Some NTUKind.NTUuint32 -> TInt I32
         | _, Some NTUKind.NTUint64 -> TInt I64
         | _, Some NTUKind.NTUuint64 -> TInt I64
-        // Platform-word integers (int, uint, nativeint, size_t, ptrdiff_t)
-        // Size depends on target architecture via platformWordWidth coeffect
+        // Platform-word integers (int, uint) - size depends on architecture
         | TypeLayout.PlatformWord, Some NTUKind.NTUint
         | TypeLayout.PlatformWord, Some NTUKind.NTUuint
+        | TypeLayout.PlatformWord, None -> TInt wordWidth  // Platform word resolved per architecture
+        // Native pointer-sized types (nativeint, size_t, etc.) - map to index for memref
         | TypeLayout.PlatformWord, Some NTUKind.NTUnint
         | TypeLayout.PlatformWord, Some NTUKind.NTUunint
         | TypeLayout.PlatformWord, Some NTUKind.NTUsize
         | TypeLayout.PlatformWord, Some NTUKind.NTUdiff
-        | TypeLayout.PlatformWord, None -> TInt wordWidth  // Platform word resolved per architecture
+            -> TIndex
         // Pointers
         | TypeLayout.PlatformWord, Some NTUKind.NTUptr
         | TypeLayout.PlatformWord, Some NTUKind.NTUfnptr -> TIndex

@@ -4,103 +4,101 @@
 
 ## 1. Executive Summary
 
-This sample introduces deterministic memory management through arena allocation. User input is read into an arena-backed buffer, demonstrating that dynamic allocation in Fidelity is explicit, scoped, and has predictable lifetime.
+This sample introduces deterministic memory management through arena allocation using MLIR memref semantics. String interpolation triggers runtime-sized allocation, demonstrating that dynamic strings in Fidelity use memref operations with explicit lifetime management.
 
-**Key Achievement**: Established the `Arena<'lifetime>` intrinsic type and byref parameter passing pattern for in-place allocation.
+**Key Achievement**: Established memref-based string operations (concat, length) with runtime-sized allocation via memref.alloc.
 
 ---
 
 ## 2. Surface Feature
 
 ```fsharp
-module HelloWorld
+module Examples.HelloWorldSaturated
 
-let arena = Arena.create<'a> 1024
-let name = Console.readlnFrom &arena
-Console.writeln $"Hello, {name}!"
+let hello() =
+    Console.write "Enter your name: "
+    let name = Console.readln()
+    Console.writeln $"Hello, {name}!"
 ```
 
 **Expected Behavior**:
-1. Prompt user for name
-2. Read input into arena-allocated buffer
-3. Print personalized greeting
+1. Print prompt (static string)
+2. Read input (dynamic memref allocation)
+3. Concatenate strings (runtime-sized memref.alloc)
+4. Print greeting
 
 ---
 
 ## 3. Infrastructure Contributions
 
-### 3.1 Arena Type
+### 3.1 Strings as Memrefs
 
-The `Arena<'lifetime>` type is an FNCS intrinsic representing a bump allocator:
+In MLIR memref semantics, strings **ARE** memrefs:
 
 ```
-Arena Structure
-┌─────────────────────────────────────┐
-│ base: i8*   (allocation base)      │
-│ offset: i64 (current bump pointer) │
-│ size: i64   (total capacity)       │
-└─────────────────────────────────────┘
+Static string literal:     memref<13 x i8>   (e.g., "Hello, World!")
+Dynamic string (readln):   memref<?x i8>     (runtime-sized)
+Concatenation result:      memref<?x i8>     (len1 + len2, computed at runtime)
 ```
 
-**Key Properties**:
-- Stack-allocated (the arena control struct)
-- Bump allocation within (O(1) allocate, no free)
-- Lifetime parameter tracks escape
-- NTUKind: `NTUKind.Arena`
+**No fat pointers. No control structs. Just memrefs.**
 
-### 3.2 Arena.create Intrinsic
+### 3.2 String.Length
 
 ```fsharp
-// In FNCS CheckExpressions.fs
-| "Arena.create" ->
-    // unit -> Arena<'lifetime>
-    NativeType.TFun(env.Globals.UnitType, NativeType.TArena(lifetime))
+// F# signature
+String.Length : string -> int
 ```
 
-Creates a stack-allocated arena with specified byte capacity.
+**MLIR implementation**:
+```mlir
+%len_index = memref.dim %str, %c0 : memref<?xi8>  // Returns index type
+%len_int = index.casts %len_index : index to i64   // Cast to platform int for F#
+```
 
-### 3.3 byref Parameters
+**Key point**: `memref.dim` returns `index` type. Cast to platform int at F# boundary.
 
-The `&arena` syntax passes the arena by reference, enabling in-place modification:
+### 3.3 String.concat2
 
 ```fsharp
-Console.readlnFrom : byref<Arena<'a>> -> string
+// Desugared from: $"Hello, {name}!"
+String.concat2 "Hello, " name
 ```
 
-**Representation**:
-- `byref<T>` is a native pointer to T
-- Enables mutation without copying
-- Unifies with F#'s byref semantics
+**MLIR implementation**:
+```mlir
+// Get lengths (index type)
+%c0 = arith.constant 0 : index
+%len1 = memref.dim %str1, %c0 : memref<?xi8>
+%len2 = memref.dim %str2, %c0 : memref<?xi8>
 
-### 3.4 Console.readlnFrom Intrinsic
+// Compute combined length (index arithmetic)
+%total_len = arith.addi %len1, %len2 : index
 
-Reads a line from stdin, allocating the result in the provided arena:
+// Allocate result (heap for now, arena later)
+%result = memref.alloc(%total_len) : memref<?xi8>
+
+// Copy both strings (FFI to libc memcpy)
+%dest1 = memref.extract_aligned_pointer_as_index %result : memref<?xi8> -> index
+%src1 = memref.extract_aligned_pointer_as_index %str1 : memref<?xi8> -> index
+call @memcpy(%dest1, %src1, %len1)
+
+%offset = arith.addi %dest1, %len1 : index
+%src2 = memref.extract_aligned_pointer_as_index %str2 : memref<?xi8> -> index
+call @memcpy(%offset, %src2, %len2)
+```
+
+**Critical**: All size arithmetic in `index` type, NOT i64.
+
+### 3.4 Console Intrinsics
 
 ```fsharp
-| "Console.readlnFrom" ->
-    // byref<Arena<'a>> -> string
-    NativeType.TFun(
-        NativeType.TByRef(NativeType.TArena(lifetime)),
-        env.Globals.StringType
-    )
+Console.readln : unit -> string              // Returns memref<?xi8>
+Console.write  : string -> unit              // Takes memref<?xi8>
+Console.writeln: string -> unit              // Takes memref<?xi8>
 ```
 
-**Implementation**:
-1. Read bytes from stdin into temporary buffer
-2. Bump-allocate string storage from arena
-3. Copy bytes to arena storage
-4. Return fat pointer to arena-allocated string
-
-### 3.5 String Interpolation
-
-The `$"Hello, {name}!"` syntax lowers to concatenation intrinsics:
-
-```fsharp
-// Desugared form
-String.concat ["Hello, "; name; "!"]
-```
-
-No runtime formatting - purely compile-time string building.
+All operate on memrefs directly. No marshaling, no fat pointers.
 
 ---
 
@@ -108,17 +106,21 @@ No runtime formatting - purely compile-time string building.
 
 ```
 PSG Structure
-├── ModuleOrNamespace: HelloWorld
-│   └── StatementSequence
-│       ├── LetBinding: arena
-│       │   └── Application: Arena.create (Intrinsic)
-│       ├── LetBinding: name
-│       │   └── Application: Console.readlnFrom (Intrinsic)
-│       │       └── AddressOf: arena
-│       └── Application: Console.writeln
-│           └── InterpolatedString
-│               └── [literal, name, literal]
+├── ModuleOrNamespace: Examples.HelloWorldSaturated
+│   └── Binding: hello
+│       └── Lambda
+│           ├── Application: Console.write
+│           │   └── Literal: "Enter your name: "
+│           ├── Binding: name
+│           │   └── Application: Console.readln
+│           └── Application: Console.writeln
+│               └── Application: String.concat2
+│                   ├── Literal: "Hello, "
+│                   ├── VarRef: name
+│                   └── Literal: "!"
 ```
+
+Baker decomposes `String.concat2` into length extraction + memref.alloc + memcpy operations.
 
 ---
 
@@ -126,10 +128,10 @@ PSG Structure
 
 | Coeffect | Purpose |
 |----------|---------|
-| NodeSSAAllocation | SSA assignments for let bindings |
-| ArenaAffinity | Track which arena each allocation uses |
+| SSAAssignment | SSA values for all sub-expressions |
+| PlatformArch | Target architecture (affects int size, NOT index) |
 
-The ArenaAffinity coeffect enables the compiler to verify that allocated values don't escape their arena's lifetime.
+**No ArenaAffinity** - that's future work (A-04: Regions).
 
 ---
 
@@ -137,23 +139,23 @@ The ArenaAffinity coeffect enables the compiler to verify that allocated values 
 
 ```
 Stack Frame
-┌─────────────────────────────────────┐
-│ arena: Arena<'a>                   │
-│   ├── base: ptr to 1024-byte block │
-│   ├── offset: 0 initially          │
-│   └── size: 1024                   │
-├─────────────────────────────────────┤
-│ name: string (fat pointer)         │
-│   ├── ptr: points into arena       │
-│   └── len: input length            │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ name: memref<?xi8> descriptor           │
+│   (points to heap-allocated buffer)      │
+└──────────────────────────────────────────┘
 
-Arena Memory Block (1024 bytes)
-┌─────────────────────────────────────┐
-│ "John\n\0" (user input + null)     │
-│ [remaining space...]               │
-└─────────────────────────────────────┘
+Heap Memory (via memref.alloc)
+┌──────────────────────────────────────────┐
+│ "World\n" (user input, 6 bytes)         │
+└──────────────────────────────────────────┘
+
+Result of String.concat2
+┌──────────────────────────────────────────┐
+│ "Hello, World!\n!" (15 bytes)           │
+└──────────────────────────────────────────┘
 ```
+
+**Memref descriptors live on stack. Buffers allocated on heap (for now).**
 
 ---
 
@@ -161,60 +163,135 @@ Arena Memory Block (1024 bytes)
 
 ```mlir
 module {
-  llvm.func @main() -> i32 {
-    // Allocate arena on stack
-    %arena_mem = llvm.alloca 1 x !llvm.array<1024 x i8>
-    %arena = llvm.alloca 1 x !llvm.struct<(ptr, i64, i64)>
-    // Initialize arena struct
-    %base_ptr = llvm.getelementptr %arena_mem[0, 0]
-    llvm.store %base_ptr, %arena_base_slot
-    llvm.store 0, %arena_offset_slot
-    llvm.store 1024, %arena_size_slot
+  // Static string literal
+  memref.global "private" constant @str_794220374 : memref<18xi8> = dense<"Enter your name: \0A">
 
-    // Read into arena
-    %name = llvm.call @console_readln_from(%arena)
+  func.func @HelloWorldSaturated.hello() {
+    // Write prompt (static memref)
+    %prompt = memref.get_global @str_794220374 : memref<18xi8>
+    %prompt_cast = memref.cast %prompt : memref<18xi8> to memref<?xi8>
+    call @Console.write(%prompt_cast) : (memref<?xi8>) -> ()
 
-    // Interpolate and print
-    // ...
+    // Read input (dynamic memref allocation inside Console.readln)
+    %name = call @Console.readln() : () -> memref<?xi8>
 
-    llvm.return %zero : i32
+    // String concatenation
+    %c0 = arith.constant 0 : index
+
+    // Get "Hello, " length
+    %hello_lit = memref.get_global @str_hello : memref<7xi8>
+    %hello = memref.cast %hello_lit : memref<7xi8> to memref<?xi8>
+    %len1 = memref.dim %hello, %c0 : memref<?xi8>
+
+    // Get name length
+    %len2 = memref.dim %name, %c0 : memref<?xi8>
+
+    // Get "!" length
+    %exclaim_lit = memref.get_global @str_exclaim : memref<1xi8>
+    %exclaim = memref.cast %exclaim_lit : memref<1xi8> to memref<?xi8>
+    %len3 = memref.dim %exclaim, %c0 : memref<?xi8>
+
+    // Compute total length (index arithmetic)
+    %len_temp = arith.addi %len1, %len2 : index
+    %total_len = arith.addi %len_temp, %len3 : index
+
+    // Allocate result buffer
+    %result = memref.alloc(%total_len) : memref<?xi8>
+
+    // Copy parts (via FFI memcpy - takes index for sizes)
+    call @memcpy_helper(%result, %hello, %len1)
+    call @memcpy_helper_offset(%result, %len1, %name, %len2)
+    %offset2 = arith.addi %len1, %len2 : index
+    call @memcpy_helper_offset(%result, %offset2, %exclaim, %len3)
+
+    // Write result
+    call @Console.writeln(%result) : (memref<?xi8>) -> ()
+
+    func.return
   }
 }
 ```
 
+**Pure memref dialect. No llvm.* operations. All size arithmetic in `index` type.**
+
 ---
 
-## 8. Validation
+## 8. Type Flow
+
+```
+F# Type System          FNCS NativeType              MLIR Type
+─────────────────────────────────────────────────────────────────
+string (literal)   →    NTUstring, Opaque      →     memref<N x i8>
+string (dynamic)   →    NTUstring, Opaque      →     memref<?x i8>
+int (length)       →    NTUint, PlatformWord   →     i64 (on x86_64)
+
+Memref size/dim    →    (no NativeType)        →     index
+```
+
+**Critical distinction**:
+- **F# `int`** (String.Length result) → platform word (i64 on x86_64)
+- **MLIR `index`** (memref.dim result, size arithmetic) → MLIR index type
+- Convert between them with `index.casts`
+
+---
+
+## 9. Validation
 
 ```bash
 cd samples/console/FidelityHelloWorld/02_HelloWorldSaturated
-/path/to/Firefly compile HelloWorld.fidproj
+/home/hhh/repos/Firefly/src/bin/Debug/net10.0/Firefly compile HelloWorld.fidproj -k
 echo "World" | ./HelloWorld
-# Output: Hello, World!
+# Expected output:
+# Enter your name:
+# Hello, World!
 ```
 
----
-
-## 9. Architectural Lessons
-
-1. **Explicit Memory Management**: Arenas make allocation visible and deterministic
-2. **byref for Mutation**: F#'s byref pattern maps directly to native pointers
-3. **No GC Required**: Bump allocation + stack lifetimes eliminate runtime collection
-4. **String Interning**: Interpolation is compile-time concatenation, not runtime formatting
+Check intermediate: `cat target/intermediates/07_output.mlir`
+- Should see `memref.alloc(%size)` where `%size` is `index` type
+- Should see `arith.addi` on `index` values for size arithmetic
+- Should NOT see `llvm.*` operations
+- Should NOT see `i64` in size arithmetic (only as result of `index.casts` for F# int)
 
 ---
 
-## 10. Downstream Dependencies
+## 10. Architectural Lessons
+
+1. **Strings ARE memrefs**: No fat pointers, no control structs
+2. **Index vs int**: MLIR `index` for sizes/dims, F# `int` (platform word) for user-visible values
+3. **Runtime-sized allocation**: `memref.alloc(%size)` with runtime-computed size
+4. **Heap bridge**: Using `memref.alloc` (heap) until arena infrastructure ready
+5. **FFI boundary**: `memref.extract_aligned_pointer_as_index` for libc memcpy calls
+
+---
+
+## 11. Future: True Arena Allocation (A-04)
+
+When proper arena support is added:
+
+```mlir
+// Stack-allocated arena buffer
+%arena = memref.alloca(1024) : memref<1024xi8>
+
+// Bump allocation via memref.subview
+%offset = ... // Track current offset
+%slice = memref.subview %arena[%offset][%size][1] : memref<1024xi8> to memref<?xi8>
+```
+
+**No control struct**. Arena IS the memref. Bump allocation = subview + offset tracking.
+
+---
+
+## 12. Downstream Dependencies
 
 This sample's infrastructure enables:
-- **F-09**: Result type (arena-allocated heterogeneous DUs)
-- **C-01**: Closure environments (could be arena-allocated)
-- **A-04**: Region-based memory management (extends arena concept)
+- **F-03**: Pipe operators (function composition with string results)
+- **F-04**: Full currying (partial application returning string functions)
+- **A-04**: Region-based memory management (scoped memref.alloca)
 
 ---
 
-## 11. Related Documents
+## 13. Related Documents
 
-- [F-01-HelloWorldDirect](F-01-HelloWorldDirect.md) - Basic compilation
-- [Arena_Intrinsic_Architecture.md](../Arena_Intrinsic_Architecture.md) - Arena design
+- [F-01-HelloWorldDirect](F-01-HelloWorldDirect.md) - Static strings only
+- [MLIR_Memref_Strings_Architecture.md](../MLIR_Memref_Strings_Architecture.md) - Memref-based string design
 - [Memory_Management_Architecture.md](../Memory_Management_Architecture.md) - Overall memory model

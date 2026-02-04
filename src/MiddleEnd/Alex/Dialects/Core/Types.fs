@@ -144,8 +144,9 @@ type FuncVisibility =
 /// MemRef dialect operations (standard MLIR memory operations)
 type MemRefOp =
     | Load of SSA * SSA * SSA list * MLIRType                          // result, memref, indices, type
-    | Store of SSA * SSA * SSA list * MLIRType                         // value, memref, indices, type
-    | Alloca of SSA * MLIRType * int option                            // result, memrefType, alignment
+    | Store of SSA * SSA * SSA list * MLIRType * MLIRType              // value, memref, indices, elemType, memrefType
+    | Alloca of SSA * MLIRType * int option                            // result, memrefType, alignment (stack, compile-time size)
+    | Alloc of SSA * SSA * MLIRType                                    // result, sizeSSA, elementType (heap, runtime size)
     | SubView of SSA * SSA * SSA list * MLIRType                       // result, source, offsets, resultType
     | ExtractBasePtr of SSA * SSA * MLIRType                           // result, memref, memrefType → !llvm.ptr (for FFI)
     | GetGlobal of SSA * string * MLIRType                             // result, globalName, memrefType

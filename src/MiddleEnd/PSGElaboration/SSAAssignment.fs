@@ -466,7 +466,7 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.Parse, "int" -> 35      // stringToInt
                 | IntrinsicModule.Parse, "float" -> 250   // stringToFloat (complex)
                 | IntrinsicModule.String, "contains" -> 30 // string scanning
-                | IntrinsicModule.String, "concat2" -> 20  // concatenation (20 SSAs - pure memref, no fat pointer)
+                | IntrinsicModule.String, "concat2" -> 18  // concatenation (18 SSAs - pure index arithmetic, NO i64 round-trip)
                 | IntrinsicModule.Sys, "write" -> 6        // FFI extraction + length (2 ptr + 3 len + 1 result)
                 | IntrinsicModule.Sys, "read" -> 6         // FFI extraction + capacity (2 ptr + 3 cap + 1 result)
                 | IntrinsicModule.Sys, _ -> 16             // other syscalls (clock_gettime needs 16 for ms computation)
@@ -563,7 +563,15 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 | IntrinsicModule.Bits, "htons" | IntrinsicModule.Bits, "ntohs" -> 2  // byte swap uint16
                 | IntrinsicModule.Bits, "htonl" | IntrinsicModule.Bits, "ntohl" -> 2  // byte swap uint32
                 | IntrinsicModule.Bits, _ -> 1             // bitcast operations
-                | IntrinsicModule.NativePtr, _ -> 5        // pointer ops
+
+                // MemRef operations (MLIR memref semantics)
+                // Baker has transformed NativePtr → MemRef, these are the target operations
+                | IntrinsicModule.MemRef, "alloca" -> 1  // result memref only
+                | IntrinsicModule.MemRef, "load" -> 1    // load result (index already from Baker)
+                | IntrinsicModule.MemRef, "store" -> 0   // returns unit, no SSA needed
+                | IntrinsicModule.MemRef, "add" -> 0     // marker operation, no MLIR emitted
+                | IntrinsicModule.MemRef, "copy" -> 0    // returns unit
+                | IntrinsicModule.MemRef, _ -> 1         // safe default
                 | IntrinsicModule.Array, _ -> 10           // array ops
                 | IntrinsicModule.Operators, _ -> 5        // arithmetic
                 | IntrinsicModule.Convert, _ -> 3          // type conversions

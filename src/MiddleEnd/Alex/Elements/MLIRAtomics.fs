@@ -39,7 +39,8 @@ let pInsertValue (resultSSA: SSA) (structMemref: SSA) (value: SSA) (fieldIndex: 
     parser {
         do! emitTrace "pInsertValue" (sprintf "result=%A, memref=%A, value=%A, field=%d, ty=%A" resultSSA structMemref value fieldIndex ty)
         let offsetOp = ArithOp.ConstI (offsetSSA, int64 fieldIndex, TIndex) |> MLIROp.ArithOp
-        let storeOp = MemRefOp.Store (value, structMemref, [offsetSSA], ty) |> MLIROp.MemRefOp
+        let memrefType = TMemRefStatic (1, ty)  // 1-element struct field storage
+        let storeOp = MemRefOp.Store (value, structMemref, [offsetSSA], ty, memrefType) |> MLIROp.MemRefOp
         return [offsetOp; storeOp]
     }
 

@@ -102,6 +102,7 @@
       <!-- Alex Witnesses - Category-based MLIR generation -->
       <Compile Include="MiddleEnd/Alex/Witnesses/LiteralWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/TypeAnnotationWitness.fs" />
+      <Compile Include="MiddleEnd/Alex/Witnesses/IntrinsicWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/LazyWitness.fs" />
       <Compile Include="MiddleEnd/Alex/Witnesses/SeqWitness.fs" />
       <!-- PRD-13a: Core Collections Witnesses -->

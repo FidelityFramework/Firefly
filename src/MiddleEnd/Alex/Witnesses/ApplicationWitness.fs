@@ -71,59 +71,87 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                     | Some resultSSA ->
                         // Dispatch based on intrinsic module and operation
                         match info.Module, info.Operation, argSSAs with
-                        | IntrinsicModule.NativePtr, "stackalloc", [countSSA] ->
-                            match tryMatch (pNativePtrStackAlloc resultSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                        // MemRef operations (MLIR memref semantics)
+                        // These are the TARGET operations created by Baker's NativePtr transformation.
+                        // Pure memref semantics - NO NativePtr, NO i64↔index casts, NO LLVM cruft.
+
+                        | IntrinsicModule.MemRef, "alloca", [countSSA] ->
+                            // MemRef.alloca: nativeint -> memref<?x'T>
+                            // Baker has already transformed NativePtr.stackalloc → MemRef.alloca
+                            let countNodeId = argIds.[0]
+                            match SemanticGraph.tryGetNode countNodeId ctx.Graph with
+                            | Some countNode ->
+                                match countNode.Kind with
+                                | SemanticKind.Literal (NativeLiteral.Int (value, _)) ->
+                                    let count = int value
+                                    match tryMatch (pNativePtrStackAlloc resultSSA count) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                    | None -> WitnessOutput.error "MemRef.alloca pattern failed"
+                                | _ -> WitnessOutput.error $"MemRef.alloca: count must be a literal (node {countNodeId})"
+                            | None -> WitnessOutput.error $"MemRef.alloca: could not resolve count argument (node {countNodeId})"
+
+                        | IntrinsicModule.MemRef, "store", [valueSSA; ptrSSA; indexSSA] ->
+                            // MemRef.store: 'T -> memref<?x'T> -> nativeint -> unit
+                            // Baker has already transformed NativePtr.write → MemRef.store
+                            // Index is nativeint (maps to MLIR index type) - NO CASTING!
+                            let arch = ctx.Coeffects.Platform.TargetArch
+                            let elemType =
+                                match argTypes.[1] with
+                                | TMemRef elemTy -> elemTy
+                                | _ -> TError "Expected memref type for MemRef.store"
+                            let memrefType = argTypes.[1]
+                            match tryMatch (pMemRefStoreIndexed ptrSSA valueSSA indexSSA elemType memrefType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                             | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                            | None -> WitnessOutput.error "NativePtr.stackalloc pattern failed"
+                            | None -> WitnessOutput.error "MemRef.store pattern failed"
 
-                        | IntrinsicModule.NativePtr, "write", [ptrSSA; valueSSA] ->
-                            // NativePtr.write: ptr -> value -> unit
-                            // Emit memref.store with empty indices (scalar write)
-                            let ptrNodeId = argIds.[0]
-                            match SemanticGraph.tryGetNode ptrNodeId ctx.Graph with
-                            | Some ptrNode ->
-                                match ptrNode.Type with
-                                | NativeType.TNativePtr innerTy ->
-                                    let arch = ctx.Coeffects.Platform.TargetArch
-                                    let elemType = mapNativeTypeForArch arch innerTy
-                                    // pMemRefStore needs 2 SSAs: indexSSA (for constant 0) + operation result
-                                    match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                                    | Some ssas when ssas.Length >= 2 ->
-                                        let indexSSA = ssas.[0]
-                                        match tryMatch (pMemRefStore indexSSA valueSSA ptrSSA elemType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                                        | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                                        | None -> WitnessOutput.error "NativePtr.write: memref.store failed"
-                                    | _ -> WitnessOutput.error "NativePtr.write: Not enough SSAs (need 2 for index + result)"
-                                | otherTy ->
-                                    WitnessOutput.error (sprintf "NativePtr.write: Expected nativeptr<'T>, got %A" otherTy)
-                            | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"
-
-                        | IntrinsicModule.NativePtr, "add", [basePtrSSA; offsetSSA] ->
-                            // NativePtr.add(ptr, offset) returns offset as index for later use with write/read
-                            // We just return the offset SSA - NativePtr.write/read will use it as the index
-                            // Record the result as the offset (for compound pattern with write/read)
-                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = offsetSSA; Type = TIndex } }
-
-                        | IntrinsicModule.NativePtr, "copy", [destSSA; srcSSA; countSSA] ->
-                            // NativePtr.copy(dest, src, count) - memory copy operation
-                            // Witness the coeffect-assigned resultSSA for the memcpy MLIR operation
-                            match tryMatch (pMemCopy resultSSA destSSA srcSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                            | Some (ops, _) ->
-                                // memcpy returns dest pointer, but NativePtr.copy returns unit
-                                // So we return void result
-                                { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
-                            | None -> WitnessOutput.error "NativePtr.copy pattern failed"
-
-                        | IntrinsicModule.NativePtr, "read", [ptrSSA] ->
-                            // NativePtr.read needs an index SSA for memref.load - get additional SSA
-                            match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                            | Some ssas when ssas.Length >= 2 ->
-                                let indexZeroSSA = ssas.[0]
-                                let readResultSSA = ssas.[1]
-                                match tryMatch (pNativePtrRead readResultSSA ptrSSA indexZeroSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                        | IntrinsicModule.MemRef, "load", [ptrSSA; indexSSA] ->
+                            // MemRef.load: memref<?x'T> -> nativeint -> 'T
+                            // Baker has already transformed NativePtr.read → MemRef.load
+                            match SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
+                            | Some loadResultSSA ->
+                                match tryMatch (pNativePtrRead loadResultSSA ptrSSA indexSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                                | None -> WitnessOutput.error "NativePtr.read pattern failed"
-                            | _ -> WitnessOutput.error "NativePtr.read: Need 2 SSAs (index, result)"
+                                | None -> WitnessOutput.error "MemRef.load pattern failed"
+                            | None -> WitnessOutput.error "MemRef.load: No SSA for load result"
+
+                        | IntrinsicModule.MemRef, "copy", [destSSA; srcSSA; countSSA] ->
+                            // MemRef.copy: memref -> memref -> nativeint -> unit
+                            // Baker has already transformed NativePtr.copy → MemRef.copy
+                            match tryMatch (pMemCopy resultSSA destSSA srcSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
+                            | None -> WitnessOutput.error "MemRef.copy pattern failed"
+
+                        | IntrinsicModule.MemRef, "add", [basePtrSSA; _offsetSSA] ->
+                            // MemRef.add is a MARKER operation from Baker transformation
+                            // It doesn't emit MLIR - just passes through the base pointer
+                            // The offset was already captured by downstream MemRef.store/load
+                            let baseType = argTypes.[0]
+                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = basePtrSSA; Type = baseType } }
+
+                        // Arena operations (F-02: Arena Allocation)
+                        | IntrinsicModule.Arena, "create", [sizeSSA] ->
+                            // Arena.create: int -> Arena<'lifetime>
+                            // Creates stack-allocated byte buffer (memref<N x i8>)
+                            let sizeNodeId = argIds.[0]
+                            match SemanticGraph.tryGetNode sizeNodeId ctx.Graph with
+                            | Some sizeNode ->
+                                match sizeNode.Kind with
+                                | SemanticKind.Literal (NativeLiteral.Int (value, _)) ->
+                                    let sizeBytes = int value
+                                    match tryMatch (pArenaCreate resultSSA sizeBytes) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                    | None -> WitnessOutput.error "Arena.create pattern failed"
+                                | _ -> WitnessOutput.error $"Arena.create: size must be a literal int (node {sizeNodeId})"
+                            | None -> WitnessOutput.error $"Arena.create: could not resolve size argument (node {sizeNodeId})"
+
+                        | IntrinsicModule.Arena, "alloc", [arenaSSA; sizeSSA] ->
+                            // Arena.alloc: Arena<'lifetime> byref -> int -> nativeint
+                            // Allocates from arena (simplified: returns arena memref)
+                            // Get arena type from argument
+                            let arenaType = argTypes.[0]
+                            match tryMatch (pArenaAlloc resultSSA arenaSSA sizeSSA arenaType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                            | None -> WitnessOutput.error "Arena.alloc pattern failed"
 
                         | IntrinsicModule.Sys, "write", [fdSSA; bufferSSA] ->
                             // Witness observes buffer type and provides extraction SSAs for FFI boundary
@@ -156,23 +184,42 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "Sys.read: buffer argument not yet witnessed"
 
                         | IntrinsicModule.NativeStr, "fromPointer", [bufferSSA; _lengthSSA] ->
-                            // In MLIR memref semantics, buffer IS already a memref<?xi8>
-                            // No fat pointer construction needed - just return the buffer directly
-                            let stringTy = TMemRef (TInt I8)  // memref<?xi8>
-                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = bufferSSA; Type = stringTy } }
+                            // Convert static buffer (memref<Nxi8>) to dynamic string (memref<?xi8>)
+                            // Uses memref.cast at function boundary
+                            // Length is intrinsic to memref descriptor, not used in cast operation
+                            let bufferType = argTypes.[0]  // Get buffer's static type (memref<Nxi8>)
+                            match tryMatch (pStringFromBuffer resultSSA bufferSSA bufferType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                            | None -> WitnessOutput.error "NativeStr.fromPointer: string construction failed"
 
-                        // String operations (IntrinsicModule.String)
-                        | IntrinsicModule.String, "concat2", [str1SSA; str2SSA] ->
-                            // Get string types from arguments
-                            let str1Type = argTypes.[0]
-                            let str2Type = argTypes.[1]
-
+                        // String atomic intrinsics (not decomposed by Baker)
+                        | IntrinsicModule.String, "length", [stringSSA] ->
+                            // String.length: memref.dim to get string dimension
+                            // Strings ARE memrefs, length is intrinsic to descriptor
                             match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                            | Some ssas ->
+                            | Some ssas when ssas.Length >= 2 ->
+                                let dimConstSSA = ssas.[0]
+                                let lenIndexSSA = ssas.[1]
+                                let stringType = argTypes.[0]
+                                match tryMatch (pStringLength resultSSA stringSSA stringType dimConstSSA lenIndexSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                                | None -> WitnessOutput.error "String.length pattern failed"
+                            | _ -> WitnessOutput.error "String.length: Not enough SSAs (need 2 for dim const + index result)"
+
+                        | IntrinsicModule.String, "concat2", [str1SSA; str2SSA] ->
+                            // String.concat2: pure memref operations with index arithmetic
+                            // Generates: memref.dim + arith.addi (index) + memref.alloc + memcpy
+                            // NO i64 round-trip - pure index throughout
+                            match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+                            | Some ssas when ssas.Length >= 18 ->
+                                let str1Type = argTypes.[0]
+                                let str2Type = argTypes.[1]
                                 match tryMatch (pStringConcat2 ssas str1SSA str2SSA str1Type str2Type) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "String.concat2 pattern failed"
-                            | None -> WitnessOutput.error "String.concat2: No SSAs assigned"
+                            | _ -> WitnessOutput.error "String.concat2: Not enough SSAs (need 18 for pure index operations)"
+
+                        // Other complex string operations handled by platform libraries
 
                         // Binary arithmetic intrinsics (+, -, *, /, %)
                         | IntrinsicModule.Operators, _, [lhsSSA; rhsSSA] ->

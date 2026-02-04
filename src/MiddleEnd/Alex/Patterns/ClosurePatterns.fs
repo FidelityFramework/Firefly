@@ -51,7 +51,8 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
 
         // Update position: pos + size
         let! addOp = pAddI newPosSSA heapPosSSA sizeSSA
-        let! storePosOp = pStore newPosSSA heapPosPtrSSA [indexSSA] (TInt I64)
+        let memrefType = TMemRefStatic (1, TInt I64)  // 1-element heap position storage
+        let! storePosOp = pStore newPosSSA heapPosPtrSSA [indexSSA] (TInt I64) memrefType
 
         return ([indexOp; loadPosOp; subViewOp; addOp; storePosOp], resultPtrSSA)
     }
@@ -314,11 +315,12 @@ let pBuildLazyForce (lazySSA: SSA) (lazyTy: MLIRType) (resultSSA: SSA) (resultTy
         // Alloca space for lazy struct
         let constOneTy = TInt I64
         let! constOneOp = pConstI constOneSSA 1L constOneTy
-        let! allocaOp = pAlloca ptrSSA lazyTy None
+        let! allocaOp = pAlloca ptrSSA 1 lazyTy None
 
         // Store lazy struct to alloca'd space
         let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
-        let! storeOp = pStore lazySSA ptrSSA [indexSSA] lazyTy
+        let memrefType = TMemRefStatic (1, lazyTy)  // 1-element lazy value storage
+        let! storeOp = pStore lazySSA ptrSSA [indexSSA] lazyTy memrefType
 
         // Call thunk with pointer -> result
         let argVals = [{ SSA = ptrSSA; Type = TIndex }]

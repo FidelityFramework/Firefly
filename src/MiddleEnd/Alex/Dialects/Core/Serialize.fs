@@ -174,16 +174,10 @@ let memrefOpToString (op: MemRefOp) : string =
             | _ -> TMemRef ty
         sprintf "%s = memref.load %s%s : %s"
             (ssaToString result) (ssaToString memref) indicesStr (typeToString memrefType)
-    | MemRefOp.Store (value, memref, indices, ty) ->
+    | MemRefOp.Store (value, memref, indices, _elemType, memrefType) ->
         // Build indices string
         let indicesStr = if List.isEmpty indices then "" else sprintf "[%s]" (indices |> List.map ssaToString |> String.concat ", ")
-        // ty is element type - construct proper memref type for serialization
-        // Single index → 1-element static memref (matches pAlloca pattern)
-        // Multiple indices → dynamic memref
-        let memrefType =
-            match indices.Length with
-            | 0 | 1 -> TMemRefStatic (1, ty)
-            | _ -> TMemRef ty
+        // Use the passed memrefType directly (no heuristic reconstruction)
         sprintf "memref.store %s, %s%s : %s"
             (ssaToString value) (ssaToString memref) indicesStr (typeToString memrefType)
     | MemRefOp.Alloca (result, memrefType, alignmentOpt) ->
@@ -193,6 +187,11 @@ let memrefOpToString (op: MemRefOp) : string =
                 (ssaToString result) alignment (typeToString memrefType)
         | None ->
             sprintf "%s = memref.alloca() : %s" (ssaToString result) (typeToString memrefType)
+    | MemRefOp.Alloc (result, sizeSSA, elemType) ->
+        // Heap allocation with runtime size: memref.alloc(%size) : memref<?xelemType>
+        let memrefType = TMemRef elemType
+        sprintf "%s = memref.alloc(%s) : %s"
+            (ssaToString result) (ssaToString sizeSSA) (typeToString memrefType)
     | MemRefOp.SubView (result, source, offsets, resultType) ->
         let offsetsStr = offsets |> List.map ssaToString |> String.concat ", "
         sprintf "%s = memref.subview %s[%s] : %s"

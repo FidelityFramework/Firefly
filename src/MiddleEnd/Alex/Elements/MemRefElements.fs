@@ -31,18 +31,28 @@ let pLoad (ssa: SSA) (memref: SSA) (indices: SSA list) : PSGParser<MLIROp> =
 
 /// Emit memref.store operation
 /// elemType: element type of the memref (must match value type)
-let pStore (value: SSA) (memref: SSA) (indices: SSA list) (elemType: MLIRType) : PSGParser<MLIROp> =
+/// memrefType: full memref type for serialization
+let pStore (value: SSA) (memref: SSA) (indices: SSA list) (elemType: MLIRType) (memrefType: MLIRType) : PSGParser<MLIROp> =
     parser {
-        return MLIROp.MemRefOp (MemRefOp.Store (value, memref, indices, elemType))
+        return MLIROp.MemRefOp (MemRefOp.Store (value, memref, indices, elemType, memrefType))
     }
 
-/// Emit memref.alloca operation (stack allocation)
+/// Emit memref.alloca operation (stack allocation with compile-time size)
+/// count: number of elements to allocate
 /// elemType: explicit element type for the memref (e.g., TInt I8, TInt I32, TMemRefStatic(...))
-/// Creates static 1-element memref for single-element allocations
-let pAlloca (ssa: SSA) (elemType: MLIRType) (alignment: int option) : PSGParser<MLIROp> =
+let pAlloca (ssa: SSA) (count: int) (elemType: MLIRType) (alignment: int option) : PSGParser<MLIROp> =
     parser {
-        let memrefType = TMemRefStatic (1, elemType)
+        let memrefType = TMemRefStatic (count, elemType)
         return MLIROp.MemRefOp (MemRefOp.Alloca (ssa, memrefType, alignment))
+    }
+
+/// Emit memref.alloc operation (heap allocation with runtime size)
+/// sizeSSA: index-typed SSA value representing the number of elements
+/// elemType: element type for the memref (e.g., TInt I8)
+/// Returns a dynamic memref (memref<?xelemType>)
+let pAlloc (ssa: SSA) (sizeSSA: SSA) (elemType: MLIRType) : PSGParser<MLIROp> =
+    parser {
+        return MLIROp.MemRefOp (MemRefOp.Alloc (ssa, sizeSSA, elemType))
     }
 
 /// Emit memref.subview operation (replaces GEP for arrays)

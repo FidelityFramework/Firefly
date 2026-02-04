@@ -26,6 +26,7 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 module LiteralWitness = Alex.Witnesses.LiteralWitness
 module TypeAnnotationWitness = Alex.Witnesses.TypeAnnotationWitness
 module PlatformWitness = Alex.Witnesses.PlatformWitness
+module IntrinsicWitness = Alex.Witnesses.IntrinsicWitness
 
 // Structural Witnesses (January 2026 - parallel fan-out, February 2026 - transparent witness pattern)
 module StructuralWitness = Alex.Witnesses.StructuralWitness  // Transparent witness for ModuleDef, Sequential
@@ -69,6 +70,7 @@ let initializeRegistry () =
         |> NanopassRegistry.register LiteralWitness.nanopass
         |> NanopassRegistry.register TypeAnnotationWitness.nanopass
         |> NanopassRegistry.register PlatformWitness.nanopass
+        |> NanopassRegistry.register IntrinsicWitness.nanopass
 
         // Structural Witnesses (transparent witnesses for container nodes)
         |> NanopassRegistry.register StructuralWitness.nanopass

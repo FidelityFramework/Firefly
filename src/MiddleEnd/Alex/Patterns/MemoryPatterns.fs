@@ -77,7 +77,8 @@ let pFieldSet (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (value
         let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
 
         // Memref.store with byte offset
-        let! storeOp = pStore value structPtr [offsetSSA] elemType
+        let memrefType = TMemRefStatic (1, elemType)
+        let! storeOp = pStore value structPtr [offsetSSA] elemType memrefType
 
         return [offsetOp; storeOp]
     }
@@ -98,9 +99,10 @@ let pAllocaImmutable (valueSSA: SSA) (valueType: MLIRType) (ssas: SSA list) : PS
 
         let constOneTy = TInt I64
         let! constOp = pConstI constOneSSA 1L constOneTy
-        let! allocaOp = pAlloca allocaSSA valueType None
+        let! allocaOp = pAlloca allocaSSA 1 valueType None
         let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
-        let! storeOp = pStore valueSSA allocaSSA [indexSSA] valueType
+        let memrefType = TMemRefStatic (1, valueType)
+        let! storeOp = pStore valueSSA allocaSSA [indexSSA] valueType memrefType
 
         return [constOp; allocaOp; indexOp; storeOp]
     }
@@ -238,7 +240,8 @@ let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gep
 
         let! subViewOp = pSubView gepSSA arrayPtr [index]
         let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
-        let! storeOp = pStore value gepSSA [indexZeroSSA] elemType
+        let memrefType = TMemRefStatic (1, elemType)
+        let! storeOp = pStore value gepSSA [indexZeroSSA] elemType memrefType
         return [subViewOp; indexZeroOp; storeOp]
     }
 
@@ -249,8 +252,8 @@ let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gep
 /// Build NativePtr.stackalloc pattern
 /// Allocates memory on the stack and returns a pointer
 ///
-/// NativePtr.stackalloc<'T>() : nativeptr<'T>
-let pNativePtrStackAlloc (resultSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+/// NativePtr.stackalloc<'T>(count) : nativeptr<'T>
+let pNativePtrStackAlloc (resultSSA: SSA) (count: int) : PSGParser<MLIROp list * TransferResult> =
     parser {
         let! state = getUserState
 
@@ -264,8 +267,9 @@ let pNativePtrStackAlloc (resultSSA: SSA) : PSGParser<MLIROp list * TransferResu
                 // Fallback to byte storage if type extraction fails
                 TInt I8
 
-        let! allocaOp = pAlloca resultSSA elemType None
-        let memrefTy = TMemRefScalar elemType
+        // Use the provided count for memref allocation
+        let! allocaOp = pAlloca resultSSA count elemType None
+        let memrefTy = TMemRefStatic (count, elemType)
 
         // Return memref type (not TIndex) - conversion to pointer happens at FFI boundary
         return ([allocaOp], TRValue { SSA = resultSSA; Type = memrefTy })
@@ -279,7 +283,8 @@ let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) (elemType: MLIRType) (indexSSA
     parser {
         // Emit memref.store operation with index
         let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for 1-element memref
-        let! storeOp = pStore valueSSA ptrSSA [indexSSA] elemType
+        let memrefType = TMemRefStatic (1, elemType)
+        let! storeOp = pStore valueSSA ptrSSA [indexSSA] elemType memrefType
 
         return ([indexOp; storeOp], TRVoid)
     }
@@ -315,11 +320,51 @@ let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) (indexZeroSSA: SSA) : PSGParse
         let arch = state.Platform.TargetArch
         let resultType = mapNativeTypeForArch arch state.Current.Type
 
+        // Emit index constant for memref.load (always load from index 0 for scalar pointer read)
+        let! constOp = pConstI indexZeroSSA 0L TIndex
+
         // Emit memref.load operation with index
-        // indexZeroSSA should be pre-assigned by coeffects and already witnessed (constant 0)
         let! loadOp = pLoad resultSSA ptrSSA [indexZeroSSA]
 
-        return ([loadOp], TRValue { SSA = resultSSA; Type = resultType })
+        return ([constOp; loadOp], TRValue { SSA = resultSSA; Type = resultType })
+    }
+
+// ═══════════════════════════════════════════════════════════
+// ARENA OPERATIONS (F-02: Arena Allocation)
+// ═══════════════════════════════════════════════════════════
+
+/// Build Arena.create pattern
+/// Allocates an arena buffer on the stack
+///
+/// Arena.create<'lifetime>(sizeBytes: int) : Arena<'lifetime>
+/// Returns: memref<sizeBytes x i8> (stack-allocated byte buffer)
+let pArenaCreate (resultSSA: SSA) (sizeBytes: int) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        // Allocate arena memory block on stack as byte array
+        // Arena IS the memref - no separate control struct in memref semantics
+        let elemType = TInt I8
+        let! allocaOp = pAlloca resultSSA sizeBytes elemType None
+        let memrefTy = TMemRefStatic (sizeBytes, elemType)
+
+        // Return the arena memref (byte buffer)
+        return ([allocaOp], TRValue { SSA = resultSSA; Type = memrefTy })
+    }
+
+/// Build Arena.alloc pattern
+/// Allocates memory from an arena
+///
+/// Arena.alloc(arena: Arena<'lifetime> byref, sizeBytes: int) : nativeint
+/// For now: returns the arena memref itself (simplified - proper bump allocation later)
+/// TODO: Implement proper bump-pointer allocation with memref.subview and offset tracking
+let pArenaAlloc (resultSSA: SSA) (arenaSSA: SSA) (sizeSSA: SSA) (arenaType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        // Simplified implementation: return arena memref as the allocated pointer
+        // The memref IS the allocation - caller can use memref.store directly
+        // Future: Add offset tracking and memref.subview for true bump allocation
+
+        // For now, just return the arena memref unchanged
+        // This works for single allocation per arena (like String.concat2)
+        return ([], TRValue { SSA = arenaSSA; Type = arenaType })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -471,6 +516,18 @@ let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) (ty: MLIRType) : P
 let pMemRefStore (indexSSA: SSA) (value: SSA) (memref: SSA) (elemType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
         let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for scalar/1-element memref
-        let! storeOp = pStore value memref [indexSSA] elemType
+        let memrefType = TMemRefStatic (1, elemType)  // 1-element memref for scalar stores
+        let! storeOp = pStore value memref [indexSSA] elemType memrefType
         return [indexOp; storeOp], TRVoid
+    }
+
+/// Indexed memref.store (for NativePtr.write with NativePtr.add)
+/// Store value to memref at computed index
+/// Handles: NativePtr.write (NativePtr.add base offset) value -> memref.store value, base[offset]
+/// Note: offsetSSA must be index type (nativeint in F# source)
+let pMemRefStoreIndexed (memref: SSA) (value: SSA) (offsetSSA: SSA) (elemType: MLIRType) (memrefType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        // Store value at computed index (offsetSSA is already index type from nativeint)
+        let! storeOp = pStore value memref [offsetSSA] elemType memrefType
+        return [storeOp], TRVoid
     }

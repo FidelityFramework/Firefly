@@ -218,6 +218,7 @@ let structuralFoldingPass (operations: MLIROp list) : MLIROp list =
 
         // MemRefOp - operations that define SSAs
         | MLIROp.MemRefOp (MemRefOp.Alloca (ssa, _, _)) -> [ssa]
+        | MLIROp.MemRefOp (MemRefOp.Alloc (ssa, _, _)) -> [ssa]
         | MLIROp.MemRefOp (MemRefOp.Load (ssa, _, _, _)) -> [ssa]
         | MLIROp.MemRefOp (MemRefOp.ExtractBasePtr (ssa, _, _)) -> [ssa]
 
@@ -246,7 +247,7 @@ let structuralFoldingPass (operations: MLIROp list) : MLIROp list =
     /// Extract all SSAs used by an operation
     let rec getUsedSSAs (op: MLIROp) : SSA list =
         match op with
-        | MLIROp.MemRefOp (MemRefOp.Store (valueSSA, memrefSSA, indexSSAs, _)) ->
+        | MLIROp.MemRefOp (MemRefOp.Store (valueSSA, memrefSSA, indexSSAs, _, _)) ->
             valueSSA :: memrefSSA :: indexSSAs
         | MLIROp.MemRefOp (MemRefOp.Load (_, memrefSSA, indexSSAs, _)) ->
             memrefSSA :: indexSSAs
