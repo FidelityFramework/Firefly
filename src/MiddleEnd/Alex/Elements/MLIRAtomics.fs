@@ -15,37 +15,31 @@ open Alex.Dialects.Core.Types
 // ═══════════════════════════════════════════════════════════
 
 /// Compute flat offset SSA from nested struct indices
-/// For now, returns a constant SSA for the first index (simplified implementation)
-/// TODO: Full implementation would compute offset from type layout
+/// ARCHITECTURAL VIOLATION REMOVED: SSAs must come from SSAAssignment, not generated inline
 let private computeStructOffset (indices: int list) : SSA =
-    match indices with
-    | [] -> SSA.V 0  // No offset
-    | [i] -> SSA.V (1000000 + i)  // Simple offset encoding for single-level access
-    | indices -> SSA.V (1000000 + (indices |> List.sum))  // Simplified for nested access
+    failwith "MLIRAtomics.computeStructOffset: offset SSAs must come from coeffects (removed inline SSA generation)"
 
 // ═══════════════════════════════════════════════════════════
 // PORTABLE MLIR STRUCT OPERATIONS (MemRef-based)
 // ═══════════════════════════════════════════════════════════
 
-/// ExtractValue - NOW USES memref.load with computed offset
+/// ExtractValue - NOW USES memref.load with witnessed offset
 /// SEMANTIC CHANGE: Struct is now in memory (memref), not SSA register value
-let pExtractValue (ssa: SSA) (structMemref: SSA) (indices: int list) (ty: MLIRType) : PSGParser<MLIROp> =
+/// offsetSSA: Pre-assigned SSA for the offset constant (from coeffects)
+let pExtractValue (ssa: SSA) (structMemref: SSA) (offsetSSA: SSA) (ty: MLIRType) : PSGParser<MLIROp> =
     parser {
-        do! emitTrace "pExtractValue" (sprintf "ssa=%A, memref=%A, indices=%A, ty=%A" ssa structMemref indices ty)
-        // Compute offset from indices (simplified - actual offset depends on type layout)
-        let offsetSSA = computeStructOffset indices
-        // Load from memref at computed offset
+        do! emitTrace "pExtractValue" (sprintf "ssa=%A, memref=%A, offset=%A, ty=%A" ssa structMemref offsetSSA ty)
+        // Load from memref at witnessed offset
         return MLIROp.MemRefOp (MemRefOp.Load (ssa, structMemref, [offsetSSA], ty))
     }
 
-/// InsertValue - NOW USES memref.store with computed offset
+/// InsertValue - NOW USES memref.store with witnessed offset
 /// SEMANTIC CHANGE: Struct is now in memory (memref), not SSA register value
-let pInsertValue (resultSSA: SSA) (structMemref: SSA) (value: SSA) (indices: int list) (ty: MLIRType) : PSGParser<MLIROp> =
+/// offsetSSA: Pre-assigned SSA for the offset constant (from coeffects)
+let pInsertValue (resultSSA: SSA) (structMemref: SSA) (value: SSA) (offsetSSA: SSA) (ty: MLIRType) : PSGParser<MLIROp> =
     parser {
-        do! emitTrace "pInsertValue" (sprintf "result=%A, memref=%A, value=%A, indices=%A, ty=%A" resultSSA structMemref value indices ty)
-        // Compute offset from indices
-        let offsetSSA = computeStructOffset indices
-        // Store value into memref at computed offset
+        do! emitTrace "pInsertValue" (sprintf "result=%A, memref=%A, value=%A, offset=%A, ty=%A" resultSSA structMemref value offsetSSA ty)
+        // Store value into memref at witnessed offset
         // Note: resultSSA is the memref AFTER store (same as input memref in memref semantics)
         return MLIROp.MemRefOp (MemRefOp.Store (value, structMemref, [offsetSSA], ty))
     }

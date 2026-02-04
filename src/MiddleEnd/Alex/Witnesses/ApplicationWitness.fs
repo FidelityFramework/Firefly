@@ -77,42 +77,18 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "NativePtr.stackalloc pattern failed"
 
                         | IntrinsicModule.NativePtr, "write", [ptrSSA; valueSSA] ->
-                            // Extract element type from pointer argument (nativeptr<'T>)
+                            // NativePtr.write: ptr -> value -> unit
+                            // Emit memref.store with empty indices (scalar write)
                             let ptrNodeId = argIds.[0]
                             match SemanticGraph.tryGetNode ptrNodeId ctx.Graph with
                             | Some ptrNode ->
                                 match ptrNode.Type with
                                 | NativeType.TNativePtr innerTy ->
-                                    let elemType = mapNativeTypeForArch ctx.Coeffects.Platform.TargetArch innerTy
-
-                                    // Check if ptrNode is NativePtr.add(base, offset) - operation fusion pattern
-                                    let basePtrSSA, offsetSSA, needsBinding =
-                                        match ptrNode.Kind with
-                                        | SemanticKind.Application (funcId, addArgIds) when addArgIds.Length = 2 ->
-                                            // Check if function is NativePtr.add
-                                            match SemanticGraph.tryGetNode funcId ctx.Graph with
-                                            | Some funcNode ->
-                                                match funcNode.Kind with
-                                                | SemanticKind.Intrinsic info when info.Module = IntrinsicModule.NativePtr && info.Operation = "add" ->
-                                                    // This is NativePtr.add(base, offset) - extract base and offset SSAs
-                                                    let baseId = addArgIds.[0]
-                                                    let offsetId = addArgIds.[1]
-                                                    match MLIRAccumulator.recallNode baseId ctx.Accumulator, MLIRAccumulator.recallNode offsetId ctx.Accumulator with
-                                                    | Some (baseSSA, _), Some (offSSA, _) ->
-                                                        // Mark NativePtr.add node as visited (operation fusion - consumed by write)
-                                                        ctx.GlobalVisited.Value <- Set.add ptrNodeId ctx.GlobalVisited.Value
-                                                        // Bind NativePtr.add result to offset SSA (for correctness)
-                                                        MLIRAccumulator.bindNode ptrNodeId offSSA TIndex ctx.Accumulator
-                                                        (baseSSA, offSSA, false)  // No additional binding needed
-                                                    | _ -> failwith "ApplicationWitness.NativePtr.write: offset fallback - SSA must come from coeffects (removed SSA.V 999990)"
-                                                | _ -> (ptrSSA, SSA.V 999990, false)  // Not NativePtr.add, use constant 0
-                                            | None -> (ptrSSA, SSA.V 999990, false)
-                                        | _ -> (ptrSSA, SSA.V 999990, false)  // Not an application, use constant 0
-
-                                    match tryMatch (pNativePtrWrite valueSSA basePtrSSA elemType offsetSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                    let arch = ctx.Coeffects.Platform.TargetArch
+                                    let elemType = mapNativeTypeForArch arch innerTy
+                                    match tryMatch (pMemRefStore valueSSA ptrSSA elemType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                                    | None -> WitnessOutput.error "NativePtr.write pattern failed"
-
+                                    | None -> WitnessOutput.error "NativePtr.write: memref.store failed"
                                 | otherTy ->
                                     WitnessOutput.error (sprintf "NativePtr.write: Expected nativeptr<'T>, got %A" otherTy)
                             | None -> WitnessOutput.error "NativePtr.write: Could not resolve pointer argument node"

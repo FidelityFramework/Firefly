@@ -492,3 +492,14 @@ let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) (ty: MLIRType) : P
 
         return undefOp :: tagConstOp :: insertTagOp :: payloadOps
     }
+
+// ═══════════════════════════════════════════════════════════
+// SIMPLE MEMORY STORE
+// ═══════════════════════════════════════════════════════════
+
+/// Simple memref.store with no indices (scalar store)
+let pMemRefStore (value: SSA) (memref: SSA) (elemType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! storeOp = pStore value memref [] elemType
+        return ([storeOp], TRVoid)
+    }
