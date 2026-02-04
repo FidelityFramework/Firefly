@@ -726,8 +726,8 @@ let private nodeExpansionCost (arch: Architecture) (graph: SemanticGraph) (node:
     | SemanticKind.IndexSet _ -> 1
     | SemanticKind.AddressOf _ -> 2
     | SemanticKind.VarRef _ -> 2
-    | SemanticKind.FieldGet _ -> 1
-    | SemanticKind.FieldSet _ -> 1
+    | SemanticKind.FieldGet _ -> 3  // Max: extract + dim const + cast (for string.Length with cast)
+    | SemanticKind.FieldSet _ -> 2  // Offset constant + store
     | SemanticKind.Set _ -> 1  // For module-level mutable address operation
     | SemanticKind.TraitCall _ -> 1
     | SemanticKind.ArrayExpr _ -> 20
@@ -1369,6 +1369,12 @@ let assignSSA (arch: Architecture) (graph: SemanticGraph) : SSAAssignment =
                     // No-capture Lambdas are emitted as direct function symbols, not SSA values
                     // Only Lambdas with captures need SSAs for closure struct construction
                     not (List.isEmpty captures)
+                | SemanticKind.Intrinsic _ ->
+                    // Intrinsic function nodes (TFun types) are just references, not values
+                    // Only intrinsic CALLS (via Application) produce values
+                    match node.Type with
+                    | NativeType.TFun _ -> false  // Function reference, not a value
+                    | _ -> true  // Non-function intrinsic should have SSA
                 | _ -> true)
         |> List.map (fun (_, node) -> NodeId.value node.Id, node.Kind)
 

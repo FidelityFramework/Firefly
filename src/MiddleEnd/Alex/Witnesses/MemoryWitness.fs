@@ -33,15 +33,15 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             // Recall struct SSA
             match MLIRAccumulator.recallNode structId ctx.Accumulator with
             | Some (structSSA, structTy) ->
-                // Get result SSA
-                match SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
-                | Some resultSSA ->
+                // Witness all SSAs pre-assigned by coeffects
+                match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+                | Some ssas ->
                     let arch = ctx.Coeffects.Platform.TargetArch
                     let fieldTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    match tryMatch (pStructFieldGet resultSSA structSSA fieldName structTy fieldTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    match tryMatch (pStructFieldGet ssas structSSA fieldName structTy fieldTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error $"FieldGet pattern failed for field '{fieldName}'"
-                | None -> WitnessOutput.error $"FieldGet: No SSA for result (field '{fieldName}')"
+                | None -> WitnessOutput.error $"FieldGet: No SSAs assigned (field '{fieldName}')"
             | None -> WitnessOutput.error $"FieldGet: Struct value not yet witnessed (field '{fieldName}')"
 
         | None ->

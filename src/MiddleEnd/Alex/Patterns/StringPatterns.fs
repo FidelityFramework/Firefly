@@ -25,14 +25,12 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 
 /// Call external memcpy(dest, src, len) -> void*
 /// External memcpy declaration will be added at module level if needed
-let pMemCopy (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGParser<MLIROp list> =
+/// resultSSA: The SSA assigned to the memcpy result (from coeffects analysis)
+let pMemCopy (resultSSA: SSA) (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         // Get platform word type (pointers are platform words)
         let! state = getUserState
         let platformWordTy = state.Platform.PlatformWordType
-
-        // Allocate result SSA for memcpy return value (returns dest pointer)
-        let resultSSA = SSA.V 999980
 
         // Build memcpy call: void* memcpy(void* dest, const void* src, size_t n)
         let args = [
@@ -41,7 +39,7 @@ let pMemCopy (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGParser<MLIROp list>
             { SSA = lenSSA; Type = platformWordTy }    // len
         ]
 
-        // Call external memcpy (returns pointer, but we ignore it)
+        // Call external memcpy - uses result SSA from coeffects analysis
         let! call = pFuncCall (Some resultSSA) "memcpy" args platformWordTy
 
         return [call]
@@ -71,15 +69,16 @@ let pStringConcat2 (resultSSA: SSA) (str1SSA: SSA) (str2SSA: SSA) (str1Type: MLI
         let intTy = mapNativeTypeForArch arch Types.intType
 
         // Allocate temporary SSAs
-        let str1PtrSSA = SSA.V 999970
-        let str1LenSSA = SSA.V 999971
-        let str2PtrSSA = SSA.V 999972
-        let str2LenSSA = SSA.V 999973
-        let combinedLenSSA = SSA.V 999974
-        let resultBufferSSA = SSA.V 999975
-        let resultPtrSSA = SSA.V 999976
-        let offsetPtrSSA = SSA.V 999977
-        let resultStructSSA = SSA.V 999978
+        // TODO BACKFILL: ALL intermediate SSAs should come from coeffects (nodeExpansionCost)
+        let str1PtrSSA = failwith "StringPatterns.pStringConcat2: str1PtrSSA must come from coeffects (removed SSA.V 999970)"
+        let str1LenSSA = failwith "StringPatterns.pStringConcat2: str1LenSSA must come from coeffects (removed SSA.V 999971)"
+        let str2PtrSSA = failwith "StringPatterns.pStringConcat2: str2PtrSSA must come from coeffects (removed SSA.V 999972)"
+        let str2LenSSA = failwith "StringPatterns.pStringConcat2: str2LenSSA must come from coeffects (removed SSA.V 999973)"
+        let combinedLenSSA = failwith "StringPatterns.pStringConcat2: combinedLenSSA must come from coeffects (removed SSA.V 999974)"
+        let resultBufferSSA = failwith "StringPatterns.pStringConcat2: resultBufferSSA must come from coeffects (removed SSA.V 999975)"
+        let resultPtrSSA = failwith "StringPatterns.pStringConcat2: resultPtrSSA must come from coeffects (removed SSA.V 999976)"
+        let offsetPtrSSA = failwith "StringPatterns.pStringConcat2: offsetPtrSSA must come from coeffects (removed SSA.V 999977)"
+        let resultStructSSA = failwith "StringPatterns.pStringConcat2: resultStructSSA must come from coeffects (removed SSA.V 999978)"
 
         // 1. Extract components from str1: {ptr[0], length[1]}
         let! extract1Ptr = pExtractValue str1PtrSSA str1SSA [0] TIndex
@@ -100,35 +99,43 @@ let pStringConcat2 (resultSSA: SSA) (str1SSA: SSA) (str2SSA: SSA) (str1Type: MLI
         let! extractResult = pExtractBasePtr resultPtrSSA resultBufferSSA resultTy
 
         // 6. Cast pointers to platform words for memcpy
-        let str1PtrWord = SSA.V 999981
-        let str2PtrWord = SSA.V 999982
-        let resultPtrWord = SSA.V 999983
+        // TODO BACKFILL: Cast SSAs should come from coeffects (nodeExpansionCost)
+        let str1PtrWord = failwith "StringPatterns.pStringConcat2: str1PtrWord must come from coeffects (removed SSA.V 999981)"
+        let str2PtrWord = failwith "StringPatterns.pStringConcat2: str2PtrWord must come from coeffects (removed SSA.V 999982)"
+        let resultPtrWord = failwith "StringPatterns.pStringConcat2: resultPtrWord must come from coeffects (removed SSA.V 999983)"
         let! cast1 = pIndexCastS str1PtrWord str1PtrSSA platformWordTy
         let! cast2 = pIndexCastS str2PtrWord str2PtrSSA platformWordTy
         let! cast3 = pIndexCastS resultPtrWord resultPtrSSA platformWordTy
 
         // 7. Cast lengths to platform words for memcpy
-        let len1Word = SSA.V 999984
-        let len2Word = SSA.V 999985
+        // TODO BACKFILL: Length cast SSAs should come from coeffects (nodeExpansionCost)
+        let len1Word = failwith "StringPatterns.pStringConcat2: len1Word must come from coeffects (removed SSA.V 999984)"
+        let len2Word = failwith "StringPatterns.pStringConcat2: len2Word must come from coeffects (removed SSA.V 999985)"
         let! castLen1 = pIndexCastS len1Word str1LenSSA platformWordTy
         let! castLen2 = pIndexCastS len2Word str2LenSSA platformWordTy
 
         // 8. memcpy(result, str1.ptr, len1)
-        let! copy1Ops = pMemCopy resultPtrWord str1PtrWord len1Word
+        // TODO BACKFILL: memcpy result SSAs should come from coeffects (nodeExpansionCost)
+        let memcpy1ResultSSA = failwith "StringPatterns.pStringConcat2: memcpy1ResultSSA must come from coeffects (removed SSA.V 999986)"
+        let! copy1Ops = pMemCopy memcpy1ResultSSA resultPtrWord str1PtrWord len1Word
 
         // 9. Compute offset pointer: result + len1
         let! addOffset = pIndexAdd offsetPtrSSA resultPtrSSA str1LenSSA
-        let offsetPtrWord = SSA.V 999986
+        // TODO BACKFILL: offsetPtrWord should come from coeffects (nodeExpansionCost)
+        let offsetPtrWord = failwith "StringPatterns.pStringConcat2: offsetPtrWord must come from coeffects (removed SSA.V 999987)"
         let! castOffset = pIndexCastS offsetPtrWord offsetPtrSSA platformWordTy
 
         // 10. memcpy(result + len1, str2.ptr, len2)
-        let! copy2Ops = pMemCopy offsetPtrWord str2PtrWord len2Word
+        // TODO BACKFILL: memcpy2ResultSSA should come from coeffects (nodeExpansionCost)
+        let memcpy2ResultSSA = failwith "StringPatterns.pStringConcat2: memcpy2ResultSSA must come from coeffects (removed SSA.V 999988)"
+        let! copy2Ops = pMemCopy memcpy2ResultSSA offsetPtrWord str2PtrWord len2Word
 
         // 11. Build result string fat pointer {result_ptr, combined_length}
         let totalBytes = mlirTypeSize TIndex + mlirTypeSize intTy
         let stringTy = TMemRefStatic(totalBytes, TInt I8)
-        let undefSSA = SSA.V 999987
-        let insertPtrSSA = SSA.V 999988
+        // TODO BACKFILL: struct construction SSAs should come from coeffects (nodeExpansionCost)
+        let undefSSA = failwith "StringPatterns.pStringConcat2: undefSSA must come from coeffects (removed SSA.V 999989)"
+        let insertPtrSSA = failwith "StringPatterns.pStringConcat2: insertPtrSSA must come from coeffects (removed SSA.V 999990)"
         let! undefOp = pUndef undefSSA stringTy
         let! insertPtr = pInsertValue insertPtrSSA undefSSA resultPtrSSA [0] stringTy
         let! insertLen = pInsertValue resultSSA insertPtrSSA combinedLenSSA [1] stringTy

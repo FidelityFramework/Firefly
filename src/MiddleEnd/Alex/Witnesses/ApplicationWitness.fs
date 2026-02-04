@@ -104,7 +104,7 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                                         // Bind NativePtr.add result to offset SSA (for correctness)
                                                         MLIRAccumulator.bindNode ptrNodeId offSSA TIndex ctx.Accumulator
                                                         (baseSSA, offSSA, false)  // No additional binding needed
-                                                    | _ -> (ptrSSA, SSA.V 999990, false)  // Fallback to constant 0
+                                                    | _ -> failwith "ApplicationWitness.NativePtr.write: offset fallback - SSA must come from coeffects (removed SSA.V 999990)"
                                                 | _ -> (ptrSSA, SSA.V 999990, false)  // Not NativePtr.add, use constant 0
                                             | None -> (ptrSSA, SSA.V 999990, false)
                                         | _ -> (ptrSSA, SSA.V 999990, false)  // Not an application, use constant 0
@@ -123,6 +123,16 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             // Record the result as the offset (for compound pattern with write/read)
                             { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = offsetSSA; Type = TIndex } }
 
+                        | IntrinsicModule.NativePtr, "copy", [destSSA; srcSSA; countSSA] ->
+                            // NativePtr.copy(dest, src, count) - memory copy operation
+                            // Witness the coeffect-assigned resultSSA for the memcpy MLIR operation
+                            match tryMatch (pMemCopy resultSSA destSSA srcSSA countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some (ops, _) ->
+                                // memcpy returns dest pointer, but NativePtr.copy returns unit
+                                // So we return void result
+                                { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
+                            | None -> WitnessOutput.error "NativePtr.copy pattern failed"
+
                         | IntrinsicModule.NativePtr, "read", [ptrSSA] ->
                             // NativePtr.read needs an index SSA for memref.load - get additional SSA
                             match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
@@ -135,32 +145,22 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | _ -> WitnessOutput.error "NativePtr.read: Need 2 SSAs (index, result)"
 
                         | IntrinsicModule.Sys, "write", [fdSSA; bufferSSA; countSSA] ->
-                            // Witness observes actual buffer type (no declaration coordination)
-                            // Recall buffer argument to get its actual type (memref or ptr)
+                            // Witness observes actual buffer type (memref stays as memref)
                             let bufferNodeId = argIds.[1]
                             match MLIRAccumulator.recallNode bufferNodeId ctx.Accumulator with
                             | Some (_, bufferType) ->
-                                // Allocate conversion SSA if buffer is memref (Pattern will handle conversion)
-                                let conversionSSA =
-                                    match bufferType with
-                                    | TMemRefScalar _ | TMemRef _ -> Some (MLIRAccumulator.freshMLIRTemp ctx.Accumulator)
-                                    | _ -> None
-                                
-                                // Emit call with actual buffer type
-                                // Declaration will be collected and emitted by MLIR Declaration Collection Pass
-                                // Pattern will normalize memref→ptr at FFI boundary if needed
-                                match tryMatch (pSysWriteTyped resultSSA fdSSA bufferSSA bufferType countSSA conversionSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                // Pass buffer as-is - LLVM handles memref lowering
+                                match tryMatch (pSysWrite resultSSA fdSSA bufferSSA bufferType countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "Sys.write pattern failed"
                             | None -> WitnessOutput.error "Sys.write: buffer argument not yet witnessed"
 
                         | IntrinsicModule.Sys, "read", [fdSSA; bufferSSA; countSSA] ->
-                            // Recall buffer argument to get its actual type (memref or ptr)
+                            // Witness observes actual buffer type (memref stays as memref)
                             let bufferNodeId = argIds.[1]
                             match MLIRAccumulator.recallNode bufferNodeId ctx.Accumulator with
                             | Some (_, bufferType) ->
-                                // Emit call with actual buffer type
-                                // Pattern will normalize memref→ptr at FFI boundary
+                                // Pass buffer as-is - LLVM handles memref lowering
                                 match tryMatch (pSysRead resultSSA fdSSA bufferSSA bufferType countSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                                 | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                                 | None -> WitnessOutput.error "Sys.read pattern failed"
@@ -169,26 +169,21 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                         | IntrinsicModule.NativeStr, "fromPointer", [ptrSSA; lengthSSA] ->
                             // NativeStr.fromPointer(ptr, len) constructs a string fat pointer
                             // String is struct {ptr: nativeptr<byte>, length: int}
-                            // Platform word size (8 on x86_64) + int32 size (4) = 12 bytes (or 8+8=16 for alignment)
                             let arch = ctx.Coeffects.Platform.TargetArch
                             let ptrTy = TIndex  // Pointer represented as index
                             let lengthTy = mapNativeTypeForArch arch Types.intType  // Use platform int
 
-                            // Allocate SSAs for struct construction (undef, insert1, insert2)
-                            let ssas = [
-                                MLIRAccumulator.freshMLIRTemp ctx.Accumulator  // undef
-                                MLIRAccumulator.freshMLIRTemp ctx.Accumulator  // after insert ptr
-                                resultSSA  // final result after insert length
-                            ]
-
-                            match tryMatch (pStringConstruct ptrTy lengthTy ptrSSA lengthSSA ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                            | Some (ops, _) ->
-                                // String is represented as a fat pointer struct (index + i32)
-                                // Size depends on platform: typically 16 bytes (8+4+padding) on 64-bit
-                                let stringSize = if arch = Architecture.X86_64 then 16 else 12
-                                let stringTy = TMemRefStatic(stringSize, TInt I8)
-                                { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = stringTy } }
-                            | None -> WitnessOutput.error "NativeStr.fromPointer pattern failed"
+                            // Witness SSAs for struct construction (undef, insertPtr, result)
+                            match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+                            | Some ssas when ssas.Length >= 3 ->
+                                match tryMatch (pStringConstruct ptrTy lengthTy ptrSSA lengthSSA ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                | Some (ops, _) ->
+                                    // String is represented as a fat pointer struct (index + i32)
+                                    let stringSize = if arch = Architecture.X86_64 then 16 else 12
+                                    let stringTy = TMemRefStatic(stringSize, TInt I8)
+                                    { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = stringTy } }
+                                | None -> WitnessOutput.error "NativeStr.fromPointer pattern failed"
+                            | _ -> WitnessOutput.error "NativeStr.fromPointer: Need 3 SSAs (undef, insertPtr, result)"
 
                         // String operations (IntrinsicModule.String)
                         | IntrinsicModule.String, "concat2", [str1SSA; str2SSA] ->
@@ -263,29 +258,33 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             let arch = ctx.Coeffects.Platform.TargetArch
                             let resultType = mapNativeTypeForArch arch node.Type
 
-                            // Use classification from PSGCombinators for principled operator dispatch
-                            let category = classifyAtomicOp info
-                            let opResult =
-                                match category with
-                                // Unary operations
-                                | UnaryArith "xori" ->
-                                    // Boolean NOT: xori %operand, 1
-                                    // Allocate temporary SSA for constant 1
-                                    let constSSA = MLIRAccumulator.freshMLIRTemp ctx.Accumulator
-                                    // Emit constant 1 (for i1 boolean type)
-                                    let constOp = MLIROp.ArithOp (ArithOp.ConstI (constSSA, 1L, TInt I1))
-                                    // Emit XOR operation
-                                    match tryMatch (pXorI resultSSA operandSSA constSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                                    | Some (xorOp, _) -> Some [constOp; xorOp]
-                                    | None -> None
+                            // Witness pre-assigned SSAs (Operators get 5 SSAs from SSAAssignment)
+                            match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
+                            | Some ssas when ssas.Length >= 2 ->
+                                // Use classification from PSGCombinators for principled operator dispatch
+                                let category = classifyAtomicOp info
+                                let opResult =
+                                    match category with
+                                    // Unary operations
+                                    | UnaryArith "xori" ->
+                                        // Boolean NOT: xori %operand, 1
+                                        // Witness pre-assigned SSAs: ssas.[0] = constant, ssas.[1] = result
+                                        let constSSA = ssas.[0]
+                                        // Emit constant 1 (for i1 boolean type)
+                                        let constOp = MLIROp.ArithOp (ArithOp.ConstI (constSSA, 1L, TInt I1))
+                                        // Emit XOR operation
+                                        match tryMatch (pXorI resultSSA operandSSA constSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                        | Some (xorOp, _) -> Some [constOp; xorOp]
+                                        | None -> None
 
-                                | _ -> None
+                                    | _ -> None
 
-                            match opResult with
-                            | Some ops ->
-                                { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = resultType } }
-                            | None ->
-                                WitnessOutput.error $"Unknown or unsupported unary operator: {info.Operation} (category: {category})"
+                                match opResult with
+                                | Some ops ->
+                                    { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = resultType } }
+                                | None ->
+                                    WitnessOutput.error $"Unknown or unsupported unary operator: {info.Operation} (category: {category})"
+                            | _ -> WitnessOutput.error "UnaryArith: Need 2 SSAs (constant, result)"
 
                         | _ -> WitnessOutput.error $"Atomic operation not yet implemented: {info.FullName} with {argSSAs.Length} args"
 

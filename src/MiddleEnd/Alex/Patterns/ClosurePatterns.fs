@@ -44,11 +44,13 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
         let! indexOp = pConstI indexSSA 0L TIndex
 
         // Load current position
-        let! addressOfPosOp = pLoad heapPosPtrSSA heapPosPtrSSA [indexSSA]  // TODO: Placeholder - need AddressOf
+        // TODO BACKFILL: addressOfPosOp placeholder - need proper AddressOf from PSG or coeffects
+        let! addressOfPosOp = failwith "ClosurePatterns.pAllocateInArena: addressOfPosOp placeholder - need AddressOf (removed pLoad placeholder)"
         let! loadPosOp = pLoad heapPosSSA heapPosPtrSSA [indexSSA]
 
         // Compute result pointer: heap_base + pos
-        let! addressOfBaseOp = pLoad heapBaseSSA heapBaseSSA [indexSSA]  // TODO: Placeholder - need AddressOf
+        // TODO BACKFILL: addressOfBaseOp placeholder - need proper AddressOf from PSG or coeffects
+        let! addressOfBaseOp = failwith "ClosurePatterns.pAllocateInArena: addressOfBaseOp placeholder - need AddressOf (removed pLoad placeholder)"
         let! subViewOp = pSubView resultPtrSSA heapBaseSSA [heapPosSSA]
 
         // Update position: pos + size

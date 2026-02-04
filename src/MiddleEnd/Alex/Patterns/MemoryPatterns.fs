@@ -44,7 +44,8 @@ let pFieldAccess (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (ge
         let fieldOffset = calculateFieldOffsetForArch arch structType fieldIndex
 
         // Allocate SSA for offset constant
-        let offsetSSA = match gepSSA with | V n -> V (n - 1) | Arg n -> V (n + 1000)
+        // TODO BACKFILL: offsetSSA should come from coeffects or PSG node
+        let offsetSSA = failwith "MemoryPatterns.pFieldAccess: offsetSSA must come from coeffects (removed ad-hoc calculation)"
         let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
 
         // Memref.load with byte offset
@@ -66,7 +67,8 @@ let pFieldSet (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (value
         let fieldOffset = calculateFieldOffsetForArch arch structType fieldIndex
 
         // Allocate SSA for offset constant
-        let offsetSSA = match value with | V n -> V (n + 100) | Arg n -> V (n + 2000)
+        // TODO BACKFILL: offsetSSA should come from coeffects or PSG node
+        let offsetSSA = failwith "MemoryPatterns.pFieldSet: offsetSSA must come from coeffects (removed ad-hoc calculation)"
         let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
 
         // Memref.store with byte offset
@@ -327,7 +329,8 @@ let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) (elemType: MLIRType) (indexSSA
 let pMemRefToPtr (resultSSA: SSA) (memrefSSA: SSA) (memrefTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Extract pointer as index (portable)
-        let indexSSA = SSA.V 999996  // Temporary SSA for index result
+        // TODO BACKFILL: indexSSA should come from coeffects or PSG node
+        let indexSSA = failwith "MemoryPatterns.pMemRefToPtr: indexSSA must come from coeffects (removed SSA.V 999996)"
         let! extractOp = pExtractBasePtr indexSSA memrefSSA memrefTy
 
         // Get platform word size from XParsec state
@@ -364,18 +367,19 @@ let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) (indexZeroSSA: SSA) : PSGParse
 // ═══════════════════════════════════════════════════════════
 
 /// Extract field from struct (e.g., string.Pointer, string.Length)
-/// Maps field name to index for known struct layouts
-/// For memref types (strings), uses memref operations instead of llvm.extractvalue
-let pStructFieldGet (resultSSA: SSA) (structSSA: SSA) (fieldName: string) (structTy: MLIRType) (fieldTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+/// SSA layout (max 3): [0] = intermediate (index or dim const), [1] = intermediate2 (dim result), [2] = result
+let pStructFieldGet (ssas: SSA list) (structSSA: SSA) (fieldName: string) (structTy: MLIRType) (fieldTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        do! ensure (ssas.Length >= 3) $"pStructFieldGet: Expected 3 SSAs, got {ssas.Length}"
+        let resultSSA = List.last ssas
+
         // Check if structTy is a memref (strings are now memref<?xi8>)
         match structTy with
         | TMemRef _ | TMemRefScalar _ ->
             // String as memref - use memref operations
             match fieldName with
-            | "Pointer" ->
+            | "Pointer" | "ptr" ->  // Accept both capitalized (old) and lowercase (FNCS)
                 // Extract base pointer from memref descriptor as index, then cast to target type
-                // IMPORTANT: Convert TIndex to platform word type for portable MLIR
                 let! state = getUserState
                 let targetTy =
                     match fieldTy with
@@ -389,13 +393,13 @@ let pStructFieldGet (resultSSA: SSA) (structSSA: SSA) (fieldName: string) (struc
                     return ([extractOp], TRValue { SSA = resultSSA; Type = targetTy })
                 | _ ->
                     // Cast index → targetTy (e.g., index → i64 for x86-64, index → i32 for ARM32)
-                    let indexSSA = SSA.V 999995  // Temporary SSA for index result
+                    let indexSSA = ssas.[0]  // Intermediate index from coeffects
                     let! extractOp = pExtractBasePtr indexSSA structSSA structTy
                     let! castOp = pIndexCastS resultSSA indexSSA targetTy
                     return ([extractOp; castOp], TRValue { SSA = resultSSA; Type = targetTy })
-            | "Length" ->
+            | "Length" | "len" ->  // Accept both capitalized (old) and lowercase (FNCS)
                 // Extract length using memref.dim (returns index type)
-                let dimIndexSSA = SSA.V 999998  // Temporary SSA for constant 0
+                let dimIndexSSA = ssas.[0]  // Dim constant (0) from coeffects
                 let! constOp = pConstI dimIndexSSA 0L TIndex
 
                 // Check if we need to cast index → fieldTy (for FFI boundaries)
@@ -406,7 +410,7 @@ let pStructFieldGet (resultSSA: SSA) (structSSA: SSA) (fieldName: string) (struc
                     return ([constOp; dimOp], TRValue { SSA = resultSSA; Type = fieldTy })
                 | _ ->
                     // Cast index → fieldTy (e.g., index → i64 for x86-64 syscall, index → i32 for ARM32)
-                    let dimResultSSA = SSA.V 999997  // Temporary SSA for dim result
+                    let dimResultSSA = ssas.[1]  // Dim result from coeffects
                     let! dimOp = pMemRefDim dimResultSSA structSSA dimIndexSSA structTy
                     let! castOp = pIndexCastS resultSSA dimResultSSA fieldTy
                     return ([constOp; dimOp; castOp], TRValue { SSA = resultSSA; Type = fieldTy })
@@ -416,8 +420,8 @@ let pStructFieldGet (resultSSA: SSA) (structSSA: SSA) (fieldName: string) (struc
             // LLVM struct - use extractvalue (for closures, option, etc.)
             let fieldIndex =
                 match fieldName with
-                | "Pointer" -> 0
-                | "Length" -> 1
+                | "Pointer" | "ptr" -> 0  // Accept both capitalized (old) and lowercase (FNCS)
+                | "Length" | "len" -> 1  // Accept both capitalized (old) and lowercase (FNCS)
                 | _ -> failwith $"Unknown field name: {fieldName}"
 
             // Extract field value - pass struct type for MLIR type annotation

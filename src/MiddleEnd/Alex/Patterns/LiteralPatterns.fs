@@ -141,7 +141,8 @@ let pStringGetPtr (stringSSA: SSA) (ptrSSA: SSA) (ptrTy: MLIRType) : PSGParser<M
             return [extractOp]
         | _ ->
             // Extract as index, then cast to target type (e.g., i64 for x86-64, i32 for ARM32)
-            let indexSSA = SSA.V 999994  // Temporary SSA for index result
+            // TODO BACKFILL: indexSSA should come from coeffects or PSG node
+            let indexSSA = failwith "LiteralPatterns.pStringGetPtr: indexSSA must come from coeffects (removed SSA.V 999994)"
             let! extractOp = pExtractBasePtr indexSSA stringSSA memrefTy
             let! castOp = pIndexCastS ptrSSA indexSSA ptrTy
             return [extractOp; castOp]
@@ -153,7 +154,8 @@ let pStringGetLength (stringSSA: SSA) (lengthSSA: SSA) (lengthTy: MLIRType) : PS
     parser {
         // memref.dim %memref, %c0 : memref<?xi8>
         // Need constant 0 for dimension index (0th dimension = length)
-        let dimIndexSSA = SSA.V 999999  // Temporary SSA for constant
+        // TODO BACKFILL: dimIndexSSA should come from coeffects or PSG node
+        let dimIndexSSA = failwith "LiteralPatterns.pStringGetLength: dimIndexSSA must come from coeffects (removed SSA.V 999999)"
         let memrefTy = TMemRef (TInt I8)
         let! constOp = pConstI dimIndexSSA 0L TIndex
         let! dimOp = pMemRefDim lengthSSA stringSSA dimIndexSSA memrefTy
