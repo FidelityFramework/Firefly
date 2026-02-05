@@ -523,6 +523,11 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 // PRD-13a: Map operations
                 | IntrinsicModule.Map, "empty" -> 1            // flat closure (Undef)
                 | IntrinsicModule.Map, "isEmpty" -> 2          // Baker decomposes to structural check
+                | IntrinsicModule.Map, "key" -> 2              // offset constant + load
+                | IntrinsicModule.Map, "value" -> 2            // offset constant + load
+                | IntrinsicModule.Map, "left" -> 2             // offset constant + load
+                | IntrinsicModule.Map, "right" -> 2            // offset constant + load
+                | IntrinsicModule.Map, "height" -> 2           // offset constant + load
                 | IntrinsicModule.Map, "tryFind" -> 20         // tree traversal
                 | IntrinsicModule.Map, "find" -> 18            // tree traversal (may fail)
                 | IntrinsicModule.Map, "add" -> 25             // tree traversal + rebalance
@@ -538,6 +543,10 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 // PRD-13a: Set operations
                 | IntrinsicModule.Set, "empty" -> 1            // flat closure (Undef)
                 | IntrinsicModule.Set, "isEmpty" -> 2          // Baker decomposes to structural check
+                | IntrinsicModule.Set, "value" -> 2            // offset constant + load
+                | IntrinsicModule.Set, "left" -> 2             // offset constant + load
+                | IntrinsicModule.Set, "right" -> 2            // offset constant + load
+                | IntrinsicModule.Set, "height" -> 2           // offset constant + load
                 | IntrinsicModule.Set, "contains" -> 15        // tree traversal
                 | IntrinsicModule.Set, "add" -> 20             // tree traversal + rebalance
                 | IntrinsicModule.Set, "remove" -> 20          // tree traversal + rebalance
@@ -568,9 +577,9 @@ let private computeApplicationSSACost (graph: SemanticGraph) (node: SemanticNode
                 // Baker has transformed NativePtr → MemRef, these are the target operations
                 | IntrinsicModule.MemRef, "alloca" -> 1  // result memref only
                 | IntrinsicModule.MemRef, "load" -> 1    // load result (index already from Baker)
-                | IntrinsicModule.MemRef, "store" -> 0   // returns unit, no SSA needed
-                | IntrinsicModule.MemRef, "add" -> 0     // marker operation, no MLIR emitted
-                | IntrinsicModule.MemRef, "copy" -> 0    // returns unit
+                | IntrinsicModule.MemRef, "store" -> 1   // returns unit, but witness requires SSA allocation
+                | IntrinsicModule.MemRef, "add" -> 1     // marker: returns offset/index for memref operations
+                | IntrinsicModule.MemRef, "copy" -> 1    // memcpy returns void* (result pointer)
                 | IntrinsicModule.MemRef, _ -> 1         // safe default
                 | IntrinsicModule.Array, _ -> 10           // array ops
                 | IntrinsicModule.Operators, _ -> 5        // arithmetic
@@ -1034,9 +1043,13 @@ let rec private assignFunctionBody
             // Regular node - assign SSAs based on structural analysis
             if producesValue node.Kind then
                 let cost = nodeExpansionCost arch graph node  // Structural derivation
-                let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
-                let alloc = NodeSSAAllocation.multi ssas
-                FunctionScope.assign node.Id alloc scopeWithSSAs
+                if cost > 0 then
+                    let ssas, scopeWithSSAs = FunctionScope.yieldSSAs cost scopeAfterChildren
+                    let alloc = NodeSSAAllocation.multi ssas
+                    FunctionScope.assign node.Id alloc scopeWithSSAs
+                else
+                    // Node produces a value conceptually but has 0 SSA cost (e.g., MemRef.store returning unit)
+                    scopeAfterChildren
             else
                 scopeAfterChildren
 

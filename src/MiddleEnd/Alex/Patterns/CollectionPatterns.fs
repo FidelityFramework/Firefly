@@ -2,6 +2,10 @@
 ///
 /// PUBLIC: Witnesses use these to emit Option, List, Map, Set, Result operations.
 /// All collections are implemented as discriminated unions with tag-based dispatch.
+///
+/// ARCHITECTURAL RESTORATION (Feb 2026): Patterns access SSAs monadically via getUserState.
+/// Witnesses pass NodeIds, NOT SSAs. Patterns return TransferResult with the result SSA.
+/// This eliminates ALL imperative lookups in witnesses - pure XParsec monadic observation.
 module Alex.Patterns.CollectionPatterns
 
 open XParsec
@@ -9,9 +13,11 @@ open XParsec.Parsers
 open XParsec.Combinators
 open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
+open Alex.Traversal.TransferTypes  // TransferResult, TRValue, TRVoid
 open Alex.Elements.MLIRAtomics  // pExtractValue, pConstI
 open Alex.Elements.ArithElements  // pCmpI
 open Alex.Patterns.MemoryPatterns  // pDUCase - DU construction foundation
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 
 // ═══════════════════════════════════════════════════════════
@@ -19,37 +25,67 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 // ═══════════════════════════════════════════════════════════
 
 /// Option.Some: tag=1 + value
-let pOptionSome (value: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 1L [value] ssas ty
+/// Returns: (ops, result) where result is the constructed Option<'T> value
+let pOptionSome (nodeId: NodeId) (value: Val) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 1L [value] ty
 
 /// Option.None: tag=0
-let pOptionNone (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas ty
+/// Returns: (ops, result) where result is the constructed Option<'T> value
+let pOptionNone (nodeId: NodeId) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 0L [] ty
 
 /// Option.IsSome: extract tag, compare with 1
-let pOptionIsSome (optionSSA: SSA) (offsetSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+/// Returns: (ops, result) where result is i1 boolean
+let pOptionIsSome (nodeId: NodeId) (optionSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        let tagTy = TInt I8  // DU tags are always i8
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 4) $"pOptionIsSome: Expected 4 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let tagSSA = ssas.[1]
+        let oneSSA = ssas.[2]
+        let resultSSA = ssas.[3]
+
+        let tagTy = TInt I8
         let! extractTagOps = pExtractValue tagSSA optionSSA 0 offsetSSA tagTy
         let! oneConstOp = pConstI oneSSA 1L tagTy
         let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA oneSSA tagTy
-        return extractTagOps @ [oneConstOp; cmpOp]
+        let ops = extractTagOps @ [oneConstOp; cmpOp]
+        return (ops, TRValue { SSA = resultSSA; Type = TInt I1 })
     }
 
 /// Option.IsNone: extract tag, compare with 0
-let pOptionIsNone (optionSSA: SSA) (offsetSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+/// Returns: (ops, result) where result is i1 boolean
+let pOptionIsNone (nodeId: NodeId) (optionSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        let tagTy = TInt I8  // DU tags are always i8
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 4) $"pOptionIsNone: Expected 4 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let tagSSA = ssas.[1]
+        let zeroSSA = ssas.[2]
+        let resultSSA = ssas.[3]
+
+        let tagTy = TInt I8
         let! extractTagOps = pExtractValue tagSSA optionSSA 0 offsetSSA tagTy
         let! zeroConstOp = pConstI zeroSSA 0L tagTy
         let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA tagTy
-        return extractTagOps @ [zeroConstOp; cmpOp]
+        let ops = extractTagOps @ [zeroConstOp; cmpOp]
+        return (ops, TRValue { SSA = resultSSA; Type = TInt I1 })
     }
 
 /// Option.Get: extract value field (index 1)
-let pOptionGet (optionSSA: SSA) (offsetSSA: SSA) (resultSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list> =
+/// Returns: (ops, result) where result is the extracted value
+let pOptionGet (nodeId: NodeId) (optionSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        return! pExtractValue resultSSA optionSSA 1 offsetSSA valueTy
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pOptionGet: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA optionSSA 1 offsetSSA valueTy
+        return (ops, TRValue { SSA = resultSSA; Type = valueTy })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -57,21 +93,61 @@ let pOptionGet (optionSSA: SSA) (offsetSSA: SSA) (resultSSA: SSA) (valueTy: MLIR
 // ═══════════════════════════════════════════════════════════
 
 /// List.Cons: tag=1 + head + tail
-let pListCons (head: Val) (tail: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 1L [head; tail] ssas ty
+/// Returns: (ops, result) where result is the constructed List<'T> value
+let pListCons (nodeId: NodeId) (head: Val) (tail: Val) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 1L [head; tail] ty
 
 /// List.Empty: tag=0
-let pListEmpty (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas ty
+/// Returns: (ops, result) where result is the constructed List<'T> value
+let pListEmpty (nodeId: NodeId) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 0L [] ty
 
 /// List.IsEmpty: extract tag, compare with 0
-let pListIsEmpty (listSSA: SSA) (offsetSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (resultSSA: SSA) : PSGParser<MLIROp list> =
+/// Returns: (ops, result) where result is i1 boolean
+let pListIsEmpty (nodeId: NodeId) (listSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        let tagTy = TInt I8  // DU tags are always i8
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 4) $"pListIsEmpty: Expected 4 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let tagSSA = ssas.[1]
+        let zeroSSA = ssas.[2]
+        let resultSSA = ssas.[3]
+
+        let tagTy = TInt I8
         let! extractTagOps = pExtractValue tagSSA listSSA 0 offsetSSA tagTy
         let! zeroConstOp = pConstI zeroSSA 0L tagTy
         let! cmpOp = pCmpI resultSSA ICmpPred.Eq tagSSA zeroSSA tagTy
-        return extractTagOps @ [zeroConstOp; cmpOp]
+        let ops = extractTagOps @ [zeroConstOp; cmpOp]
+        return (ops, TRValue { SSA = resultSSA; Type = TInt I1 })
+    }
+
+/// List.Head: extract first element (index 1)
+/// Returns: (ops, result) where result is the head value
+let pListHead (nodeId: NodeId) (listSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pListHead: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA listSSA 1 offsetSSA valueTy
+        return (ops, TRValue { SSA = resultSSA; Type = valueTy })
+    }
+
+/// List.Tail: extract tail list (index 2)
+/// Returns: (ops, result) where result is the tail list
+let pListTail (nodeId: NodeId) (listSSA: SSA) (tailTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pListTail: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA listSSA 2 offsetSSA tailTy
+        return (ops, TRValue { SSA = resultSSA; Type = tailTy })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -79,31 +155,83 @@ let pListIsEmpty (listSSA: SSA) (offsetSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (r
 // ═══════════════════════════════════════════════════════════
 
 /// Map.Empty: empty tree structure (tag=0 for leaf node)
-let pMapEmpty (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas ty
+/// Returns: (ops, result) where result is the constructed Map<'K,'V> value
+let pMapEmpty (nodeId: NodeId) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 0L [] ty
 
 /// Map.Add: create new tree node with key, value, left, right subtrees
-/// Structure: tag=1, key, value, left_tree, right_tree
-let pMapAdd (key: Val) (value: Val) (left: Val) (right: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 1L [key; value; left; right] ssas ty
+/// Returns: (ops, result) where result is the constructed Map<'K,'V> value
+let pMapAdd (nodeId: NodeId) (key: Val) (value: Val) (left: Val) (right: Val) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 1L [key; value; left; right] ty
 
-/// Map.ContainsKey: tree traversal comparing keys
-/// This is a composite operation that would be implemented as a recursive function
-/// The pattern here just shows the key comparison at each node
-let pMapKeyCompare (mapNodeSSA: SSA) (searchKey: SSA) (offsetSSA: SSA) (keySSA: SSA) (keyTy: MLIRType) (resultSSA: SSA) : PSGParser<MLIROp list> =
+/// Map.Key: extract key field (index 1)
+/// Returns: (ops, result) where result is the extracted key
+let pMapKey (nodeId: NodeId) (mapNodeSSA: SSA) (keyTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Extract key from node (index 1, after tag at index 0)
-        let! extractKeyOps = pExtractValue keySSA mapNodeSSA 1 offsetSSA keyTy
-        // Compare search key with node key
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq searchKey keySSA keyTy
-        return extractKeyOps @ [cmpOp]
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pMapKey: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA mapNodeSSA 1 offsetSSA keyTy
+        return (ops, TRValue { SSA = resultSSA; Type = keyTy })
     }
 
-/// Map.TryFind: similar to ContainsKey but returns Option<value>
-let pMapExtractValue (mapNodeSSA: SSA) (offsetSSA: SSA) (valueSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list> =
+/// Map.Value: extract value field (index 2)
+/// Returns: (ops, result) where result is the extracted value
+let pMapValue (nodeId: NodeId) (mapNodeSSA: SSA) (valueTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Extract value from node (index 2, after tag and key)
-        return! pExtractValue valueSSA mapNodeSSA 2 offsetSSA valueTy
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pMapValue: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA mapNodeSSA 2 offsetSSA valueTy
+        return (ops, TRValue { SSA = resultSSA; Type = valueTy })
+    }
+
+/// Map.Left: extract left subtree (index 3)
+/// Returns: (ops, result) where result is the left subtree
+let pMapLeft (nodeId: NodeId) (mapNodeSSA: SSA) (subtreeTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pMapLeft: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA mapNodeSSA 3 offsetSSA subtreeTy
+        return (ops, TRValue { SSA = resultSSA; Type = subtreeTy })
+    }
+
+/// Map.Right: extract right subtree (index 4)
+/// Returns: (ops, result) where result is the right subtree
+let pMapRight (nodeId: NodeId) (mapNodeSSA: SSA) (subtreeTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pMapRight: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA mapNodeSSA 4 offsetSSA subtreeTy
+        return (ops, TRValue { SSA = resultSSA; Type = subtreeTy })
+    }
+
+/// Map.Height: extract height field (index 5)
+/// Returns: (ops, result) where result is the height value
+let pMapHeight (nodeId: NodeId) (mapNodeSSA: SSA) (heightTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pMapHeight: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA mapNodeSSA 5 offsetSSA heightTy
+        return (ops, TRValue { SSA = resultSSA; Type = heightTy })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -111,33 +239,69 @@ let pMapExtractValue (mapNodeSSA: SSA) (offsetSSA: SSA) (valueSSA: SSA) (valueTy
 // ═══════════════════════════════════════════════════════════
 
 /// Set.Empty: empty tree structure (tag=0 for leaf node)
-let pSetEmpty (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 0L [] ssas ty
+/// Returns: (ops, result) where result is the constructed Set<'T> value
+let pSetEmpty (nodeId: NodeId) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 0L [] ty
 
 /// Set.Add: create new tree node with element, left, right subtrees
-/// Structure: tag=1, element, left_tree, right_tree
-let pSetAdd (element: Val) (left: Val) (right: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 1L [element; left; right] ssas ty
+/// Returns: (ops, result) where result is the constructed Set<'T> value
+let pSetAdd (nodeId: NodeId) (element: Val) (left: Val) (right: Val) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 1L [element; left; right] ty
 
-/// Set.Contains: tree traversal comparing elements
-let pSetElementCompare (setNodeSSA: SSA) (searchElem: SSA) (offsetSSA: SSA) (elemSSA: SSA) (elemTy: MLIRType) (resultSSA: SSA) : PSGParser<MLIROp list> =
+/// Set.Value: extract element field (index 1)
+/// Returns: (ops, result) where result is the extracted element
+let pSetValue (nodeId: NodeId) (setNodeSSA: SSA) (elemTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Extract element from node (index 1, after tag at index 0)
-        let! extractElemOps = pExtractValue elemSSA setNodeSSA 1 offsetSSA elemTy
-        // Compare search element with node element
-        let! cmpOp = pCmpI resultSSA ICmpPred.Eq searchElem elemSSA elemTy
-        return extractElemOps @ [cmpOp]
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pSetValue: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA setNodeSSA 1 offsetSSA elemTy
+        return (ops, TRValue { SSA = resultSSA; Type = elemTy })
     }
 
-/// Set.Union: combines two sets (implemented as tree merge operation)
-/// Pattern shows extraction of subtrees for recursive union
-let pSetExtractSubtrees (setNodeSSA: SSA) (leftOffsetSSA: SSA) (leftSSA: SSA) (rightOffsetSSA: SSA) (rightSSA: SSA) (subtreeTy: MLIRType) : PSGParser<MLIROp list> =
+/// Set.Left: extract left subtree (index 2)
+/// Returns: (ops, result) where result is the left subtree
+let pSetLeft (nodeId: NodeId) (setNodeSSA: SSA) (subtreeTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
-        // Extract left subtree (index 2)
-        let! extractLeftOps = pExtractValue leftSSA setNodeSSA 2 leftOffsetSSA subtreeTy
-        // Extract right subtree (index 3)
-        let! extractRightOps = pExtractValue rightSSA setNodeSSA 3 rightOffsetSSA subtreeTy
-        return extractLeftOps @ extractRightOps
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pSetLeft: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA setNodeSSA 2 offsetSSA subtreeTy
+        return (ops, TRValue { SSA = resultSSA; Type = subtreeTy })
+    }
+
+/// Set.Right: extract right subtree (index 3)
+/// Returns: (ops, result) where result is the right subtree
+let pSetRight (nodeId: NodeId) (setNodeSSA: SSA) (subtreeTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pSetRight: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA setNodeSSA 3 offsetSSA subtreeTy
+        return (ops, TRValue { SSA = resultSSA; Type = subtreeTy })
+    }
+
+/// Set.Height: extract height field (index 4)
+/// Returns: (ops, result) where result is the height value
+let pSetHeight (nodeId: NodeId) (setNodeSSA: SSA) (heightTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pSetHeight: Expected 2 SSAs, got {ssas.Length}"
+
+        let offsetSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
+        let! ops = pExtractValue resultSSA setNodeSSA 4 offsetSSA heightTy
+        return (ops, TRValue { SSA = resultSSA; Type = heightTy })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -145,29 +309,11 @@ let pSetExtractSubtrees (setNodeSSA: SSA) (leftOffsetSSA: SSA) (leftSSA: SSA) (r
 // ═══════════════════════════════════════════════════════════
 
 /// Result.Ok: tag=0 + value
-let pResultOk (value: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 0L [value] ssas ty
+/// Returns: (ops, result) where result is the constructed Result<'T,'E> value
+let pResultOk (nodeId: NodeId) (value: Val) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 0L [value] ty
 
 /// Result.Error: tag=1 + error
-let pResultError (error: Val) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
-    pDUCase 1L [error] ssas ty
-
-/// Result.IsOk: extract tag, compare with 0
-let pResultIsOk (resultSSA: SSA) (offsetSSA: SSA) (tagSSA: SSA) (zeroSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
-    parser {
-        let tagTy = TInt I8  // DU tags are always i8
-        let! extractTagOps = pExtractValue tagSSA resultSSA 0 offsetSSA tagTy
-        let! zeroConstOp = pConstI zeroSSA 0L tagTy
-        let! cmpOp = pCmpI cmpSSA ICmpPred.Eq tagSSA zeroSSA tagTy
-        return extractTagOps @ [zeroConstOp; cmpOp]
-    }
-
-/// Result.IsError: extract tag, compare with 1
-let pResultIsError (resultSSA: SSA) (offsetSSA: SSA) (tagSSA: SSA) (oneSSA: SSA) (cmpSSA: SSA) : PSGParser<MLIROp list> =
-    parser {
-        let tagTy = TInt I8  // DU tags are always i8
-        let! extractTagOps = pExtractValue tagSSA resultSSA 0 offsetSSA tagTy
-        let! oneConstOp = pConstI oneSSA 1L tagTy
-        let! cmpOp = pCmpI cmpSSA ICmpPred.Eq tagSSA oneSSA tagTy
-        return extractTagOps @ [oneConstOp; cmpOp]
-    }
+/// Returns: (ops, result) where result is the constructed Result<'T,'E> value
+let pResultError (nodeId: NodeId) (error: Val) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    pDUCase nodeId 1L [error] ty

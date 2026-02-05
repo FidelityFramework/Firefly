@@ -126,6 +126,32 @@ let mapNTUKindForPlatform (state: PSGParserState) (kind: NTUKind) : MLIRType =
     Alex.CodeGeneration.TypeMapping.mapNTUKindToMLIRType state.Platform.TargetArch kind
 
 // ═══════════════════════════════════════════════════════════════════════════
+// SSA COEFFECT EXTRACTION (monadic access to pre-computed SSAs)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Extract result SSA for a node from coeffects (monadic)
+/// This is the PRIMARY way for Patterns to access SSAs - via getUserState, not parameters.
+/// Witnesses pass NodeIds; Patterns extract SSAs monadically from state.Coeffects.SSA.
+let getNodeSSA (nodeId: NodeId) : PSGParser<Alex.Dialects.Core.Types.SSA> =
+    parser {
+        let! state = getUserState
+        match PSGElaboration.SSAAssignment.lookupSSA nodeId state.Coeffects.SSA with
+        | Some ssa -> return ssa
+        | None -> return! fail (Message (sprintf "Node %A has no SSA allocated" nodeId))
+    }
+
+/// Extract all SSAs for a node from coeffects (monadic)
+/// Multi-SSA nodes have multiple SSAs: [result; intermediate0; intermediate1; ...]
+/// Result SSA is always at index 0.
+let getNodeSSAs (nodeId: NodeId) : PSGParser<Alex.Dialects.Core.Types.SSA list> =
+    parser {
+        let! state = getUserState
+        match PSGElaboration.SSAAssignment.lookupSSAs nodeId state.Coeffects.SSA with
+        | Some ssas -> return ssas
+        | None -> return! fail (Message (sprintf "Node %A has no SSA allocated" nodeId))
+    }
+
+// ═══════════════════════════════════════════════════════════════════════════
 // BASIC PSG OPERATIONS (use XParsec's state threading)
 // ═══════════════════════════════════════════════════════════════════════════
 

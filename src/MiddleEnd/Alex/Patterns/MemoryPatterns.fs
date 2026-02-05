@@ -4,6 +4,7 @@
 /// Patterns compose Elements (internal) into semantic memory operations.
 module Alex.Patterns.MemoryPatterns
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId - MUST be before TransferTypes
 open XParsec
 open XParsec.Parsers     // fail, preturn
 open XParsec.Combinators // parser { }
@@ -15,7 +16,7 @@ open Alex.Elements.MLIRAtomics
 open Alex.Elements.MemRefElements
 open Alex.Elements.ArithElements
 open Alex.Elements.IndexElements
-open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open Alex.Elements.FuncElements
 open Alex.CodeGeneration.TypeMapping
 
 // ═══════════════════════════════════════════════════════════
@@ -48,21 +49,19 @@ let pFieldAccess (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (ge
         // Calculate byte offset for the field using FNCS-provided type structure
         let fieldOffset = calculateFieldOffsetForArch arch structType fieldIndex
 
-        // Allocate SSA for offset constant
-        // TODO BACKFILL: offsetSSA should come from coeffects or PSG node
-        let offsetSSA = failwith "MemoryPatterns.pFieldAccess: offsetSSA must come from coeffects (removed ad-hoc calculation)"
-        let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
+        // Emit offset constant using SSA observed from coeffects via witness
+        let! offsetOp = pConstI gepSSA (int64 fieldOffset) TIndex
 
         // Memref.load with byte offset
         // Note: This assumes structPtr is memref<Nxi8> and we load at byte offset
-        let! loadOp = Alex.Elements.MemRefElements.pLoad loadSSA structPtr [offsetSSA]
+        let! loadOp = Alex.Elements.MemRefElements.pLoad loadSSA structPtr [gepSSA]
 
-        return [offsetOp; loadOp]
+        return ([offsetOp; loadOp])
     }
 
 /// Field set via byte-offset memref operations
 /// structType: The NativeType of the struct (for calculating field offset)
-let pFieldSet (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (value: SSA) (_gepSSA: SSA) (_indexSSA: SSA) : PSGParser<MLIROp list> =
+let pFieldSet (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (value: SSA) (gepSSA: SSA) (_indexSSA: SSA) : PSGParser<MLIROp list> =
     parser {
         let! state = getUserState
         let arch = state.Platform.TargetArch
@@ -71,16 +70,14 @@ let pFieldSet (structPtr: SSA) (structType: NativeType) (fieldIndex: int) (value
         // Calculate byte offset for the field using FNCS-provided type structure
         let fieldOffset = calculateFieldOffsetForArch arch structType fieldIndex
 
-        // Allocate SSA for offset constant
-        // TODO BACKFILL: offsetSSA should come from coeffects or PSG node
-        let offsetSSA = failwith "MemoryPatterns.pFieldSet: offsetSSA must come from coeffects (removed ad-hoc calculation)"
-        let! offsetOp = pConstI offsetSSA (int64 fieldOffset) TIndex
+        // Emit offset constant using SSA observed from coeffects via witness
+        let! offsetOp = pConstI gepSSA (int64 fieldOffset) TIndex
 
         // Memref.store with byte offset
         let memrefType = TMemRefStatic (1, elemType)
-        let! storeOp = pStore value structPtr [offsetSSA] elemType memrefType
+        let! storeOp = pStore value structPtr [gepSSA] elemType memrefType
 
-        return [offsetOp; storeOp]
+        return ([offsetOp; storeOp])
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -104,7 +101,7 @@ let pAllocaImmutable (valueSSA: SSA) (valueType: MLIRType) (ssas: SSA list) : PS
         let memrefType = TMemRefStatic (1, valueType)
         let! storeOp = pStore valueSSA allocaSSA [indexSSA] valueType memrefType
 
-        return [constOp; allocaOp; indexOp; storeOp]
+        return ([constOp; allocaOp; indexOp; storeOp])
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -135,7 +132,7 @@ let pConvertType (srcSSA: SSA) (srcType: MLIRType) (dstType: MLIRType) (resultSS
                 // Unsupported conversion (bitcast removed - no portable memref equivalent)
                 | _, _ ->
                     fail (Message $"Unsupported type conversion: {srcType} -> {dstType}")
-            return [convOp]
+            return ([convOp])
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -145,25 +142,32 @@ let pConvertType (srcSSA: SSA) (srcType: MLIRType) (dstType: MLIRType) (resultSS
 /// Extract DU tag (handles both inline and pointer-based DUs)
 /// Pointer-based: Load tag byte from offset 0
 /// Inline: ExtractValue at index 0
-/// SSAs: tagSSA for result, indexZeroSSA for offset/index constant
-let pExtractDUTag (duSSA: SSA) (duType: MLIRType) (tagSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list> =
+/// SSAs extracted from coeffects via nodeId: [0] = indexZeroSSA, [1] = tagSSA (result)
+let pExtractDUTag (nodeId: NodeId) (duSSA: SSA) (duType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pExtractDUTag: Expected 2 SSAs, got {ssas.Length}"
+        let indexZeroSSA = ssas.[0]
+        let tagSSA = ssas.[1]
+        let tagTy = TInt I8  // DU tags are always i8
+
         match duType with
         | TIndex ->
             // Pointer-based DU: load tag byte from offset 0
             let! indexZeroOp = pConstI indexZeroSSA 0L TIndex
             let! loadOp = pLoad tagSSA duSSA [indexZeroSSA]
-            return [indexZeroOp; loadOp]
+            return ([indexZeroOp; loadOp], TRValue { SSA = tagSSA; Type = tagTy })
         | _ ->
             // Inline struct DU: extract tag from field 0 (pExtractValue creates constant internally)
-            let tagTy = TInt I8  // DU tags are always i8
-            return! pExtractValue tagSSA duSSA 0 indexZeroSSA tagTy
+            let! ops = pExtractValue tagSSA duSSA 0 indexZeroSSA tagTy
+            return (ops, TRValue { SSA = tagSSA; Type = tagTy })
     }
 
 /// Extract DU payload with optional type conversion
-/// SSAs: [0] = offsetSSA, [1] = extractSSA, [2] = convertSSA (if needed)
-let pExtractDUPayload (duSSA: SSA) (duType: MLIRType) (payloadIndex: int) (payloadType: MLIRType) (ssas: SSA list) : PSGParser<MLIROp list> =
+/// SSAs extracted from coeffects via nodeId: [0] = offsetSSA, [1] = extractSSA, [2] = convertSSA (if needed)
+let pExtractDUPayload (nodeId: NodeId) (duSSA: SSA) (duType: MLIRType) (payloadIndex: int) (payloadType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 2) $"pExtractDUPayload: Expected at least 2 SSAs, got {ssas.Length}"
 
         let offsetSSA = ssas.[0]
@@ -178,12 +182,12 @@ let pExtractDUPayload (duSSA: SSA) (duType: MLIRType) (payloadIndex: int) (paylo
 
         // Convert if needed
         if slotType = payloadType then
-            return extractOps
+            return (extractOps, TRValue { SSA = extractSSA; Type = payloadType })
         else
             do! ensure (ssas.Length >= 3) $"pExtractDUPayload: Need 3 SSAs for conversion, got {ssas.Length}"
             let convertSSA = ssas.[2]
             let! convOps = pConvertType extractSSA slotType payloadType convertSSA
-            return extractOps @ convOps
+            return (extractOps @ convOps, TRValue { SSA = convertSSA; Type = payloadType })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -229,7 +233,7 @@ let pArrayAccess (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (gepSSA: SSA) 
         let! subViewOp = pSubView gepSSA arrayPtr [index]
         let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // MLIR memrefs require indices
         let! loadOp = pLoad loadSSA gepSSA [indexZeroSSA]
-        return [subViewOp; indexZeroOp; loadOp]
+        return ([subViewOp; indexZeroOp; loadOp])
     }
 
 /// Array element set via SubView + Store
@@ -242,7 +246,7 @@ let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gep
         let! indexZeroOp = pConstI indexZeroSSA 0L TIndex  // Index 0 for 1-element memref
         let memrefType = TMemRefStatic (1, elemType)
         let! storeOp = pStore value gepSSA [indexZeroSSA] elemType memrefType
-        return [subViewOp; indexZeroOp; storeOp]
+        return ([subViewOp; indexZeroOp; storeOp])
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -253,8 +257,13 @@ let pArraySet (arrayPtr: SSA) (index: SSA) (indexTy: MLIRType) (value: SSA) (gep
 /// Allocates memory on the stack and returns a pointer
 ///
 /// NativePtr.stackalloc<'T>(count) : nativeptr<'T>
-let pNativePtrStackAlloc (resultSSA: SSA) (count: int) : PSGParser<MLIROp list * TransferResult> =
+/// SSA extracted from coeffects via nodeId: [0] = result
+let pNativePtrStackAlloc (nodeId: NodeId) (count: int) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 1) $"pNativePtrStackAlloc: Expected 1 SSA, got {ssas.Length}"
+        let resultSSA = ssas.[0]
+
         let! state = getUserState
 
         // Extract element type from nativeptr<'T> in state.Current.Type
@@ -289,32 +298,18 @@ let pNativePtrWrite (valueSSA: SSA) (ptrSSA: SSA) (elemType: MLIRType) (indexSSA
         return ([indexOp; storeOp], TRVoid)
     }
 
-/// Convert memref to pointer for FFI boundaries
-/// Extracts pointer as index, then casts to platform word
-let pMemRefToPtr (resultSSA: SSA) (memrefSSA: SSA) (memrefTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
-    parser {
-        // Extract pointer as index (portable)
-        // TODO BACKFILL: indexSSA should come from coeffects or PSG node
-        let indexSSA = failwith "MemoryPatterns.pMemRefToPtr: indexSSA must come from coeffects (removed SSA.V 999996)"
-        let! extractOp = pExtractBasePtr indexSSA memrefSSA memrefTy
-
-        // Get platform word size from XParsec state
-        let! state = getUserState
-        let platformWordTy = state.Platform.PlatformWordType
-
-        // Cast index → platform word (i64 on x64, i32 on ARM32)
-        let! castOp = pIndexCastS resultSSA indexSSA platformWordTy
-
-        return ([extractOp; castOp], TRValue { SSA = resultSSA; Type = platformWordTy })
-    }
-
 /// Build NativePtr.read pattern
 /// Reads a value from a pointer location
 ///
 /// NativePtr.read (ptr: nativeptr<'T>) : 'T
-/// SSAs: resultSSA for loaded value, indexZeroSSA for memref index
-let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) (indexZeroSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+/// SSA extracted from coeffects via nodeId: [0] = indexZeroSSA, [1] = resultSSA
+let pNativePtrRead (nodeId: NodeId) (ptrSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 2) $"pNativePtrRead: Expected 2 SSAs, got {ssas.Length}"
+        let indexZeroSSA = ssas.[0]
+        let resultSSA = ssas.[1]
+
         // Get result type from XParsec state (type of value being loaded)
         let! state = getUserState
         let arch = state.Platform.TargetArch
@@ -338,8 +333,13 @@ let pNativePtrRead (resultSSA: SSA) (ptrSSA: SSA) (indexZeroSSA: SSA) : PSGParse
 ///
 /// Arena.create<'lifetime>(sizeBytes: int) : Arena<'lifetime>
 /// Returns: memref<sizeBytes x i8> (stack-allocated byte buffer)
-let pArenaCreate (resultSSA: SSA) (sizeBytes: int) : PSGParser<MLIROp list * TransferResult> =
+/// SSA extracted from coeffects via nodeId: [0] = result
+let pArenaCreate (nodeId: NodeId) (sizeBytes: int) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 1) $"pArenaCreate: Expected 1 SSA, got {ssas.Length}"
+        let resultSSA = ssas.[0]
+
         // Allocate arena memory block on stack as byte array
         // Arena IS the memref - no separate control struct in memref semantics
         let elemType = TInt I8
@@ -356,15 +356,20 @@ let pArenaCreate (resultSSA: SSA) (sizeBytes: int) : PSGParser<MLIROp list * Tra
 /// Arena.alloc(arena: Arena<'lifetime> byref, sizeBytes: int) : nativeint
 /// For now: returns the arena memref itself (simplified - proper bump allocation later)
 /// TODO: Implement proper bump-pointer allocation with memref.subview and offset tracking
-let pArenaAlloc (resultSSA: SSA) (arenaSSA: SSA) (sizeSSA: SSA) (arenaType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+/// SSA extracted from coeffects via nodeId: [0] = result
+let pArenaAlloc (nodeId: NodeId) (arenaSSA: SSA) (sizeSSA: SSA) (arenaType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 1) $"pArenaAlloc: Expected 1 SSA, got {ssas.Length}"
+        let resultSSA = ssas.[0]
+
         // Simplified implementation: return arena memref as the allocated pointer
         // The memref IS the allocation - caller can use memref.store directly
         // Future: Add offset tracking and memref.subview for true bump allocation
 
         // For now, just return the arena memref unchanged
         // This works for single allocation per arena (like String.concat2)
-        return ([], TRValue { SSA = arenaSSA; Type = arenaType })
+        return ([], TRValue { SSA = resultSSA; Type = arenaType })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -373,8 +378,9 @@ let pArenaAlloc (resultSSA: SSA) (arenaSSA: SSA) (sizeSSA: SSA) (arenaType: MLIR
 
 /// Extract field from struct (e.g., string.Pointer, string.Length)
 /// SSA layout (max 3): [0] = intermediate (index or dim const), [1] = intermediate2 (dim result), [2] = result
-let pStructFieldGet (ssas: SSA list) (structSSA: SSA) (fieldName: string) (structTy: MLIRType) (fieldTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+let pStructFieldGet (nodeId: NodeId) (structSSA: SSA) (fieldName: string) (structTy: MLIRType) (fieldTy: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 3) $"pStructFieldGet: Expected 3 SSAs, got {ssas.Length}"
         let resultSSA = List.last ssas
 
@@ -478,8 +484,9 @@ let pTupleStruct (elements: Val list) (ssas: SSA list) : PSGParser<MLIROp list> 
 /// CRITICAL: This is the foundation for all collection patterns (Option, List, Map, Set, Result)
 /// SSA layout: [0] = undefSSA, [1] = tagSSA, [2] = tagOffsetSSA, [3] = tagResultSSA,
 ///             then for each payload: [4+2*i] = offsetSSA, [5+2*i] = resultSSA
-let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) (ty: MLIRType) : PSGParser<MLIROp list> =
+let pDUCase (nodeId: NodeId) (tag: int64) (payload: Val list) (ty: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 4 + 2 * payload.Length) $"pDUCase: Expected at least {4 + 2 * payload.Length} SSAs, got {ssas.Length}"
 
         // Create undef struct
@@ -503,7 +510,8 @@ let pDUCase (tag: int64) (payload: Val list) (ssas: SSA list) (ty: MLIRType) : P
             |> sequence
 
         let payloadOps = List.concat payloadOpLists
-        return undefOp :: tagConstOp :: (insertTagOps @ payloadOps)
+        let resultSSA = List.last ssas
+        return (undefOp :: tagConstOp :: (insertTagOps @ payloadOps), TRValue { SSA = resultSSA; Type = ty })
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -518,7 +526,7 @@ let pMemRefStore (indexSSA: SSA) (value: SSA) (memref: SSA) (elemType: MLIRType)
         let! indexOp = pConstI indexSSA 0L TIndex  // Index 0 for scalar/1-element memref
         let memrefType = TMemRefStatic (1, elemType)  // 1-element memref for scalar stores
         let! storeOp = pStore value memref [indexSSA] elemType memrefType
-        return [indexOp; storeOp], TRVoid
+        return ([indexOp; storeOp], TRVoid)
     }
 
 /// Indexed memref.store (for NativePtr.write with NativePtr.add)
@@ -529,5 +537,56 @@ let pMemRefStoreIndexed (memref: SSA) (value: SSA) (offsetSSA: SSA) (elemType: M
     parser {
         // Store value at computed index (offsetSSA is already index type from nativeint)
         let! storeOp = pStore value memref [offsetSSA] elemType memrefType
-        return [storeOp], TRVoid
+        return ([storeOp], TRVoid)
+    }
+
+/// MemRef copy operation (NativePtr.copy)
+/// Emits a call to memcpy library function
+/// This is used for bulk memory copying between memrefs
+/// Returns unit (no result SSA needed)
+let pMemCopy (destSSA: SSA) (srcSSA: SSA) (countSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! state = getUserState
+        let platformWordTy = state.Platform.PlatformWordType
+
+        // Call memcpy(dest, src, count) - standard C library function
+        // memcpy signature: void* memcpy(void* dest, const void* src, size_t count)
+        // All arguments are platform word sized (i64/i32 depending on arch)
+        let args = [
+            { SSA = destSSA; Type = platformWordTy }
+            { SSA = srcSSA; Type = platformWordTy }
+            { SSA = countSSA; Type = platformWordTy }
+        ]
+
+        // memcpy returns void* but we don't use the result (just for side effect)
+        // Pass platformWordTy as return type (void* is a pointer)
+        let! memcpyCall = pFuncCall None "memcpy" args platformWordTy
+
+        return ([memcpyCall], TRVoid)
+    }
+
+/// MemRef load operation - MLIR memref.load (NOT LLVM pointer load)
+/// Baker has already transformed NativePtr.read → MemRef.load
+/// This emits: %result = memref.load %memref[%index] : memref<?xT>
+///
+/// SSA Coeffects (1 SSA allocated by SSAAssignment):
+///   [0] = result (loaded value)
+///
+/// Parameters:
+/// - nodeId: NodeId for extracting result SSA from coeffects
+/// - memrefSSA: The memref to load from
+/// - indexSSA: The index to load at (already computed by witness from MemRef.add marker)
+let pMemRefLoad (nodeId: NodeId) (memrefSSA: SSA) (indexSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! state = getUserState
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 1) $"pMemRefLoad: Expected 1 SSA, got {ssas.Length}"
+
+        let resultSSA = ssas.[0]
+        let resultType = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
+
+        // Emit memref.load %memref[%index]
+        let! loadOp = pLoad resultSSA memrefSSA [indexSSA]
+
+        return ([loadOp], TRValue { SSA = resultSSA; Type = resultType })
     }

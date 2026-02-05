@@ -2,8 +2,12 @@
 ///
 /// PUBLIC: Witnesses call these patterns for platform I/O operations.
 /// Patterns compose Elements into platform-specific syscall sequences.
+///
+/// ARCHITECTURAL RESTORATION (Feb 2026): All patterns use NodeId-based API.
+/// Patterns extract SSAs monadically via getNodeSSAs - witnesses pass NodeIds, not SSAs.
 module Alex.Patterns.PlatformPatterns
 
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId
 open XParsec
 open XParsec.Parsers     // preturn
 open Alex.XParsec.PSGCombinators
@@ -44,14 +48,15 @@ open Alex.Elements.MLIRAtomics
 ///   [5] = result (func.call return value)
 ///
 /// Parameters:
-/// - ssas: SSA list from coeffects (6 SSAs: 2 for ptr extraction + 3 for length + 1 for result)
+/// - nodeId: NodeId for extracting SSAs from coeffects (6 SSAs allocated)
 /// - fdSSA: File descriptor SSA (typically constant 1 for stdout)
 /// - bufferSSA: Buffer SSA (ALWAYS memref)
 /// - bufferType: MLIR type of buffer (ALWAYS TMemRef or TMemRefStatic)
-let pSysWrite (ssas: SSA list) (fdSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+let pSysWrite (nodeId: NodeId) (fdSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Buffer is ALWAYS a memref at syscall boundary
         // We ALWAYS need FFI pointer extraction (no conditionals)
+        let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 6) $"pSysWrite: Expected 6 SSAs, got {ssas.Length}"
 
         let buf_ptr_index = ssas.[0]
@@ -104,14 +109,15 @@ let pSysWrite (ssas: SSA list) (fdSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRTy
 ///   [5] = result (func.call return value)
 ///
 /// Parameters:
-/// - ssas: SSA list from coeffects (6 SSAs: 2 for ptr extraction + 3 for capacity + 1 for result)
+/// - nodeId: NodeId for extracting SSAs from coeffects (6 SSAs allocated)
 /// - fdSSA: File descriptor SSA (typically constant 0 for stdin)
 /// - bufferSSA: Buffer SSA (ALWAYS memref)
 /// - bufferType: MLIR type of buffer (ALWAYS TMemRef or TMemRefStatic)
-let pSysRead (ssas: SSA list) (fdSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+let pSysRead (nodeId: NodeId) (fdSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
         // Buffer is ALWAYS a memref at syscall boundary
         // We ALWAYS need FFI pointer extraction (no conditionals)
+        let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 6) $"pSysRead: Expected 6 SSAs, got {ssas.Length}"
 
         let buf_ptr_index = ssas.[0]

@@ -2,6 +2,9 @@
 ///
 /// Provides composable patterns for string operations using XParsec.
 /// Strings are represented as fat pointers: {ptr: index, length: int}
+///
+/// ARCHITECTURAL RESTORATION (Feb 2026): All patterns use NodeId-based API.
+/// Patterns extract SSAs monadically via getNodeSSAs - witnesses pass NodeIds, not SSAs.
 module Alex.Patterns.StringPatterns
 
 open XParsec
@@ -17,7 +20,7 @@ open Alex.Elements.MLIRAtomics
 open Alex.Elements.IndexElements
 open Alex.CodeGeneration.TypeMapping
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
-open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId
 
 // ═══════════════════════════════════════════════════════════
 // STRING CONSTRUCTION
@@ -26,8 +29,13 @@ open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 /// Convert static buffer to dynamic string (memref<?xi8>)
 /// Takes buffer (memref<Nxi8>), casts to memref<?xi8>
 /// Length is intrinsic to memref descriptor, no separate parameter needed
-let pStringFromBuffer (resultSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+/// SSA extracted from coeffects via nodeId: [0] = result
+let pStringFromBuffer (nodeId: NodeId) (bufferSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 1) $"pStringFromBuffer: Expected 1 SSA, got {ssas.Length}"
+        let resultSSA = ssas.[0]
+
         // Cast static memref to dynamic for function boundary
         // memref<Nxi8> -> memref<?xi8>
         let stringType = TMemRef (TInt I8)
@@ -37,12 +45,18 @@ let pStringFromBuffer (resultSSA: SSA) (bufferSSA: SSA) (bufferType: MLIRType) :
 
 /// Get string length via memref.dim
 /// Strings ARE memrefs (memref<?xi8>), length is intrinsic to descriptor
-/// SSA layout:
-///   dimConstSSA: dimension constant (0 for 1D arrays)
-///   lenIndexSSA: memref.dim result (index type)
-///   resultSSA: cast to int result
-let pStringLength (resultSSA: SSA) (stringSSA: SSA) (stringType: MLIRType) (dimConstSSA: SSA) (lenIndexSSA: SSA) : PSGParser<MLIROp list * TransferResult> =
+/// SSA extracted from coeffects via nodeId:
+///   [0] = dimConstSSA: dimension constant (0 for 1D arrays)
+///   [1] = lenIndexSSA: memref.dim result (index type)
+///   [2] = resultSSA: cast to int result
+let pStringLength (nodeId: NodeId) (stringSSA: SSA) (stringType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 3) $"pStringLength: Expected 3 SSAs, got {ssas.Length}"
+        let dimConstSSA = ssas.[0]
+        let lenIndexSSA = ssas.[1]
+        let resultSSA = ssas.[2]
+
         let! state = getUserState
         let intTy = mapNativeTypeForArch state.Platform.TargetArch Types.intType
 
@@ -87,7 +101,7 @@ let pMemCopy (resultSSA: SSA) (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGPa
 // ═══════════════════════════════════════════════════════════
 
 /// String.concat2: concatenate two strings using pure memref operations
-/// SSA layout (17 total - pure memref with index arithmetic, NO i64 round-trip):
+/// SSA extracted from coeffects via nodeId (18 total - pure memref with index arithmetic, NO i64 round-trip):
 ///   [0] = dim const for str1 (dimension 0)
 ///   [1] = str1 len (memref.dim result, index type)
 ///   [2] = dim const for str2 (dimension 0)
@@ -106,8 +120,9 @@ let pMemCopy (resultSSA: SSA) (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGPa
 ///   [15] = offset ptr (result + len1, index type)
 ///   [16] = offset ptr word cast
 ///   [17] = memcpy2 result
-let pStringConcat2 (ssas: SSA list) (str1SSA: SSA) (str2SSA: SSA) (str1Type: MLIRType) (str2Type: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+let pStringConcat2 (nodeId: NodeId) (str1SSA: SSA) (str2SSA: SSA) (str1Type: MLIRType) (str2Type: MLIRType) : PSGParser<MLIROp list * TransferResult> =
     parser {
+        let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 18) $"pStringConcat2: Expected 18 SSAs, got {ssas.Length}"
 
         let! state = getUserState

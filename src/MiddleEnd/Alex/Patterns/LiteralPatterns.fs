@@ -128,37 +128,6 @@ let pBuildStringLiteral (content: string) (ssas: SSA list) (arch: Architecture)
         return ((inlineOps, globalName, content, byteLength), result)
     }
 
-/// Extract pointer from memref (for FFI/syscalls like Sys.write)
-/// String is now memref<?xi8>, extract base pointer as index then cast to target type
-let pStringGetPtr (stringSSA: SSA) (ptrSSA: SSA) (ptrTy: MLIRType) : PSGParser<MLIROp list> =
-    parser {
-        let memrefTy = TMemRef (TInt I8)
-
-        // Check if we need to cast index → ptrTy
-        match ptrTy with
-        | TIndex ->
-            // No cast needed - result is index
-            let! extractOp = pExtractBasePtr ptrSSA stringSSA memrefTy
-            return [extractOp]
-        | _ ->
-            // Extract as index, then cast to target type (e.g., i64 for x86-64, i32 for ARM32)
-            // TODO BACKFILL: indexSSA should come from coeffects or PSG node
-            let indexSSA = failwith "LiteralPatterns.pStringGetPtr: indexSSA must come from coeffects (removed SSA.V 999994)"
-            let! extractOp = pExtractBasePtr indexSSA stringSSA memrefTy
-            let! castOp = pIndexCastS ptrSSA indexSSA ptrTy
-            return [extractOp; castOp]
-    }
-
-/// Extract length from memref descriptor (for FFI/syscalls)
-/// Uses memref.dim to get the dynamic size
-let pStringGetLength (stringSSA: SSA) (lengthSSA: SSA) (lengthTy: MLIRType) : PSGParser<MLIROp list> =
-    parser {
-        // memref.dim %memref, %c0 : memref<?xi8>
-        // Need constant 0 for dimension index (0th dimension = length)
-        // TODO BACKFILL: dimIndexSSA should come from coeffects or PSG node
-        let dimIndexSSA = failwith "LiteralPatterns.pStringGetLength: dimIndexSSA must come from coeffects (removed SSA.V 999999)"
-        let memrefTy = TMemRef (TInt I8)
-        let! constOp = pConstI dimIndexSSA 0L TIndex
-        let! dimOp = pMemRefDim lengthSSA stringSSA dimIndexSSA memrefTy
-        return [constOp; dimOp]
-    }
+// DEAD CODE DELETED: pStringGetPtr and pStringGetLength were unused
+// Pointer extraction happens inline in PlatformPatterns.pSysWrite
+// Length extraction happens inline in PlatformPatterns.pSysWrite via memref.dim

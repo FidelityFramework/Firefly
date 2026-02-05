@@ -1,7 +1,10 @@
 /// MemoryWitness - Witness memory and data structure operations via XParsec
 ///
-/// Uses XParsec combinators from PSGCombinators to match PSG structure,
-/// then delegates to MemoryPatterns for MLIR elision.
+/// Pure XParsec monadic observer - ZERO imperative SSA lookups.
+/// Witnesses pass NodeIds to Patterns; Patterns extract SSAs via getUserState.
+///
+/// ARCHITECTURAL RESTORATION (Feb 2026): Eliminated ALL imperative SSA lookups.
+/// This witness embodies the codata photographer principle - pure observation.
 ///
 /// NANOPASS: This witness handles memory-related operations.
 /// All other nodes return WitnessOutput.skip for other nanopasses to handle.
@@ -13,8 +16,6 @@ open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
 open Alex.Patterns.MemoryPatterns
-
-module SSAAssign = PSGElaboration.SSAAssignment
 
 // ═══════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
@@ -33,60 +34,56 @@ let private witnessMemory (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
             // Recall struct SSA
             match MLIRAccumulator.recallNode structId ctx.Accumulator with
             | Some (structSSA, structTy) ->
-                // Witness all SSAs pre-assigned by coeffects
-                match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                | Some ssas ->
-                    let arch = ctx.Coeffects.Platform.TargetArch
-                    let fieldTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    match tryMatch (pStructFieldGet ssas structSSA fieldName structTy fieldTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                    | None -> WitnessOutput.error $"FieldGet pattern failed for field '{fieldName}'"
-                | None -> WitnessOutput.error $"FieldGet: No SSAs assigned (field '{fieldName}')"
+                let arch = ctx.Coeffects.Platform.TargetArch
+                let fieldTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+
+                match tryMatch (pStructFieldGet node.Id structSSA fieldName structTy fieldTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                | None -> WitnessOutput.error $"FieldGet pattern failed for field '{fieldName}'"
             | None -> WitnessOutput.error $"FieldGet: Struct value not yet witnessed (field '{fieldName}')"
 
         | None ->
             // Not FieldGet - try DU operations: GetTag, Eliminate, Construct
             match tryMatch pDUGetTag ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some ((duValueId, _duType), _) ->
-                match MLIRAccumulator.recallNode duValueId ctx.Accumulator, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                | Some (duSSA, duType), Some ssas when ssas.Length >= 2 ->
-                    let indexZeroSSA = ssas.[0]
-                    let tagSSA = ssas.[1]
-                    match tryMatch (pExtractDUTag duSSA duType tagSSA indexZeroSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = tagSSA; Type = TInt I8 } }
+                match MLIRAccumulator.recallNode duValueId ctx.Accumulator with
+                | Some (duSSA, duType) ->
+                    match tryMatch (pExtractDUTag node.Id duSSA duType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error "DUGetTag pattern emission failed"
-                | _ -> WitnessOutput.error "DUGetTag: DU value or tag SSA not available"
+                | None -> WitnessOutput.error "DUGetTag: DU value not available"
 
             | None ->
             match tryMatch pDUEliminate ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
             | Some ((duValueId, caseIndex, _caseName, _payloadType), _) ->
-                match MLIRAccumulator.recallNode duValueId ctx.Accumulator, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                | Some (duSSA, duType), Some ssas ->
-                    match tryMatch (pExtractDUPayload duSSA duType caseIndex duType ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                    | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = duType } }
+                match MLIRAccumulator.recallNode duValueId ctx.Accumulator with
+                | Some (duSSA, duType) ->
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let payloadType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pExtractDUPayload node.Id duSSA duType caseIndex payloadType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error "DUEliminate pattern emission failed"
-                | _ -> WitnessOutput.error "DUEliminate: DU value or SSAs not available"
+                | None -> WitnessOutput.error "DUEliminate: DU value not available"
 
             | None ->
                 match tryMatch pDUConstruct ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some ((_caseName, caseIndex, payloadOpt, _arenaHintOpt), _) ->
-                    match SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-                    | None -> WitnessOutput.error "DUConstruct: No SSAs assigned"
-                    | Some ssas ->
-                        let tag = int64 caseIndex
-                        let payload =
-                            match payloadOpt with
-                            | Some payloadId ->
-                                match MLIRAccumulator.recallNode payloadId ctx.Accumulator with
-                                | Some (ssa, ty) -> [{ SSA = ssa; Type = ty }]
-                                | None -> []
+                    let tag = int64 caseIndex
+                    let payload =
+                        match payloadOpt with
+                        | Some payloadId ->
+                            match MLIRAccumulator.recallNode payloadId ctx.Accumulator with
+                            | Some (ssa, ty) -> [{ SSA = ssa; Type = ty }]
                             | None -> []
+                        | None -> []
 
-                        let arch = ctx.Coeffects.Platform.TargetArch
-                        let duTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                        match tryMatch (pDUCase tag payload ssas duTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some (ops, _) -> { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = duTy } }
-                        | None -> WitnessOutput.error "DUConstruct pattern emission failed"
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let duTy = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pDUCase node.Id tag payload duTy) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "DUConstruct pattern emission failed"
 
                 | None -> WitnessOutput.skip
 

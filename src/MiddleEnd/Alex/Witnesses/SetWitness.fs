@@ -1,36 +1,28 @@
-/// SetWitness - Witness Set<'T> primitive operations to MLIR
+/// SetWitness - Witness Set<'T> operations via XParsec
 ///
-/// PRD-13a: Core Collections - Set operations
+/// Pure XParsec monadic observer - ZERO imperative SSA lookups.
+/// Witnesses pass NodeIds to Patterns; Patterns extract SSAs via getUserState.
 ///
-/// ARCHITECTURAL PRINCIPLES (January 2026):
-/// - Witnesses are THIN compositional layers (~15-25 lines per primitive)
-/// - Delegate MLIR emission to shared Patterns (Elements→Patterns→Witnesses)
-/// - Observe PSG structure (SSAs pre-assigned by PSGElaboration)
-/// - Baker decomposes high-level ops (union, intersect) to primitives
-/// - Alex witnesses ONLY primitives: empty, value, left, right, height, node
+/// ARCHITECTURAL RESTORATION (Feb 2026): Eliminated ALL imperative SSA lookups.
+/// This witness embodies the codata photographer principle - pure observation.
 ///
-/// NANOPASS: This witness handles ONLY Set-related intrinsic nodes.
-/// All other nodes return WitnessOutput.skip for other nanopasses.
+/// NANOPASS: This witness handles ONLY Set intrinsic nodes.
+/// All other nodes return WitnessOutput.skip for other nanopasses to handle.
 module Alex.Witnesses.SetWitness
 
-open XParsec
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
-open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ClosurePatterns
-open Alex.Patterns.MemoryPatterns
-
-module SSAAssign = PSGElaboration.SSAAssignment
+open Alex.Patterns.CollectionPatterns
+open Alex.CodeGeneration.TypeMapping
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Witness Set operations - category-selective (handles only Set intrinsic nodes)
+/// Witness Set operations - pure XParsec monadic observer
 let private witnessSet (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     match tryMatch pIntrinsic ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | None -> WitnessOutput.skip
@@ -38,106 +30,91 @@ let private witnessSet (ctx: WitnessContext) (node: SemanticNode) : WitnessOutpu
     | Some (info, _) ->
         match info.Operation with
         | "empty" ->
-            match SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
-            | None -> WitnessOutput.error "Set.empty: No SSA assigned"
-            | Some resultSSA ->
-                let arch = ctx.Coeffects.Platform.TargetArch
-                let codePtrTy = TIndex
-                match tryMatch (pFlatClosure resultSSA codePtrTy [] [resultSSA]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                | Some (ops, _) ->
-                    let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = mlirType } }
-                | None -> WitnessOutput.error "Set.empty: pFlatClosure pattern failed"
+            let arch = ctx.Coeffects.Platform.TargetArch
+            let setType = mapNativeTypeForArch arch node.Type
+
+            match tryMatch (pSetEmpty node.Id setType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+            | None -> WitnessOutput.error "Set.empty pattern emission failed"
 
         | "isEmpty" ->
-            WitnessOutput.error "Set.isEmpty requires Baker decomposition"
+            WitnessOutput.error "Set.isEmpty: Baker decomposes to structural check"
 
         | "value" ->
-            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-            | [setNodeId], Some ssas when ssas.Length >= 2 ->
-                match MLIRAccumulator.recallNode setNodeId ctx.Accumulator with
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (setSSA, _) ->
-                    match SemanticGraph.tryGetNode setNodeId ctx.Graph with
-                    | Some setNode ->
-                        match tryMatch (pFieldAccess setSSA setNode.Type 0 ssas.[0] ssas.[1]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some (ops, _) ->
-                            let arch = ctx.Coeffects.Platform.TargetArch
-                            let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                            { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[1]; Type = mlirType } }
-                        | None -> WitnessOutput.error "Set.value: pFieldAccess pattern failed"
-                    | None -> WitnessOutput.error "Set.value: Set node not found in graph"
-                | None -> WitnessOutput.error "Set.value: Set node not yet witnessed"
-            | _ -> WitnessOutput.error "Set.value: Invalid children or SSAs"
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let elemType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pSetValue node.Id setSSA elemType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "Set.value pattern emission failed"
+                | None -> WitnessOutput.error "Set.value: Set not yet witnessed"
+            | _ -> WitnessOutput.error $"Set.value: Expected 1 child, got {node.Children.Length}"
 
         | "left" ->
-            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-            | [setNodeId], Some ssas when ssas.Length >= 2 ->
-                match MLIRAccumulator.recallNode setNodeId ctx.Accumulator with
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (setSSA, _) ->
-                    match SemanticGraph.tryGetNode setNodeId ctx.Graph with
-                    | Some setNode ->
-                        match tryMatch (pFieldAccess setSSA setNode.Type 1 ssas.[0] ssas.[1]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some (ops, _) ->
-                            let arch = ctx.Coeffects.Platform.TargetArch
-                            let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                            { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[1]; Type = mlirType } }
-                        | None -> WitnessOutput.error "Set.left: pFieldAccess pattern failed"
-                    | None -> WitnessOutput.error "Set.left: Set node not found in graph"
-                | None -> WitnessOutput.error "Set.left: Set node not yet witnessed"
-            | _ -> WitnessOutput.error "Set.left: Invalid children or SSAs"
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let subtreeType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pSetLeft node.Id setSSA subtreeType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "Set.left pattern emission failed"
+                | None -> WitnessOutput.error "Set.left: Set not yet witnessed"
+            | _ -> WitnessOutput.error $"Set.left: Expected 1 child, got {node.Children.Length}"
 
         | "right" ->
-            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-            | [setNodeId], Some ssas when ssas.Length >= 2 ->
-                match MLIRAccumulator.recallNode setNodeId ctx.Accumulator with
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (setSSA, _) ->
-                    match SemanticGraph.tryGetNode setNodeId ctx.Graph with
-                    | Some setNode ->
-                        match tryMatch (pFieldAccess setSSA setNode.Type 2 ssas.[0] ssas.[1]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some (ops, _) ->
-                            let arch = ctx.Coeffects.Platform.TargetArch
-                            let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                            { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[1]; Type = mlirType } }
-                        | None -> WitnessOutput.error "Set.right: pFieldAccess pattern failed"
-                    | None -> WitnessOutput.error "Set.right: Set node not found in graph"
-                | None -> WitnessOutput.error "Set.right: Set node not yet witnessed"
-            | _ -> WitnessOutput.error "Set.right: Invalid children or SSAs"
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let subtreeType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pSetRight node.Id setSSA subtreeType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "Set.right pattern emission failed"
+                | None -> WitnessOutput.error "Set.right: Set not yet witnessed"
+            | _ -> WitnessOutput.error $"Set.right: Expected 1 child, got {node.Children.Length}"
 
         | "height" ->
-            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-            | [setNodeId], Some ssas when ssas.Length >= 2 ->
-                match MLIRAccumulator.recallNode setNodeId ctx.Accumulator with
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
                 | Some (setSSA, _) ->
-                    match SemanticGraph.tryGetNode setNodeId ctx.Graph with
-                    | Some setNode ->
-                        match tryMatch (pFieldAccess setSSA setNode.Type 3 ssas.[0] ssas.[1]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some (ops, _) ->
-                            let arch = ctx.Coeffects.Platform.TargetArch
-                            let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                            { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[1]; Type = mlirType } }
-                        | None -> WitnessOutput.error "Set.height: pFieldAccess pattern failed"
-                    | None -> WitnessOutput.error "Set.height: Set node not found in graph"
-                | None -> WitnessOutput.error "Set.height: Set node not yet witnessed"
-            | _ -> WitnessOutput.error "Set.height: Invalid children or SSAs"
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let heightType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pSetHeight node.Id setSSA heightType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "Set.height pattern emission failed"
+                | None -> WitnessOutput.error "Set.height: Set not yet witnessed"
+            | _ -> WitnessOutput.error $"Set.height: Expected 1 child, got {node.Children.Length}"
 
         | "node" ->
-            match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-            | children, Some ssas when children.Length = 4 && ssas.Length >= 5 ->
-                let childVals =
-                    children
-                    |> List.choose (fun childId ->
-                        MLIRAccumulator.recallNode childId ctx.Accumulator
-                        |> Option.map (fun (ssa, ty) -> { SSA = ssa; Type = ty }))
-                if childVals.Length <> 4 then
-                    WitnessOutput.error $"Set.node: Could not retrieve all child SSAs (got {childVals.Length}/4)"
-                else
-                    match tryMatch (pRecordStruct childVals ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                    | Some (ops, _) ->
-                        let arch = ctx.Coeffects.Platform.TargetArch
-                        let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                        { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[4]; Type = mlirType } }
-                    | None -> WitnessOutput.error "Set.node: pRecordStruct pattern failed"
-            | _ -> WitnessOutput.error "Set.node: Invalid children or SSAs"
+            match node.Children with
+            | [elementId; leftId; rightId; heightId] ->
+                match MLIRAccumulator.recallNode elementId ctx.Accumulator,
+                      MLIRAccumulator.recallNode leftId ctx.Accumulator,
+                      MLIRAccumulator.recallNode rightId ctx.Accumulator,
+                      MLIRAccumulator.recallNode heightId ctx.Accumulator with
+                | Some (elementSSA, elementType), Some (leftSSA, leftType), Some (rightSSA, rightType), Some _ ->
+                    let element = { SSA = elementSSA; Type = elementType }
+                    let left = { SSA = leftSSA; Type = leftType }
+                    let right = { SSA = rightSSA; Type = rightType }
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let setType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pSetAdd node.Id element left right setType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "Set.node pattern emission failed"
+                | _ -> WitnessOutput.error "Set.node: One or more children not yet witnessed"
+            | _ -> WitnessOutput.error $"Set.node: Expected 4 children, got {node.Children.Length}"
 
         | op -> WitnessOutput.error $"Unknown Set operation: {op}"
 
@@ -145,7 +122,7 @@ let private witnessSet (ctx: WitnessContext) (node: SemanticNode) : WitnessOutpu
 // NANOPASS REGISTRATION (Public)
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Set nanopass - witnesses Set primitive operations
+/// Set nanopass - witnesses Set intrinsic nodes
 let nanopass : Nanopass = {
     Name = "Set"
     Witness = witnessSet

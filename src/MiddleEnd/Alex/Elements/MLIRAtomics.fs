@@ -14,10 +14,10 @@ open Alex.Dialects.Core.Types
 // STRUCT OFFSET COMPUTATION
 // ═══════════════════════════════════════════════════════════
 
-/// Compute flat offset SSA from nested struct indices
-/// ARCHITECTURAL VIOLATION REMOVED: SSAs must come from SSAAssignment, not generated inline
+/// SCAB REMOVED: This function should not exist - callers must use coeffect-provided SSAs directly
+/// Keeping as compiler error signal - if called, tells us where pattern needs refactoring
 let private computeStructOffset (indices: int list) : SSA =
-    failwith "MLIRAtomics.computeStructOffset: offset SSAs must come from coeffects (removed inline SSA generation)"
+    failwith "ARCHITECTURAL ERROR: computeStructOffset called - this function should have been removed entirely. Caller must use coeffects."
 
 // ═══════════════════════════════════════════════════════════
 // PORTABLE MLIR STRUCT OPERATIONS (MemRef-based)

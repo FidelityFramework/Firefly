@@ -1,122 +1,107 @@
 /// ListWitness - Witness List<'T> operations via XParsec
 ///
-/// Uses XParsec combinators from PSGCombinators to match PSG structure,
-/// then delegates to Patterns for MLIR elision.
+/// Pure XParsec monadic observer - ZERO imperative SSA lookups.
+/// Witnesses pass NodeIds to Patterns; Patterns extract SSAs via getUserState.
+///
+/// ARCHITECTURAL RESTORATION (Feb 2026): Eliminated ALL imperative SSA lookups.
+/// This witness embodies the codata photographer principle - pure observation.
 ///
 /// NANOPASS: This witness handles ONLY List intrinsic nodes.
 /// All other nodes return WitnessOutput.skip for other nanopasses to handle.
 module Alex.Witnesses.ListWitness
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
-open Alex.Patterns.ClosurePatterns
-open Alex.Patterns.MemoryPatterns
-
-module SSAAssign = PSGElaboration.SSAAssignment
-
-// ═══════════════════════════════════════════════════════════════════════════
-// PRIMITIVE WITNESSES
-// ═══════════════════════════════════════════════════════════════════════════
-
-let private witnessEmpty (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match SSAAssign.lookupSSA node.Id ctx.Coeffects.SSA with
-    | None -> WitnessOutput.error "List.empty: No SSA assigned"
-    | Some resultSSA ->
-        let arch = ctx.Coeffects.Platform.TargetArch
-        let codePtr = resultSSA
-        let codePtrTy = TIndex
-        match tryMatch (pFlatClosure codePtr codePtrTy [] [resultSSA]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-        | Some (ops, _) ->
-            let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-            { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = resultSSA; Type = mlirType } }
-        | None -> WitnessOutput.error "List.empty: pFlatClosure pattern failed"
-
-let private witnessIsEmpty (_ctx: WitnessContext) (_node: SemanticNode) : WitnessOutput =
-    WitnessOutput.error "List.isEmpty: Baker decomposes to structural check"
-
-let private witnessHead (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-    | [listNodeId], Some ssas when ssas.Length >= 2 ->
-        match MLIRAccumulator.recallNode listNodeId ctx.Accumulator with
-        | Some (listSSA, _) ->
-            match SemanticGraph.tryGetNode listNodeId ctx.Graph with
-            | Some listNode ->
-                match tryMatch (pFieldAccess listSSA listNode.Type 0 ssas.[0] ssas.[1]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                | Some (ops, _) ->
-                    let arch = ctx.Coeffects.Platform.TargetArch
-                    let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[1]; Type = mlirType } }
-                | None -> WitnessOutput.error "List.head: pFieldAccess pattern failed"
-            | None -> WitnessOutput.error "List.head: List node not found in graph"
-        | None -> WitnessOutput.error "List.head: List node not yet witnessed"
-    | _ -> WitnessOutput.error "List.head: Invalid children or SSAs"
-
-let private witnessTail (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-    | [listNodeId], Some ssas when ssas.Length >= 2 ->
-        match MLIRAccumulator.recallNode listNodeId ctx.Accumulator with
-        | Some (listSSA, _) ->
-            match SemanticGraph.tryGetNode listNodeId ctx.Graph with
-            | Some listNode ->
-                match tryMatch (pFieldAccess listSSA listNode.Type 1 ssas.[0] ssas.[1]) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                | Some (ops, _) ->
-                    let arch = ctx.Coeffects.Platform.TargetArch
-                    let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                    { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = ssas.[1]; Type = mlirType } }
-                | None -> WitnessOutput.error "List.tail: pFieldAccess pattern failed"
-            | None -> WitnessOutput.error "List.tail: List node not found in graph"
-        | None -> WitnessOutput.error "List.tail: List node not yet witnessed"
-    | _ -> WitnessOutput.error "List.tail: Invalid children or SSAs"
-
-let private witnessCons (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    match node.Children, SSAAssign.lookupSSAs node.Id ctx.Coeffects.SSA with
-    | [headId; tailId], Some ssas when ssas.Length > 0 ->
-        let childVals =
-            [headId; tailId]
-            |> List.choose (fun childId ->
-                MLIRAccumulator.recallNode childId ctx.Accumulator
-                |> Option.map (fun (ssa, ty) -> { SSA = ssa; Type = ty }))
-
-        if childVals.Length <> 2 then
-            WitnessOutput.error "List.cons: Could not retrieve all child SSAs"
-        else
-            let arch = ctx.Coeffects.Platform.TargetArch
-            let codePtr = ssas.[0]
-            let codePtrTy = TIndex
-            match tryMatch (pFlatClosure codePtr codePtrTy childVals ssas) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-            | Some (ops, _) ->
-                let mlirType = Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch node.Type
-                { InlineOps = ops; TopLevelOps = []; Result = TRValue { SSA = List.last ssas; Type = mlirType } }
-            | None -> WitnessOutput.error "List.cons: pFlatClosure pattern failed"
-    | _ -> WitnessOutput.error "List.cons: Invalid children or SSAs"
+open Alex.Patterns.CollectionPatterns
+open Alex.CodeGeneration.TypeMapping
 
 // ═══════════════════════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// Witness List operations - pure XParsec monadic observer
 let private witnessList (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     match tryMatch pIntrinsic ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | None -> WitnessOutput.skip
     | Some (info, _) when info.Module <> IntrinsicModule.List -> WitnessOutput.skip
     | Some (info, _) ->
         match info.Operation with
-        | "empty" -> witnessEmpty ctx node
-        | "isEmpty" -> witnessIsEmpty ctx node
-        | "head" -> witnessHead ctx node
-        | "tail" -> witnessTail ctx node
-        | "cons" -> witnessCons ctx node
+        | "empty" ->
+            let arch = ctx.Coeffects.Platform.TargetArch
+            let listType = mapNativeTypeForArch arch node.Type
+
+            match tryMatch (pListEmpty node.Id listType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+            | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+            | None -> WitnessOutput.error "List.empty pattern emission failed"
+
+        | "isEmpty" ->
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (listSSA, _) ->
+                    match tryMatch (pListIsEmpty node.Id listSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "List.isEmpty pattern emission failed"
+                | None -> WitnessOutput.error "List.isEmpty: List not yet witnessed"
+            | _ -> WitnessOutput.error $"List.isEmpty: Expected 1 child, got {node.Children.Length}"
+
+        | "head" ->
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (listSSA, _) ->
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let elementType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pListHead node.Id listSSA elementType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "List.head pattern emission failed"
+                | None -> WitnessOutput.error "List.head: List not yet witnessed"
+            | _ -> WitnessOutput.error $"List.head: Expected 1 child, got {node.Children.Length}"
+
+        | "tail" ->
+            match node.Children with
+            | [childId] ->
+                match MLIRAccumulator.recallNode childId ctx.Accumulator with
+                | Some (listSSA, _) ->
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let tailType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pListTail node.Id listSSA tailType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "List.tail pattern emission failed"
+                | None -> WitnessOutput.error "List.tail: List not yet witnessed"
+            | _ -> WitnessOutput.error $"List.tail: Expected 1 child, got {node.Children.Length}"
+
+        | "cons" ->
+            match node.Children with
+            | [headId; tailId] ->
+                match MLIRAccumulator.recallNode headId ctx.Accumulator, MLIRAccumulator.recallNode tailId ctx.Accumulator with
+                | Some (headSSA, headType), Some (tailSSA, tailType) ->
+                    let head = { SSA = headSSA; Type = headType }
+                    let tail = { SSA = tailSSA; Type = tailType }
+                    let arch = ctx.Coeffects.Platform.TargetArch
+                    let listType = mapNativeTypeForArch arch node.Type
+
+                    match tryMatch (pListCons node.Id head tail listType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                    | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                    | None -> WitnessOutput.error "List.cons pattern emission failed"
+                | _ -> WitnessOutput.error "List.cons: Head or tail not yet witnessed"
+            | _ -> WitnessOutput.error $"List.cons: Expected 2 children, got {node.Children.Length}"
+
         | "map" | "filter" | "fold" | "length" ->
             WitnessOutput.error $"List.{info.Operation} requires Baker decomposition"
+
         | op -> WitnessOutput.error $"Unknown List operation: {op}"
 
 // ═══════════════════════════════════════════════════════════════════════════
 // NANOPASS REGISTRATION (Public)
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// List nanopass - witnesses List intrinsic nodes
 let nanopass : Nanopass = {
     Name = "List"
     Witness = witnessList
