@@ -263,6 +263,11 @@ let rec opToString (op: MLIROp) : string =
         sprintf "memref.global \"private\" constant @%s : memref<%dxi8> = dense<[%s]>" name byteLength denseStr
     | MLIROp.IndexOp iop ->
         match iop with
+        | IndexOp.IndexConst (result, value) ->
+            sprintf "%s = arith.constant %d : index" (ssaToString result) value
+        | IndexOp.IndexBoolConst (result, value) ->
+            let boolVal = if value then 1 else 0
+            sprintf "%s = arith.constant %d : i1" (ssaToString result) boolVal
         | IndexOp.IndexCastS (result, operand, destTy) ->
             sprintf "%s = index.casts %s : index to %s" (ssaToString result) (ssaToString operand) (typeToString destTy)
         | IndexOp.IndexCastU (result, operand, destTy) ->

@@ -17,30 +17,42 @@ open Alex.Dialects.Core.Types
 open Alex.Traversal.TransferTypes
 open Alex.Elements.FuncElements  // pFuncCall, pFuncCallIndirect
 open Alex.Elements.ArithElements // Arithmetic elements for wrapper patterns
-open Alex.Patterns.MemRefPatterns // pLoadMutableVariable
+open Alex.Elements.IndexElements // pIndexConst
 
 // ═══════════════════════════════════════════════════════════
-// MUTABLE VARIABLE HANDLING (Monadic Type Coercion)
+// ARGUMENT LOADING PATTERN (Private Combinator)
 // ═══════════════════════════════════════════════════════════
 
-/// Monadic helper: Load from memref if TMemRef type, otherwise return as-is
-/// This enables patterns to accept both value SSAs and memref SSAs transparently.
-/// Returns (actualSSA, actualType, loadOps) where loadOps are [] if no load needed.
-let private pEnsureValue (nodeId: NodeId) (ssa: SSA) (ty: MLIRType)
-                         : PSGParser<SSA * MLIRType * MLIROp list> =
+/// Recall argument from accumulator, automatically loading from TMemRef if needed
+/// COMPOSING PATTERN: Composes Elements (pRecallNode + pIndexConst + pLoad)
+/// Uses VarRef node's allocated SSAs for load operations
+let private pRecallArgWithLoad (argId: NodeId) : PSGParser<MLIROp list * SSA * MLIRType> =
     parser {
+        // Recall argument from accumulator (VarRef already witnessed in post-order)
+        let! (ssa, ty) = pRecallNode argId
+
         match ty with
         | TMemRef elemType ->
-            // Compose with load pattern to get the value
-            let! (ops, result) = pLoadMutableVariable (NodeId.value nodeId) ssa elemType
-            match result with
-            | TRValue v -> return (v.SSA, v.Type, ops)
-            | TRVoid -> return! fail (Message "pLoadMutableVariable returned TRVoid")
-            | TRError diag -> return! fail (Message diag.Message)
-            | TRSkip -> return! fail (Message "pLoadMutableVariable returned TRSkip")
+            // Argument is TMemRef (mutable variable) - emit load using VarRef's SSAs
+            // VarRef node has 2 SSAs allocated: [0] = index constant, [1] = load result
+            let! ssas = getNodeSSAs argId
+            do! ensure (ssas.Length >= 2) $"pRecallArgWithLoad: VarRef node {NodeId.value argId} expected 2 SSAs, got {ssas.Length}"
+            let zeroSSA = ssas.[0]
+            let valueSSA = ssas.[1]
+
+            // Compose Elements: index constant + load
+            // Mutable scalars stored as memref<1xT> (rank-1 single element)
+            let! zeroOp = pIndexConst zeroSSA 0L
+
+            // CRITICAL: Pass elemType (unwrapped), NOT TMemRefStatic (1, elemType)
+            // Serialization code (Serialize.fs:173) reconstructs the memref wrapper
+            // based on indices.Length. Passing already-wrapped type causes double-wrapping.
+            let loadOp = MLIROp.MemRefOp (MemRefOp.Load (valueSSA, ssa, [zeroSSA], elemType))
+
+            return ([zeroOp; loadOp], valueSSA, elemType)
         | _ ->
-            // Not a memref - return as-is
-            return (ssa, ty, [])
+            // Not TMemRef - return as-is (no load needed)
+            return ([], ssa, ty)
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -113,120 +125,103 @@ let pDirectCall (nodeId: NodeId) (funcName: string) (args: (SSA * MLIRType) list
 /// Takes operation name and nodeId, pulls arguments from accumulator monadically.
 /// Pattern extracts what it needs via state - witnesses don't push parameters.
 /// SSA extracted from coeffects via nodeId: [0] = result
-/// ACCEPTS BOTH VALUE SSAs AND MEMREF SSAs - loads from memref monadically if needed
+/// AUTOMATICALLY loads from TMemRef arguments using pRecallArgWithLoad
 let pBinaryArithOp (nodeId: NodeId) (operation: string)
                    : PSGParser<MLIROp list * TransferResult> =
     parser {
         // PULL model: Extract argument IDs from parent Application node
         let! argIds = pGetApplicationArgs
         do! ensure (argIds.Length >= 2) $"pBinaryArithOp: Expected 2 args, got {argIds.Length}"
-        
-        // PULL model: Recall operand SSAs and types from accumulator (post-order ensures they're witnessed)
-        let! (lhsSSA, lhsType) = pRecallNode argIds.[0]
-        let! (rhsSSA, rhsType) = pRecallNode argIds.[1]
-        
+
+        // PULL model: Recall operand SSAs and types, automatically loading from TMemRef
+        let! (lhsLoadOps, lhsSSA, lhsType) = pRecallArgWithLoad argIds.[0]
+        let! (rhsLoadOps, rhsSSA, rhsType) = pRecallArgWithLoad argIds.[1]
+
         // Extract result SSA from coeffects
         let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 1) $"pBinaryArithOp: Expected 1 SSA, got {ssas.Length}"
         let resultSSA = ssas.[0]
 
-        // Monadic load-if-needed: ensures we have values, not memrefs
-        let! (actualLhsSSA, actualLhsType, lhsLoadOps) = pEnsureValue nodeId lhsSSA lhsType
-        let! (actualRhsSSA, actualRhsType, rhsLoadOps) = pEnsureValue nodeId rhsSSA rhsType
-
         // Dispatch to correct Element based on operation name
         let! op =
             match operation with
             // Integer arithmetic
-            | "addi" -> pAddI resultSSA actualLhsSSA actualRhsSSA
-            | "subi" -> pSubI resultSSA actualLhsSSA actualRhsSSA
-            | "muli" -> pMulI resultSSA actualLhsSSA actualRhsSSA
-            | "divsi" -> pDivSI resultSSA actualLhsSSA actualRhsSSA
-            | "divui" -> pDivUI resultSSA actualLhsSSA actualRhsSSA
-            | "remsi" -> pRemSI resultSSA actualLhsSSA actualRhsSSA
-            | "remui" -> pRemUI resultSSA actualLhsSSA actualRhsSSA
+            | "addi" -> pAddI resultSSA lhsSSA rhsSSA
+            | "subi" -> pSubI resultSSA lhsSSA rhsSSA
+            | "muli" -> pMulI resultSSA lhsSSA rhsSSA
+            | "divsi" -> pDivSI resultSSA lhsSSA rhsSSA
+            | "divui" -> pDivUI resultSSA lhsSSA rhsSSA
+            | "remsi" -> pRemSI resultSSA lhsSSA rhsSSA
+            | "remui" -> pRemUI resultSSA lhsSSA rhsSSA
             // Float arithmetic
-            | "addf" -> pAddF resultSSA actualLhsSSA actualRhsSSA
-            | "subf" -> pSubF resultSSA actualLhsSSA actualRhsSSA
-            | "mulf" -> pMulF resultSSA actualLhsSSA actualRhsSSA
-            | "divf" -> pDivF resultSSA actualLhsSSA actualRhsSSA
+            | "addf" -> pAddF resultSSA lhsSSA rhsSSA
+            | "subf" -> pSubF resultSSA lhsSSA rhsSSA
+            | "mulf" -> pMulF resultSSA lhsSSA rhsSSA
+            | "divf" -> pDivF resultSSA lhsSSA rhsSSA
             // Bitwise
-            | "andi" -> pAndI resultSSA actualLhsSSA actualRhsSSA
-            | "ori" -> pOrI resultSSA actualLhsSSA actualRhsSSA
-            | "xori" -> pXorI resultSSA actualLhsSSA actualRhsSSA
-            | "shli" -> pShLI resultSSA actualLhsSSA actualRhsSSA
-            | "shrui" -> pShRUI resultSSA actualLhsSSA actualRhsSSA
-            | "shrsi" -> pShRSI resultSSA actualLhsSSA actualRhsSSA
+            | "andi" -> pAndI resultSSA lhsSSA rhsSSA
+            | "ori" -> pOrI resultSSA lhsSSA rhsSSA
+            | "xori" -> pXorI resultSSA lhsSSA rhsSSA
+            | "shli" -> pShLI resultSSA lhsSSA rhsSSA
+            | "shrui" -> pShRUI resultSSA lhsSSA rhsSSA
+            | "shrsi" -> pShRSI resultSSA lhsSSA rhsSSA
             | _ -> fail (Message $"Unknown binary arithmetic operation: {operation}")
 
-        // Infer result type from actual operand types (after load)
-        let resultType = actualLhsType  // Binary ops preserve operand type
-        
-        // Collect all ops: load ops + arithmetic op
-        let allOps = lhsLoadOps @ rhsLoadOps @ [op]
-        return (allOps, TRValue { SSA = resultSSA; Type = resultType })
+        // Infer result type from operand types
+        let resultType = lhsType  // Binary ops preserve operand type
+
+        return (lhsLoadOps @ rhsLoadOps @ [op], TRValue { SSA = resultSSA; Type = resultType })
     }
 
 /// Generic comparison pattern wrapper (PULL model)
 /// Takes predicate and nodeId, pulls arguments from accumulator monadically.
 /// SSA extracted from coeffects via nodeId: [0] = result
-/// ACCEPTS BOTH VALUE SSAs AND MEMREF SSAs - loads from memref monadically if needed
+/// AUTOMATICALLY loads from TMemRef arguments using pRecallArgWithLoad
 let pComparisonOp (nodeId: NodeId) (pred: ICmpPred)
                   : PSGParser<MLIROp list * TransferResult> =
     parser {
         // PULL model: Extract argument IDs from parent Application node
         let! argIds = pGetApplicationArgs
         do! ensure (argIds.Length >= 2) $"pComparisonOp: Expected 2 args, got {argIds.Length}"
-        
-        // PULL model: Recall operand SSAs and types from accumulator
-        let! (lhsSSA, lhsType) = pRecallNode argIds.[0]
-        let! (rhsSSA, rhsType) = pRecallNode argIds.[1]
-        
+
+        // PULL model: Recall operand SSAs and types, automatically loading from TMemRef
+        let! (lhsLoadOps, lhsSSA, lhsType) = pRecallArgWithLoad argIds.[0]
+        let! (rhsLoadOps, rhsSSA, rhsType) = pRecallArgWithLoad argIds.[1]
+
         // Extract result SSA from coeffects
         let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 1) $"pComparisonOp: Expected 1 SSA, got {ssas.Length}"
         let resultSSA = ssas.[0]
 
-        // Monadic load-if-needed: ensures we have values, not memrefs
-        let! (actualLhsSSA, actualLhsType, lhsLoadOps) = pEnsureValue nodeId lhsSSA lhsType
-        let! (actualRhsSSA, actualRhsType, rhsLoadOps) = pEnsureValue nodeId rhsSSA rhsType
+        let! op = pCmpI resultSSA pred lhsSSA rhsSSA lhsType
 
-        let! op = pCmpI resultSSA pred actualLhsSSA actualRhsSSA actualLhsType
-
-        // Collect all ops: load ops + comparison op
-        let allOps = lhsLoadOps @ rhsLoadOps @ [op]
-        return (allOps, TRValue { SSA = resultSSA; Type = TInt I1 })  // Comparisons always return i1
+        return (lhsLoadOps @ rhsLoadOps @ [op], TRValue { SSA = resultSSA; Type = TInt I1 })  // Comparisons always return i1
     }
 
 /// Unary NOT pattern (xori with constant 1) - PULL model
 /// Pulls operand from accumulator monadically.
 /// SSA extracted from coeffects via nodeId: [0] = constant, [1] = result
-/// ACCEPTS BOTH VALUE SSAs AND MEMREF SSAs - loads from memref monadically if needed
+/// AUTOMATICALLY loads from TMemRef arguments using pRecallArgWithLoad
 let pUnaryNot (nodeId: NodeId)
               : PSGParser<MLIROp list * TransferResult> =
     parser {
         // PULL model: Extract argument IDs from parent Application node
         let! argIds = pGetApplicationArgs
         do! ensure (argIds.Length >= 1) $"pUnaryNot: Expected 1 arg, got {argIds.Length}"
-        
-        // PULL model: Recall operand SSA and type from accumulator
-        let! (operandSSA, operandType) = pRecallNode argIds.[0]
-        
+
+        // PULL model: Recall operand SSA and type, automatically loading from TMemRef
+        let! (loadOps, operandSSA, operandType) = pRecallArgWithLoad argIds.[0]
+
         // Extract SSAs from coeffects
         let! ssas = getNodeSSAs nodeId
         do! ensure (ssas.Length >= 2) $"pUnaryNot: Expected 2 SSAs, got {ssas.Length}"
         let constSSA = ssas.[0]
         let resultSSA = ssas.[1]
 
-        // Monadic load-if-needed: ensures we have value, not memref
-        let! (actualOperandSSA, actualOperandType, loadOps) = pEnsureValue nodeId operandSSA operandType
-
         // Emit constant 1 for boolean NOT
         let constOp = MLIROp.ArithOp (ArithOp.ConstI (constSSA, 1L, TInt I1))
         // Emit XOR operation
-        let! xorOp = pXorI resultSSA actualOperandSSA constSSA
+        let! xorOp = pXorI resultSSA operandSSA constSSA
 
-        // Collect all ops: load ops + const + xor
-        let allOps = loadOps @ [constOp; xorOp]
-        return (allOps, TRValue { SSA = resultSSA; Type = actualOperandType })
+        return (loadOps @ [constOp; xorOp], TRValue { SSA = resultSSA; Type = operandType })
     }

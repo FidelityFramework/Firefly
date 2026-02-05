@@ -121,7 +121,7 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                         // MemRef.store: 'T -> memref<?x'T> -> nativeint -> unit
                         // Baker has already transformed NativePtr.write → MemRef.store
                         // PATTERN: Detect and unwrap MemRef.add(base, offset) to extract base memref and offset
-                        let (memrefSSA, offsetSSA, memrefType) =
+                        let (memrefSSA, offsetSSA, memrefType, offsetLoadOps) =
                             let ptrArgNodeId = argIds.[1]  // Second argument (ptr position)
                             match SemanticGraph.tryGetNode ptrArgNodeId ctx.Graph with
                             | Some ptrNode ->
@@ -136,20 +136,44 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                             // Extract base memref and offset from MemRef.add arguments
                                             match MLIRAccumulator.recallNode addArgIds.[0] ctx.Accumulator,
                                                   MLIRAccumulator.recallNode addArgIds.[1] ctx.Accumulator with
-                                            | Some (baseSSA, baseTy), Some (offsetSSA, _) ->
-                                                // Use base as memref, offset from MemRef.add's second arg
-                                                (baseSSA, offsetSSA, baseTy)
+                                            | Some (baseSSA, baseTy), Some (offsetSSA, offsetTy) ->
+                                                // Check if offset is TMemRef (mutable variable) and needs loading
+                                                match offsetTy with
+                                                | TMemRef elemType ->
+                                                    // Offset is mutable variable - emit load operations
+                                                    // VarRef node (addArgIds.[1]) has 2 SSAs: [0] = index const, [1] = load result
+                                                    let offsetNodeIdValue = NodeId.value addArgIds.[1]
+                                                    match ctx.Coeffects.SSA.NodeSSA.TryFind(offsetNodeIdValue) with
+                                                    | Some alloc when alloc.SSAs.Length >= 2 ->
+                                                        let ssas = alloc.SSAs
+                                                        let zeroSSA = ssas.[0]
+                                                        let loadedOffsetSSA = ssas.[1]
+
+                                                        // Compose load operations (same pattern as pRecallArgWithLoad)
+                                                        let zeroOp = MLIROp.IndexOp (IndexOp.IndexConst (zeroSSA, 0L))
+                                                        let loadOp = MLIROp.MemRefOp (MemRefOp.Load (loadedOffsetSSA, offsetSSA, [zeroSSA], elemType))
+                                                        let loadOps = [zeroOp; loadOp]
+
+                                                        // Use loaded value as offset
+                                                        (baseSSA, loadedOffsetSSA, baseTy, loadOps)
+                                                    | _ ->
+                                                        // SSAs not found or insufficient - use offsetSSA as-is
+                                                        // This handles non-VarRef cases (literals, computed values)
+                                                        (baseSSA, offsetSSA, baseTy, [])
+                                                | _ ->
+                                                    // Offset is not TMemRef - use as-is (immutable or literal)
+                                                    (baseSSA, offsetSSA, baseTy, [])
                                             | _ ->
                                                 // Recall failed, fallback to original values
-                                                (ptrSSA, indexSSA, argTypes.[1])
+                                                (ptrSSA, indexSSA, argTypes.[1], [])
                                         | _ ->
                                             // Not MemRef.add, use original values
-                                            (ptrSSA, indexSSA, argTypes.[1])
-                                    | None -> (ptrSSA, indexSSA, argTypes.[1])
+                                            (ptrSSA, indexSSA, argTypes.[1], [])
+                                    | None -> (ptrSSA, indexSSA, argTypes.[1], [])
                                 | _ ->
                                     // Not an Application, use original values
-                                    (ptrSSA, indexSSA, argTypes.[1])
-                            | None -> (ptrSSA, indexSSA, argTypes.[1])
+                                    (ptrSSA, indexSSA, argTypes.[1], [])
+                            | None -> (ptrSSA, indexSSA, argTypes.[1], [])
 
                         let arch = ctx.Coeffects.Platform.TargetArch
                         let elemType =
@@ -157,7 +181,9 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | TMemRef elemTy -> elemTy
                             | _ -> TError "Expected memref type for MemRef.store"
                         match tryMatch (pMemRefStoreIndexed memrefSSA valueSSA offsetSSA elemType memrefType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
+                        | Some ((storeOps, result), _) ->
+                            // Prepend offset load operations (if any) to store operations
+                            { InlineOps = offsetLoadOps @ storeOps; TopLevelOps = []; Result = result }
                         | None -> WitnessOutput.error "MemRef.store pattern failed"
 
                     | IntrinsicModule.MemRef, "load", [memrefSSA; indexSSA] ->
@@ -234,15 +260,46 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | None -> WitnessOutput.error "Sys.read pattern failed"
                         | None -> WitnessOutput.error "Sys.read: buffer argument not yet witnessed"
 
-                    | IntrinsicModule.NativeStr, "fromPointer", [bufferSSA; _lengthSSA] ->
-                        // Convert static buffer (memref<Nxi8>) to dynamic string (memref<?xi8>)
-                        // Uses memref.cast at function boundary
-                        // Length is intrinsic to memref descriptor, not used in cast operation
-                        let bufferType = argTypes.[0]  // Get buffer's static type (memref<Nxi8>)
-                        // Pattern extracts result SSA monadically via node.Id
-                        match tryMatch (pStringFromBuffer node.Id bufferSSA bufferType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                        | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
-                        | None -> WitnessOutput.error "NativeStr.fromPointer: string construction failed"
+                    | IntrinsicModule.NativeStr, "fromPointer", [bufferSSA; lengthSSA] ->
+                        // FNCS contract (Intrinsics.fs:372): "creates a new memref<?xi8> with specified length"
+                        // This requires allocate + memcpy to create substring, not just cast
+                        // Pattern: Check if length is TMemRef (mutable variable) and load if needed
+                        let bufferType = argTypes.[0]
+                        let lengthType = argTypes.[1]
+
+                        // Check if length needs loading (TMemRef case - mutable variable)
+                        let (actualLengthSSA, lengthLoadOps) =
+                            match lengthType with
+                            | TMemRef elemType ->
+                                // Length is mutable variable - compose load operations
+                                // VarRef node has 2 SSAs: [0] = index const, [1] = load result
+                                let lengthArgNodeId = argIds.[1]
+                                let lengthNodeIdValue = NodeId.value lengthArgNodeId
+                                match ctx.Coeffects.SSA.NodeSSA.TryFind(lengthNodeIdValue) with
+                                | Some alloc when alloc.SSAs.Length >= 2 ->
+                                    let ssas = alloc.SSAs
+                                    let zeroSSA = ssas.[0]
+                                    let loadedLengthSSA = ssas.[1]
+
+                                    // Compose load operations (same pattern as MemRef.store offset)
+                                    let zeroOp = MLIROp.IndexOp (IndexOp.IndexConst (zeroSSA, 0L))
+                                    let loadOp = MLIROp.MemRefOp (MemRefOp.Load (loadedLengthSSA, lengthSSA, [zeroSSA], elemType))
+                                    let loadOps = [zeroOp; loadOp]
+
+                                    (loadedLengthSSA, loadOps)
+                                | _ ->
+                                    // SSAs not found - use lengthSSA as-is
+                                    (lengthSSA, [])
+                            | _ ->
+                                // Length is not TMemRef - use as-is
+                                (lengthSSA, [])
+
+                        // Call pattern with loaded (or direct) length - honors FNCS contract
+                        match tryMatch (pStringFromPointerWithLength node.Id bufferSSA actualLengthSSA bufferType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                        | Some ((ops, result), _) ->
+                            // Prepend length load operations (if any) to string construction operations
+                            { InlineOps = lengthLoadOps @ ops; TopLevelOps = []; Result = result }
+                        | None -> WitnessOutput.error "NativeStr.fromPointer: substring construction failed"
 
                     // String atomic intrinsics (not decomposed by Baker)
                     | IntrinsicModule.String, "length", [stringSSA] ->
@@ -332,20 +389,20 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
 
                         // Use classification from PSGCombinators for principled operator dispatch
                         let category = classifyAtomicOp info
-                        let opResult =
-                            match category with
-                            // Unary operations (PULL model) - witness passes minimal selector
-                            | UnaryArith "xori" ->
-                                // Boolean NOT: xori %operand, 1
-                                // Pattern extracts operand monadically and pulls from accumulator
-                                tryMatch (pUnaryNot node.Id) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                        match category with
+                        // Unary operations (PULL model) - witness passes minimal selector
+                        | UnaryArith "xori" ->
+                            // Boolean NOT: xori %operand, 1
+                            // Pattern extracts operand monadically and pulls from accumulator
+                            // Use tryMatchWithDiagnostics to surface actual pattern failure reasons
+                            match tryMatchWithDiagnostics (pUnaryNot node.Id) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Result.Ok ((ops, result), _) ->
+                                { InlineOps = ops; TopLevelOps = []; Result = result }
+                            | Result.Error msg ->
+                                // Surface architectural error from pattern (e.g., "Operand is TMemRef")
+                                WitnessOutput.error $"UnaryArith 'xori' (not): {msg}"
 
-                            | _ -> None
-
-                        match opResult with
-                        | Some ((ops, result), _) ->
-                            { InlineOps = ops; TopLevelOps = []; Result = result }
-                        | None ->
+                        | _ ->
                             WitnessOutput.error $"Unknown or unsupported unary operator: {info.Operation} (category: {category})"
 
                     | _ -> WitnessOutput.error $"Atomic operation not yet implemented: {info.FullName} with {argSSAs.Length} args"

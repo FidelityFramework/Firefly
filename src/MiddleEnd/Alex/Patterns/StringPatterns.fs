@@ -23,6 +23,32 @@ open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId
 
 // ═══════════════════════════════════════════════════════════
+// MEMORY COPY PATTERN (composed from FuncElements)
+// ═══════════════════════════════════════════════════════════
+
+/// Build memcpy external call operation (composed from pFuncCall Element)
+/// External memcpy declaration will be added at module level if needed
+/// resultSSA: The SSA assigned to the memcpy result (from coeffects analysis)
+let pStringMemCopy (resultSSA: SSA) (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGParser<MLIROp list> =
+    parser {
+        // Get platform word type (pointers are platform words)
+        let! state = getUserState
+        let platformWordTy = state.Platform.PlatformWordType
+
+        // Build memcpy call: void* memcpy(void* dest, const void* src, size_t n)
+        let args = [
+            { SSA = destSSA; Type = platformWordTy }   // dest
+            { SSA = srcSSA; Type = platformWordTy }    // src
+            { SSA = lenSSA; Type = platformWordTy }    // len
+        ]
+
+        // Call external memcpy - uses result SSA from coeffects analysis
+        let! call = pFuncCall (Some resultSSA) "memcpy" args platformWordTy
+
+        return [call]
+    }
+
+// ═══════════════════════════════════════════════════════════
 // STRING CONSTRUCTION
 // ═══════════════════════════════════════════════════════════
 
@@ -41,6 +67,62 @@ let pStringFromBuffer (nodeId: NodeId) (bufferSSA: SSA) (bufferType: MLIRType) :
         let stringType = TMemRef (TInt I8)
         let! castOp = pMemRefCast resultSSA bufferSSA bufferType stringType
         return ([castOp], TRValue { SSA = resultSSA; Type = stringType })
+    }
+
+/// Create substring from buffer pointer and length (FNCS NativeStr.fromPointer contract)
+/// FNCS contract (Intrinsics.fs:372): "creates a new memref<?xi8> with specified length"
+/// This is NOT a cast - it's a substring extraction via allocate + memcpy.
+/// SSA extracted from coeffects via nodeId (7 total):
+///   [0] = resultBufferSSA (allocated memref<?xi8> with actual length)
+///   [1] = srcPtrSSA (extract pointer from source buffer)
+///   [2] = destPtrSSA (extract pointer from result buffer)
+///   [3] = srcPtrWord (cast source ptr to platform word)
+///   [4] = destPtrWord (cast dest ptr to platform word)
+///   [5] = lenWord (cast length to platform word)
+///   [6] = memcpyResultSSA (result of memcpy call)
+let pStringFromPointerWithLength (nodeId: NodeId) (bufferSSA: SSA) (lengthSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+    parser {
+        let! ssas = getNodeSSAs nodeId
+        do! ensure (ssas.Length >= 7) $"pStringFromPointerWithLength: Expected 7 SSAs, got {ssas.Length}"
+
+        let! state = getUserState
+        let platformWordTy = state.Platform.PlatformWordType
+
+        let resultBufferSSA = ssas.[0]
+        let srcPtrSSA = ssas.[1]
+        let destPtrSSA = ssas.[2]
+        let srcPtrWord = ssas.[3]
+        let destPtrWord = ssas.[4]
+        let lenWord = ssas.[5]
+        let memcpyResultSSA = ssas.[6]
+
+        // 1. Allocate result buffer with runtime size (lengthSSA is index type from nativeint)
+        let resultTy = TMemRef (TInt I8)
+        let! allocOp = pAlloc resultBufferSSA lengthSSA (TInt I8)
+
+        // 2. Extract pointers from source buffer and result buffer
+        let! extractSrcPtr = pExtractBasePtr srcPtrSSA bufferSSA bufferType
+        let! extractDestPtr = pExtractBasePtr destPtrSSA resultBufferSSA resultTy
+
+        // 3. Cast pointers to platform words for memcpy FFI
+        let! castSrc = pIndexCastS srcPtrWord srcPtrSSA platformWordTy
+        let! castDest = pIndexCastS destPtrWord destPtrSSA platformWordTy
+
+        // 4. Cast length to platform word for memcpy FFI (index → platform word)
+        let! castLen = pIndexCastS lenWord lengthSSA platformWordTy
+
+        // 5. Call memcpy(dest, src, len) - copies 'length' bytes from buffer to new memref
+        let! copyOps = pStringMemCopy memcpyResultSSA destPtrWord srcPtrWord lenWord
+
+        // 6. Return new memref<?xi8> with actual length
+        // FNCS contract satisfied: "creates a NEW memref<?xi8> with SPECIFIED LENGTH"
+        let ops =
+            [allocOp] @
+            [extractSrcPtr; extractDestPtr] @
+            [castSrc; castDest; castLen] @
+            copyOps
+
+        return (ops, TRValue { SSA = resultBufferSSA; Type = resultTy })
     }
 
 /// Get string length via memref.dim
@@ -68,32 +150,6 @@ let pStringLength (nodeId: NodeId) (stringSSA: SSA) (stringType: MLIRType) : PSG
         let! castOp = pIndexCastS resultSSA lenIndexSSA intTy
 
         return ([dimConstOp; dimOp; castOp], TRValue { SSA = resultSSA; Type = intTy })
-    }
-
-// ═══════════════════════════════════════════════════════════
-// MEMORY COPY PATTERN
-// ═══════════════════════════════════════════════════════════
-
-/// Call external memcpy(dest, src, len) -> void*
-/// External memcpy declaration will be added at module level if needed
-/// resultSSA: The SSA assigned to the memcpy result (from coeffects analysis)
-let pStringMemCopy (resultSSA: SSA) (destSSA: SSA) (srcSSA: SSA) (lenSSA: SSA) : PSGParser<MLIROp list> =
-    parser {
-        // Get platform word type (pointers are platform words)
-        let! state = getUserState
-        let platformWordTy = state.Platform.PlatformWordType
-
-        // Build memcpy call: void* memcpy(void* dest, const void* src, size_t n)
-        let args = [
-            { SSA = destSSA; Type = platformWordTy }   // dest
-            { SSA = srcSSA; Type = platformWordTy }    // src
-            { SSA = lenSSA; Type = platformWordTy }    // len
-        ]
-
-        // Call external memcpy - uses result SSA from coeffects analysis
-        let! call = pFuncCall (Some resultSSA) "memcpy" args platformWordTy
-
-        return [call]
     }
 
 // ═══════════════════════════════════════════════════════════
