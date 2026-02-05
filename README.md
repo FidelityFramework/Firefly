@@ -3,13 +3,34 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![License: Commercial](https://img.shields.io/badge/License-Commercial-orange.svg)](Commercial.md)
 [![Pipeline](https://img.shields.io/badge/Pipeline-25%20nanopasses-blue)]()
+[![Samples](https://img.shields.io/badge/Samples-3/16%20working-yellow)]()
 
 <p align="center">
 🚧 <strong>Under Active Development</strong> 🚧<br>
-<em>Early development. Not production-ready.</em>
+<em>Early development (Feb 2026: 3/16 samples working). Not production-ready.</em>
 </p>
 
 Ahead-of-time F# compiler producing native executables without managed runtime or garbage collection. Leverages [F# Native Compiler Services (FNCS)](https://github.com/FidelityFramework/fsnative) for type checking and semantic analysis, generates MLIR through Alex multi-targeting layer, produces native binaries via LLVM.
+
+## Current Status (February 2026)
+
+**Working Samples**: 3 of 16 console samples compile and execute correctly:
+- ✅ 01_HelloWorldDirect (static strings, basic Console)
+- ✅ 02_HelloWorldSaturated (mutable variables in loops, string interpolation)
+- ✅ 03_HelloWorldHalfCurried (pipe operators, function values)
+
+**Recent Achievements**:
+- **VarRef SSA Auto-Loading**: Mutable variables used as memref indices now auto-load values compositionally
+- **FNCS Contract Compliance**: NativeStr.fromPointer honors substring extraction via allocate + memcpy
+- **Compositional Patterns**: Element/Pattern/Witness stratification validated with cross-discipline composition
+
+**Known Limitations**:
+- 13 of 16 samples fail compilation (closure capture, higher-order functions, complex control flow)
+- Managed mutability limited to local variables in simple loops
+- No escape analysis (mutables that outlive scope unsupported)
+- Generic instantiation and SRTP resolution issues remain
+
+See: `docs/PRDs/README.md` for full feature roadmap and status.
 
 ## Architecture
 
@@ -31,13 +52,18 @@ F# Source
 └─────────────────────────────────────────────────────────────┘
     ↓ PSG (Program Semantic Graph)
 ┌─────────────────────────────────────────────────────────────┐
-│ Alex Witnesses (16 category-selective generators)           │
-│ - ApplicationWitness: function calls                         │
+│ Alex: Element/Pattern/Witness Architecture                  │
+│ • Elements (module internal): Atomic MLIR ops with XParsec  │
+│ • Patterns (public): Composable templates from Elements     │
+│ • Witnesses (public): Thin observers (~20 lines each)       │
+│                                                             │
+│ 16 category-selective witnesses:                            │
+│ - ApplicationWitness: function calls, intrinsics            │
+│ - ControlFlowWitness: if/while/for with MLIR SCF dialect    │
+│ - BindingWitness: let bindings, mutable variables          │
 │ - LambdaWitness: function definitions                        │
-│ - ControlFlowWitness: if/while/for                           │
-│ - MemoryWitness: allocations                                 │
-│ - OptionWitness, SeqWitness, LazyWitness: type constructors  │
-│ - 10 additional witnesses for complete F# coverage          │
+│ - OptionWitness, LazyWitness, SeqWitness: type constructors │
+│ - 9 additional witnesses for F# coverage                    │
 └─────────────────────────────────────────────────────────────┘
     ↓ Portable MLIR (memref, arith, func, index, scf)
 ┌─────────────────────────────────────────────────────────────┐
@@ -68,17 +94,21 @@ Native Binary (zero runtime dependencies)
 
 ## Architectural Principles
 
-**1. Nanopass Throughout**
-Unlike traditional compilers with monolithic passes, Firefly uses single-purpose transformations at every tier. Each pass is independently testable and inspectable with `-k` flag.
+**1. Element/Pattern/Witness Stratification (Feb 2026)**
+- **Elements** (module internal): Atomic MLIR operations with XParsec state threading
+- **Patterns** (public): Composable templates that compose Elements across disciplines (memref + arith + func)
+- **Witnesses** (public): Thin observers (~20 lines) that delegate to Patterns via `tryMatch`
 
-**2. Coeffects Over Runtime**
-Pre-computed analysis (SSA assignment, platform resolution, mutability tracking) guides code generation. No runtime discovery.
+Witnesses physically cannot import Elements - they must use Patterns. This enforces compositional architecture.
 
-**3. Codata Witnesses**
-Witnesses observe PSG structure and return MLIR operations. They do not build or transform—observation only. This preserves PSG immutability.
+**2. XParsec Throughout**
+Composable parser combinators at every level: Elements use `parser { }` CE for state threading, Patterns pull data from Coeffects monadically, Witnesses use `tryMatch` for PSG structure matching. No central dispatch hub, no mutable accumulator state.
 
-**4. Quotations as Semantic Carriers**
-F# quotations (`Expr<'T>`) carry platform constraints and peripheral descriptors through compilation as inspectable data structures. No runtime evaluation.
+**3. Coeffects Over Runtime**
+Pre-computed analysis (SSA assignment, platform resolution, mutability tracking, DU layouts) guides code generation. No runtime discovery. Coeffects are computed once before Alex witnessing begins.
+
+**4. Codata Witnesses**
+Witnesses observe PSG structure and return MLIR operations. They do not build or transform—observation only. This preserves PSG immutability and enables nanopass composition.
 
 **5. Zipper + XParsec**
 Bidirectional PSG traversal with composable pattern matching. Enables local reasoning without global context threading.
@@ -90,24 +120,42 @@ MiddleEnd emits only portable MLIR dialects (memref, arith, func, index, scf). T
 
 FNCS provides native type universe (`NTUKind`) at compile time. Types are compiler intrinsics, not runtime constructs:
 
-- Primitives: `i8`, `i16`, `i32`, `i64`, `f32`, `f64` → MLIR integer/float types
+- Primitives: `i8`, `i16`, `i32`, `i64`, `f32`, `f64`, `nativeint` → MLIR integer/float/index types
 - Pointers: `nativeptr<'T>` → opaque pointers
-- Strings: Fat pointers `{ptr: memref<?xi8>, len: index}` → memref operations
+- **Strings**: `memref<?xi8>` directly (NO fat pointers, NO structs) → memref operations
 - Structures: Records/unions → MLIR struct types with precise layout
+- **Mutable Variables**: `let mutable x = ...` → `memref<1x'T>` with alloca + load/store (limited to local scope)
+
+### String Representation (MLIR Memref Semantics)
+
+**ARCHITECTURAL PRINCIPLE**: Strings ARE memrefs, not fat pointer structs.
+
+```mlir
+Static literal:    memref<13xi8>    // "Hello, World!"
+Dynamic (readln):  memref<?xi8>     // Runtime-sized, dimension intrinsic
+Concatenation:     memref<?xi8>     // Allocated with actual combined length
+```
+
+String operations use memref.dim to get length, memref.alloc for runtime-sized allocation, memcpy for substring extraction. This is MLIR-native, not LLVM-specific.
 
 ### Intrinsic Operations
 
 Platform operations defined in FNCS as compiler intrinsics:
 
 **System (`Sys` module):**
-- `Sys.write(fd: i64, buf: nativeptr<i8>, count: i64): i64` — syscall
-- `Sys.read(fd: i64, buf: nativeptr<i8>, count: i64): i64` — syscall
+- `Sys.write(fd: i64, buf: memref<?xi8>): i64` — syscall (extracts ptr + length from memref)
+- `Sys.read(fd: i64, buf: memref<?xi8>): i64` — syscall
 - `Sys.exit(code: i32): unit` — process termination
 
 **Memory (`NativePtr` module):**
 - `NativePtr.read(ptr: nativeptr<'T>): 'T` — load
 - `NativePtr.write(ptr: nativeptr<'T>, value: 'T): unit` — store
-- `NativePtr.stackalloc(count: i64): nativeptr<'T>` — stack allocation
+- `NativePtr.stackalloc(count: nativeint): nativeptr<'T>` — stack allocation (memref.alloca)
+
+**String (`String` + `NativeStr` modules):**
+- `String.length(s: memref<?xi8>): int` — memref.dim extraction
+- `String.concat2(s1: memref<?xi8>, s2: memref<?xi8>): memref<?xi8>` — allocate + memcpy
+- `NativeStr.fromPointer(buf: memref<Nxi8>, len: nativeint): memref<?xi8>` — substring extraction
 
 All intrinsics resolve to platform-specific MLIR during Alex traversal.
 
@@ -118,22 +166,26 @@ module HelloWorld
 
 [<EntryPoint>]
 let main argv =
-    Console.write "Hello, World!"
+    Console.write "Enter your name: "
+    let name = Console.readln()
+    Console.writeln $"Hello, {name}!"
     0
 ```
 
 Compiles to native binary with:
 - Zero .NET runtime dependencies
 - Direct syscalls for I/O
-- Stack-only allocation (no heap)
+- Stack allocation for locals (memref.alloca)
+- Mutable variables via TMemRef auto-loading
 - MLIR → LLVM optimization
 
 ```bash
 firefly compile HelloWorld.fidproj
-./target/helloworld  # Freestanding native binary
+echo "Alice" | ./target/helloworld
+# Output: "Enter your name: Hello, Alice!"
 ```
 
-See `/samples/console/FidelityHelloWorld/` for progressive examples demonstrating pipes, currying, pattern matching, closures, sequences.
+See `/samples/console/FidelityHelloWorld/` for progressive examples (3 of 16 currently working).
 
 ## Project Configuration
 
@@ -191,8 +243,12 @@ With `-k` flag, inspect each nanopass output in `target/intermediates/`:
 cd tests/regression
 dotnet fsi Runner.fsx                    # All samples
 dotnet fsi Runner.fsx -- --parallel      # Parallel execution
-dotnet fsi Runner.fsx -- --sample 01_HelloWorldDirect
+dotnet fsi Runner.fsx -- --sample 02_HelloWorldSaturated
 ```
+
+**Current Status** (Feb 2026):
+- 3 of 16 samples pass (01, 02, 03)
+- 13 samples fail compilation (04-16)
 
 ## Directory Structure
 
@@ -202,13 +258,14 @@ src/
 ├── Core/                   Configuration, timing, diagnostics
 ├── FrontEnd/               FNCS integration
 ├── MiddleEnd/
-│   ├── PSGElaboration/     Coeffect analysis (SSA, platform, etc.)
+│   ├── PSGElaboration/     Coeffect analysis (SSA, platform, DU layouts)
 │   └── Alex/               MLIR generation layer
 │       ├── Dialects/       MLIR type system
 │       ├── CodeGeneration/ Type mapping, sizing
 │       ├── Traversal/      PSGZipper, XParsec combinators
-│       ├── Witnesses/      16 category-selective generators
-│       ├── Patterns/       Composable MLIR templates
+│       ├── Elements/       Atomic MLIR ops (module internal)
+│       ├── Patterns/       Composable templates (public)
+│       ├── Witnesses/      16 category-selective observers (public)
 │       └── Pipeline/       Orchestration, MLIR passes
 └── BackEnd/                LLVM compilation, linking
 ```
@@ -219,7 +276,7 @@ Portable MLIR enables diverse hardware targets:
 
 | Target | Status | Lowering Path |
 |--------|--------|---------------|
-| x86-64 CPU | ✅ Working | memref → LLVM struct |
+| x86-64 CPU | ✅ Working (limited) | memref → LLVM struct |
 | ARM Cortex-M | 🚧 Planned | memref → custom embedded lowering |
 | CUDA GPU | 🚧 Planned | memref → SPIR-V/PTX lowering |
 | AMD ROCm | 🚧 Planned | memref → SPIR-V lowering |
@@ -236,34 +293,59 @@ Previously blocked by hard-coded LLVM types. Now possible via target-specific ml
 |----------|---------|
 | `docs/Architecture_Canonical.md` | FNCS-first architecture, intrinsic modules |
 | `docs/PSG_Nanopass_Architecture.md` | Phase 0-5+ detailed design |
-| `docs/TypedTree_Zipper_Design.md` | Zipper traversal, XParsec integration |
+| `docs/Alex_Architecture_Overview.md` | Element/Pattern/Witness stratification |
 | `docs/XParsec_PSG_Architecture.md` | Pattern combinators, codata witnesses |
-| `docs/Baker_Architecture.md` | Phase 4 type resolution |
-| `docs/PRDs/INDEX.md` | Product requirement documents by category |
+| `docs/Coeffect_Analysis_Architecture.md` | SSA assignment, DU layouts, platform resolution |
+| `docs/PRDs/README.md` | Product requirement documents by category |
 
 ## Roadmap
 
-Development organized by category-prefixed PRDs. See [docs/PRDs/INDEX.md](docs/PRDs/INDEX.md).
+Development organized by category-prefixed PRDs. See [docs/PRDs/README.md](docs/PRDs/README.md).
 
-**Completed:**
-- F-01 through F-10: Foundation (samples 01-10)
-- C-01 through C-07: Closures, higher-order functions, recursion, sequences
+**Foundation (F-01 to F-10)**: Core compilation
+- ✅ F-01 HelloWorldDirect (static strings)
+- ✅ F-02 ArenaAllocation (now: memref.alloc for strings)
+- ✅ F-03 PipeOperators (|> reduction)
+- ⏳ F-04 to F-10 (in progress, partial support)
 
-**In Progress:**
-- A-01 through A-06: Async workflows, region-based memory
-- Multi-stack targeting (ARM Cortex-M, GPU, FPGA)
+**Computation (C-01 to C-07)**: Closures, HOFs, Sequences
+- 🚧 C-01 Closures (active development - closure capture unimplemented)
+- 📋 C-02 to C-07 (planned - depends on C-01)
 
-**Planned:**
-- I-01, I-02: Socket I/O, WebSocket
-- T-01 through T-05: Threads, actors, parallel execution
-- E-01 through E-03: Embedded MCU support
+**Async (A-01 to A-06)**: Async workflows, region-based memory
+- 📋 A-01 to A-06 (planned - depends on C-01)
+
+**Other Categories**: I/O (I-xx), Desktop (D-xx), Threading (T-xx), Reactive (R-xx), Embedded (E-xx) - all planned for future work.
+
+## Recent Changes (February 2026)
+
+### Managed Mutability Milestone
+
+**Achievement**: Local mutable variables in simple loops now work via TMemRef auto-loading.
+
+**What Works**:
+- `let mutable pos = 0` → `memref.alloca() : memref<1xindex>`
+- Mutable variables as memref indices (auto-load value before use)
+- Mutable variables in loop conditions (while, for)
+- String operations honoring FNCS contracts (substring extraction)
+
+**What Doesn't Work**:
+- Mutable variables captured in closures (no escape analysis)
+- Mutable variables passed across function boundaries
+- Higher-order functions with mutable state
+- Complex control flow with escaping mutables
+
+**Architectural Pattern Established**: Compositional auto-loading via type-driven discrimination (Rule 9 in managed mutability architecture principles).
+
+See: Serena memory `managed_mutability_feb2026_milestone` for complete details.
 
 ## Contributing
 
 Areas of interest:
 - MLIR dialect design for novel hardware targets
-- Memory optimization patterns
+- Memory optimization patterns (escape analysis, loop unrolling)
 - Nanopass transformations for advanced F# features
+- Closure capture and higher-order function support
 - F* integration for proof-carrying code
 
 ## License
@@ -277,3 +359,4 @@ Dual-licensed under Apache License 2.0 and Commercial License. See [Commercial.m
 - **LLVM Project**: Robust code generation
 - **Nanopass Framework**: Compiler architecture principles
 - **Triton-CPU**: MLIR-based compilation patterns
+- **MLKit**: Flat closure representation patterns
