@@ -32,6 +32,7 @@ module IntrinsicWitness = Alex.Witnesses.IntrinsicWitness
 module StructuralWitness = Alex.Witnesses.StructuralWitness  // Transparent witness for ModuleDef, Sequential
 module BindingWitness = Alex.Witnesses.BindingWitness
 module VarRefWitness = Alex.Witnesses.VarRefWitness
+module MutableAssignmentWitness = Alex.Witnesses.MutableAssignmentWitness
 module ApplicationWitness = Alex.Witnesses.ApplicationWitness
 
 // Priority 2: Collection Witnesses
@@ -76,6 +77,7 @@ let initializeRegistry () =
         |> NanopassRegistry.register StructuralWitness.nanopass
         |> NanopassRegistry.register BindingWitness.nanopass
         |> NanopassRegistry.register VarRefWitness.nanopass
+        |> NanopassRegistry.register MutableAssignmentWitness.nanopass
         |> NanopassRegistry.register ApplicationWitness.nanopass
 
         // Priority 2: Collection Witnesses

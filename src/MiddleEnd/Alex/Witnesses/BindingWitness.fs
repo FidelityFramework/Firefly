@@ -12,18 +12,21 @@ module Alex.Witnesses.BindingWitness
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
+open Alex.Patterns.MemRefPatterns
+open Alex.Dialects.Core.Types
 
 // ═══════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════
 
-/// Witness binding nodes - forwards bound value's SSA
+/// Witness binding nodes - forwards bound value's SSA (immutable) or emits memref.alloca (mutable)
 let private witnessBinding (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     match tryMatch pBinding ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-    | Some ((name, _isMut, _isRec, isEntry), _) ->
+    | Some ((name, isMut, _isRec, isEntry), _) ->
         // Binding has one child - the value being bound
         match node.Children with
         | [valueId] ->
@@ -40,19 +43,34 @@ let private witnessBinding (ctx: WitnessContext) (node: SemanticNode) : WitnessO
                     // Binding node is structural (name association), return TRVoid per Domain Responsibility Principle
                     { InlineOps = []; TopLevelOps = []; Result = TRVoid }
                 | _ ->
-                    // Value binding - recall child's SSA
-                    match MLIRAccumulator.recallNode valueId ctx.Accumulator with
-                    | Some (ssa, ty) ->
-                        // Forward the value's SSA - binding doesn't emit ops
-                        { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
-                    | None ->
-                        // Check if the child was witnessed but returned TRVoid
-                        // This happens for entry point Lambdas (function definitions) and other module-level declarations
-                        if isEntry then
-                            // Entry point binding - child is a function definition, not a value
-                            { InlineOps = []; TopLevelOps = []; Result = TRVoid }
-                        else
-                            WitnessOutput.error $"Binding '{name}': Value not yet witnessed (non-entry binding without SSA)"
+                    // Check if binding is mutable
+                    if isMut then
+                        // MUTABLE BINDING: Allocate memref and initialize
+                        match MLIRAccumulator.recallNode valueId ctx.Accumulator with
+                        | Some (initSSA, elemType) ->
+                            let (NodeId nodeIdInt) = node.Id
+                            match tryMatch (pBuildMutableBinding nodeIdInt elemType initSSA)
+                                          ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                            | Some ((ops, result), _) ->
+                                { InlineOps = ops; TopLevelOps = []; Result = result }
+                            | None ->
+                                WitnessOutput.error $"Mutable binding '{name}': Pattern emission failed"
+                        | None ->
+                            WitnessOutput.error $"Mutable binding '{name}': Initial value not yet witnessed"
+                    else
+                        // IMMUTABLE BINDING: Forward child's SSA (existing logic)
+                        match MLIRAccumulator.recallNode valueId ctx.Accumulator with
+                        | Some (ssa, ty) ->
+                            // Forward the value's SSA - binding doesn't emit ops
+                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
+                        | None ->
+                            // Check if the child was witnessed but returned TRVoid
+                            // This happens for entry point Lambdas (function definitions) and other module-level declarations
+                            if isEntry then
+                                // Entry point binding - child is a function definition, not a value
+                                { InlineOps = []; TopLevelOps = []; Result = TRVoid }
+                            else
+                                WitnessOutput.error $"Binding '{name}': Value not yet witnessed (non-entry binding without SSA)"
         | _ ->
             WitnessOutput.error $"Binding '{name}': Expected 1 child, got {node.Children.Length}"
     | None ->

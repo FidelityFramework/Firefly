@@ -12,9 +12,12 @@ module Alex.Witnesses.VarRefWitness
 
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
+open FSharp.Native.Compiler.NativeTypedTree.NativeTypes  // NodeId
 open Alex.Traversal.TransferTypes
 open Alex.Traversal.NanopassArchitecture
 open Alex.XParsec.PSGCombinators
+open Alex.Patterns.MemRefPatterns  // pLoadMutableVariable
+open Alex.Dialects.Core.Types  // TMemRef
 open Alex.CodeGeneration.TypeMapping
 open XParsec
 open XParsec.Parsers
@@ -67,8 +70,20 @@ let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                         // Value binding - post-order: binding already witnessed, recall its SSA
                         match MLIRAccumulator.recallNode bindingId ctx.Accumulator with
                         | Some (ssa, ty) ->
-                            // Forward the binding's SSA - VarRef doesn't emit ops
-                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
+                            // Check if binding is mutable (TMemRef type)
+                            match ty with
+                            | TMemRef elemType ->
+                                // MUTABLE VARIABLE: Load value from memref
+                                let (NodeId nodeIdInt) = node.Id
+                                match tryMatch (pLoadMutableVariable nodeIdInt ssa elemType)
+                                              ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                | Some ((ops, result), _) ->
+                                    { InlineOps = ops; TopLevelOps = []; Result = result }
+                                | None ->
+                                    WitnessOutput.error $"VarRef '{name}': Load from mutable variable failed"
+                            | _ ->
+                                // IMMUTABLE VARIABLE: Forward the binding's SSA
+                                { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
                         | None ->
                             WitnessOutput.error $"VarRef '{name}': Binding not yet witnessed"
 

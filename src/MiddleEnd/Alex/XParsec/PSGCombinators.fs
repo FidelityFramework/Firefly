@@ -253,6 +253,16 @@ let pBinding : PSGParser<string * bool * bool * bool> =
         | _ -> return! fail (Message "Expected Binding")
     }
 
+/// Match a Set node (mutable assignment: x <- value)
+let pSet : PSGParser<NodeId * NodeId> =
+    parser {
+        let! node = getCurrentNode
+        match node.Kind with
+        | SemanticKind.Set (targetId, valueId) ->
+            return (targetId, valueId)
+        | _ -> return! fail (Message "Expected Set")
+    }
+
 /// Match a Lambda node (params are name*type*nodeId tuples for SSA assignment)
 let pLambda : PSGParser<(string * FSharp.Native.Compiler.NativeTypedTree.NativeTypes.NativeType * NodeId) list * NodeId> =
     parser {
