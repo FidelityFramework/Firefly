@@ -266,37 +266,42 @@ let runAllNanopasses
     // Create combined witness that tries all nanopasses at each node
     let combinedWitness = combineWitnesses nanopasses
 
-    // Visit only TOP-LEVEL reachable nodes (entry points)
-    // Scope-internal nodes (Lambda bodies, branch bodies) are visited by their parent witnesses
-    for kvp in graph.Nodes do
-        let nodeId, node = kvp.Key, kvp.Value
-        // Only visit if reachable, not yet visited, AND parent is None or ModuleDef (top-level)
-        let isTopLevel =
-            match node.Parent with
-            | None -> true  // No parent = top-level
-            | Some parentId ->
-                match SemanticGraph.tryGetNode parentId graph with
-                | Some parentNode ->
-                    match parentNode.Kind with
-                    | SemanticKind.ModuleDef _ -> true  // Module-level binding
-                    | _ -> false  // Inside a scope (Lambda, If, etc.)
-                | None -> false
-        if node.IsReachable && not (Set.contains nodeId !globalVisited) && isTopLevel then
-            if traceTraversal then printfn "[DEBUG] Processing top-level node %d (%A)" (NodeId.value nodeId) node.Kind
-            match PSGZipper.create graph nodeId with
-            | None -> ()
-            | Some initialZipper ->
-                let nodeCtx = {
-                    Graph = graph
-                    Coeffects = coeffects
-                    Accumulator = sharedAcc
-                    RootAccumulator = sharedAcc  // Root same as shared for top-level
-                    ScopeContext = rootScope  // Shared root scope
-                    RootScopeContext = rootScope  // Root scope for TopLevelOps (same as ScopeContext at top-level)
-                    Zipper = initialZipper
-                    GlobalVisited = globalVisited
-                }
-                visitAllNodes combinedWitness nodeCtx node globalVisited
+    // Process a single structural root node
+    let processRoot (nodeId: NodeId) =
+        if not (Set.contains nodeId !globalVisited) then
+            match SemanticGraph.tryGetNode nodeId graph with
+            | Some node when node.IsReachable ->
+                if traceTraversal then printfn "[DEBUG] Processing root node %d (%A)" (NodeId.value nodeId) node.Kind
+                match PSGZipper.create graph nodeId with
+                | None -> ()
+                | Some initialZipper ->
+                    let nodeCtx = {
+                        Graph = graph
+                        Coeffects = coeffects
+                        Accumulator = sharedAcc
+                        RootAccumulator = sharedAcc
+                        ScopeContext = rootScope
+                        RootScopeContext = rootScope
+                        Zipper = initialZipper
+                        GlobalVisited = globalVisited
+                    }
+                    visitAllNodes combinedWitness nodeCtx node globalVisited
+            | _ -> ()
+
+    // Visit structural roots from ModuleClassifications (semantically-ordered, not NodeId-ordered)
+    // This decouples traversal order from NodeId allocation order.
+    let classifications = graph.ModuleClassifications.Value
+    for kvp in classifications do
+        let moduleDefId = kvp.Key
+        let classification = kvp.Value
+        // Module-init first (prologue bindings)
+        for nodeId in classification.ModuleInit do
+            processRoot nodeId
+        // Then definitions in source order (includes entry point)
+        for nodeId in classification.Definitions do
+            processRoot nodeId
+        // Finally the ModuleDef node itself (for coverage validation)
+        processRoot moduleDefId
 
 /// Main entry point: Execute all nanopasses and return accumulator
 let executeNanopasses
