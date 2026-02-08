@@ -68,7 +68,7 @@ binary = "target/addnumbers"
 expected_output = """
 === DU Pattern Match Test ===
 IntVal 42 -> 42
-FloatVal 3.14 -> 3.140000
+FloatVal 3.14 -> 3.14
 Done!
 """
 

@@ -324,16 +324,50 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                     | IntrinsicModule.NativeStr, "fromPointer", [bufferSSA; lengthSSA] ->
                         // FNCS contract (Intrinsics.fs:372): "creates a new memref<?xi8> with specified length"
                         // This requires allocate + memcpy to create substring, not just cast
-                        // Pattern: Check if length is TMemRef (mutable variable) and load if needed
                         let bufferType = argTypes.[0]
                         let lengthType = argTypes.[1]
+
+                        // Detect MemRef.add fusion on buffer argument (same pattern as MemRef.store)
+                        // NativePtr.add(buf, offset) → MemRef.add(base, offset) → need base memref + offset
+                        // for adjusted source pointer in memcpy: copies from buf[offset] instead of buf[0]
+                        let (actualBufferSSA, actualBufferType, srcOffsetSSA, bufferOffsetLoadOps) =
+                            let bufferArgNodeId = argIds.[0]
+                            match SemanticGraph.tryGetNode bufferArgNodeId ctx.Graph with
+                            | Some bufferNode ->
+                                match bufferNode.Kind with
+                                | SemanticKind.Application (funcId, addArgIds) ->
+                                    match SemanticGraph.tryGetNode funcId ctx.Graph with
+                                    | Some funcNode ->
+                                        match funcNode.Kind with
+                                        | SemanticKind.Intrinsic info when info.Module = IntrinsicModule.MemRef && info.Operation = "add" ->
+                                            // Pattern matched: MemRef.add(base, offset)
+                                            match MLIRAccumulator.recallNode addArgIds.[0] ctx.Accumulator,
+                                                  MLIRAccumulator.recallNode addArgIds.[1] ctx.Accumulator with
+                                            | Some (baseSSA, baseTy), Some (offsetSSA, offsetTy) ->
+                                                match offsetTy with
+                                                | TMemRef elemType ->
+                                                    // Offset is mutable variable - emit load operations
+                                                    let offsetNodeIdValue = NodeId.value addArgIds.[1]
+                                                    match ctx.Coeffects.SSA.NodeSSA.TryFind(offsetNodeIdValue) with
+                                                    | Some alloc when alloc.SSAs.Length >= 2 ->
+                                                        let ssas = alloc.SSAs
+                                                        let zeroSSA = ssas.[0]
+                                                        let loadedOffsetSSA = ssas.[1]
+                                                        let zeroOp = MLIROp.IndexOp (IndexOp.IndexConst (zeroSSA, 0L))
+                                                        let loadOp = MLIROp.MemRefOp (MemRefOp.Load (loadedOffsetSSA, offsetSSA, [zeroSSA], elemType))
+                                                        (baseSSA, baseTy, Some loadedOffsetSSA, [zeroOp; loadOp])
+                                                    | _ -> (baseSSA, baseTy, Some offsetSSA, [])
+                                                | _ -> (baseSSA, baseTy, Some offsetSSA, [])
+                                            | _ -> (bufferSSA, bufferType, None, [])
+                                        | _ -> (bufferSSA, bufferType, None, [])
+                                    | None -> (bufferSSA, bufferType, None, [])
+                                | _ -> (bufferSSA, bufferType, None, [])
+                            | None -> (bufferSSA, bufferType, None, [])
 
                         // Check if length needs loading (TMemRef case - mutable variable)
                         let (actualLengthSSA, lengthLoadOps) =
                             match lengthType with
                             | TMemRef elemType ->
-                                // Length is mutable variable - compose load operations
-                                // VarRef node has 2 SSAs: [0] = index const, [1] = load result
                                 let lengthArgNodeId = argIds.[1]
                                 let lengthNodeIdValue = NodeId.value lengthArgNodeId
                                 match ctx.Coeffects.SSA.NodeSSA.TryFind(lengthNodeIdValue) with
@@ -341,25 +375,16 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                                     let ssas = alloc.SSAs
                                     let zeroSSA = ssas.[0]
                                     let loadedLengthSSA = ssas.[1]
-
-                                    // Compose load operations (same pattern as MemRef.store offset)
                                     let zeroOp = MLIROp.IndexOp (IndexOp.IndexConst (zeroSSA, 0L))
                                     let loadOp = MLIROp.MemRefOp (MemRefOp.Load (loadedLengthSSA, lengthSSA, [zeroSSA], elemType))
-                                    let loadOps = [zeroOp; loadOp]
+                                    (loadedLengthSSA, [zeroOp; loadOp])
+                                | _ -> (lengthSSA, [])
+                            | _ -> (lengthSSA, [])
 
-                                    (loadedLengthSSA, loadOps)
-                                | _ ->
-                                    // SSAs not found - use lengthSSA as-is
-                                    (lengthSSA, [])
-                            | _ ->
-                                // Length is not TMemRef - use as-is
-                                (lengthSSA, [])
-
-                        // Call pattern with loaded (or direct) length - honors FNCS contract
-                        match tryMatch (pStringFromPointerWithLength node.Id bufferSSA actualLengthSSA bufferType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                        // Call pattern with resolved buffer, length, and optional source offset
+                        match tryMatch (pStringFromPointerWithLength node.Id actualBufferSSA actualLengthSSA actualBufferType srcOffsetSSA) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                         | Some ((ops, result), _) ->
-                            // Prepend length load operations (if any) to string construction operations
-                            { InlineOps = lengthLoadOps @ ops; TopLevelOps = []; Result = result }
+                            { InlineOps = bufferOffsetLoadOps @ lengthLoadOps @ ops; TopLevelOps = []; Result = result }
                         | None -> WitnessOutput.error "NativeStr.fromPointer: substring construction failed"
 
                     // String atomic intrinsics (not decomposed by Baker)
@@ -396,45 +421,12 @@ let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : Witn
                             | operandTy :: _ -> operandTy  // Type of first operand
                             | [] -> resultType  // Fallback (shouldn't happen for binary ops)
 
-                        // Use classification from PSGCombinators for principled operator dispatch
+                        // Classify semantically; patterns pull operand types to select int/float Elements
                         let category = classifyAtomicOp info
                         let opResult =
                             match category with
-                            // Binary arithmetic (PULL model) - witness passes minimal selector, pattern pulls args
-                            | BinaryArith "addi" -> tryMatch (pBinaryArithOp node.Id "addi") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "subi" -> tryMatch (pBinaryArithOp node.Id "subi") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "muli" -> tryMatch (pBinaryArithOp node.Id "muli") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "divsi" -> tryMatch (pBinaryArithOp node.Id "divsi") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "divui" -> tryMatch (pBinaryArithOp node.Id "divui") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "remsi" -> tryMatch (pBinaryArithOp node.Id "remsi") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "remui" -> tryMatch (pBinaryArithOp node.Id "remui") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-
-                            // Floating-point arithmetic (PULL model)
-                            | BinaryArith "addf" -> tryMatch (pBinaryArithOp node.Id "addf") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "subf" -> tryMatch (pBinaryArithOp node.Id "subf") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "mulf" -> tryMatch (pBinaryArithOp node.Id "mulf") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "divf" -> tryMatch (pBinaryArithOp node.Id "divf") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-
-                            // Bitwise operations (PULL model)
-                            | BinaryArith "andi" -> tryMatch (pBinaryArithOp node.Id "andi") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "ori" -> tryMatch (pBinaryArithOp node.Id "ori") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "xori" -> tryMatch (pBinaryArithOp node.Id "xori") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "shli" -> tryMatch (pBinaryArithOp node.Id "shli") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "shrui" -> tryMatch (pBinaryArithOp node.Id "shrui") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | BinaryArith "shrsi" -> tryMatch (pBinaryArithOp node.Id "shrsi") ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-
-                            // Comparison operations (PULL model) - pattern extracts operands and types
-                            | Comparison "eq" -> tryMatch (pComparisonOp node.Id ICmpPred.Eq) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "ne" -> tryMatch (pComparisonOp node.Id ICmpPred.Ne) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "slt" -> tryMatch (pComparisonOp node.Id ICmpPred.Slt) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "sle" -> tryMatch (pComparisonOp node.Id ICmpPred.Sle) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "sgt" -> tryMatch (pComparisonOp node.Id ICmpPred.Sgt) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "sge" -> tryMatch (pComparisonOp node.Id ICmpPred.Sge) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "ult" -> tryMatch (pComparisonOp node.Id ICmpPred.Ult) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "ule" -> tryMatch (pComparisonOp node.Id ICmpPred.Ule) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "ugt" -> tryMatch (pComparisonOp node.Id ICmpPred.Ugt) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-                            | Comparison "uge" -> tryMatch (pComparisonOp node.Id ICmpPred.Uge) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
-
+                            | BinaryArith op -> tryMatch (pBinaryArithOp node.Id op) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
+                            | Comparison pred -> tryMatch (pComparisonOp node.Id pred) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator
                             | _ -> None
 
                         match opResult with

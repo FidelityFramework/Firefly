@@ -73,10 +73,15 @@ let pBuildLiteral (lit: NativeLiteral) (ssa: SSA) (arch: Architecture) : PSGPars
 // STRING PATTERNS
 // ═══════════════════════════════════════════════════════════
 
-/// Derive global reference name from string content (pure)
+/// Derive global reference name from string content (pure, deterministic)
+/// Uses FNV-1a hash — .NET String.GetHashCode() is randomized per-process.
 let deriveGlobalRef (content: string) : string =
-    let hash = content.GetHashCode()
-    sprintf "str_%d" (abs hash)
+    let bytes = System.Text.Encoding.UTF8.GetBytes(content)
+    let mutable hash = 2166136261u  // FNV offset basis
+    for b in bytes do
+        hash <- hash ^^^ (uint32 b)
+        hash <- hash * 16777619u    // FNV prime
+    sprintf "str_%u" hash
 
 /// Derive byte length from string content (pure)
 let deriveByteLength (content: string) : int =

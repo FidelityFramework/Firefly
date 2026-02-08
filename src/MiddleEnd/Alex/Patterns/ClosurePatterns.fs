@@ -50,7 +50,7 @@ let pAllocateInArena (sizeSSA: SSA) (ssas: SSA list) : PSGParser<MLIROp list * S
         let! subViewOp = pSubView resultPtrSSA heapBaseSSA [heapPosSSA]
 
         // Update position: pos + size
-        let! addOp = pAddI newPosSSA heapPosSSA sizeSSA
+        let! addOp = pAddI newPosSSA heapPosSSA sizeSSA (TInt I64)
         let memrefType = TMemRefStatic (1, TInt I64)  // 1-element heap position storage
         let! storePosOp = pStore newPosSSA heapPosPtrSSA [indexSSA] (TInt I64) memrefType
 

@@ -131,30 +131,27 @@ let pBinaryArithOp (nodeId: NodeId) (operation: string)
         do! ensure (ssas.Length >= 1) $"pBinaryArithOp: Expected 1 SSA, got {ssas.Length}"
         let resultSSA = ssas.[0]
 
-        // Dispatch to correct Element based on operation name
+        // Select Element based on semantic operation AND pulled operand type
         let! op =
-            match operation with
-            // Integer arithmetic
-            | "addi" -> pAddI resultSSA lhsSSA rhsSSA
-            | "subi" -> pSubI resultSSA lhsSSA rhsSSA
-            | "muli" -> pMulI resultSSA lhsSSA rhsSSA
-            | "divsi" -> pDivSI resultSSA lhsSSA rhsSSA
-            | "divui" -> pDivUI resultSSA lhsSSA rhsSSA
-            | "remsi" -> pRemSI resultSSA lhsSSA rhsSSA
-            | "remui" -> pRemUI resultSSA lhsSSA rhsSSA
-            // Float arithmetic
-            | "addf" -> pAddF resultSSA lhsSSA rhsSSA
-            | "subf" -> pSubF resultSSA lhsSSA rhsSSA
-            | "mulf" -> pMulF resultSSA lhsSSA rhsSSA
-            | "divf" -> pDivF resultSSA lhsSSA rhsSSA
-            // Bitwise
-            | "andi" -> pAndI resultSSA lhsSSA rhsSSA
-            | "ori" -> pOrI resultSSA lhsSSA rhsSSA
-            | "xori" -> pXorI resultSSA lhsSSA rhsSSA
-            | "shli" -> pShLI resultSSA lhsSSA rhsSSA
-            | "shrui" -> pShRUI resultSSA lhsSSA rhsSSA
-            | "shrsi" -> pShRSI resultSSA lhsSSA rhsSSA
-            | _ -> fail (Message $"Unknown binary arithmetic operation: {operation}")
+            match operation, lhsType with
+            // Type-aware arithmetic: the pulled lhsType determines int vs float
+            | "add", TFloat _ -> pAddF resultSSA lhsSSA rhsSSA lhsType
+            | "add", _ -> pAddI resultSSA lhsSSA rhsSSA lhsType
+            | "sub", TFloat _ -> pSubF resultSSA lhsSSA rhsSSA lhsType
+            | "sub", _ -> pSubI resultSSA lhsSSA rhsSSA lhsType
+            | "mul", TFloat _ -> pMulF resultSSA lhsSSA rhsSSA lhsType
+            | "mul", _ -> pMulI resultSSA lhsSSA rhsSSA lhsType
+            | "div", TFloat _ -> pDivF resultSSA lhsSSA rhsSSA lhsType
+            | "div", _ -> pDivSI resultSSA lhsSSA rhsSSA lhsType
+            | "rem", _ -> pRemSI resultSSA lhsSSA rhsSSA lhsType
+            // Bitwise (always integer)
+            | "andi", _ -> pAndI resultSSA lhsSSA rhsSSA lhsType
+            | "ori", _ -> pOrI resultSSA lhsSSA rhsSSA lhsType
+            | "xori", _ -> pXorI resultSSA lhsSSA rhsSSA lhsType
+            | "shli", _ -> pShLI resultSSA lhsSSA rhsSSA lhsType
+            | "shrui", _ -> pShRUI resultSSA lhsSSA rhsSSA lhsType
+            | "shrsi", _ -> pShRSI resultSSA lhsSSA rhsSSA lhsType
+            | _ -> fail (Message $"Unknown binary arithmetic operation: {operation} on {lhsType}")
 
         // Infer result type from operand types
         let resultType = lhsType  // Binary ops preserve operand type
@@ -166,7 +163,7 @@ let pBinaryArithOp (nodeId: NodeId) (operation: string)
 /// Takes predicate and nodeId, pulls arguments from accumulator monadically.
 /// SSA extracted from coeffects via nodeId: [0] = result
 /// AUTOMATICALLY loads from TMemRef arguments using pRecallArgWithLoad
-let pComparisonOp (nodeId: NodeId) (pred: ICmpPred)
+let pComparisonOp (nodeId: NodeId) (predName: string)
                   : PSGParser<MLIROp list * TransferResult> =
     parser {
         // PULL model: Extract argument IDs from parent Application node
@@ -182,7 +179,31 @@ let pComparisonOp (nodeId: NodeId) (pred: ICmpPred)
         do! ensure (ssas.Length >= 1) $"pComparisonOp: Expected 1 SSA, got {ssas.Length}"
         let resultSSA = ssas.[0]
 
-        let! op = pCmpI resultSSA pred lhsSSA rhsSSA lhsType
+        // Select Element based on pulled operand type
+        let! op =
+            match lhsType with
+            | TFloat _ ->
+                let fcmpPred =
+                    match predName with
+                    | "eq" -> FCmpPred.OEq
+                    | "ne" -> FCmpPred.ONe
+                    | "lt" -> FCmpPred.OLt
+                    | "le" -> FCmpPred.OLe
+                    | "gt" -> FCmpPred.OGt
+                    | "ge" -> FCmpPred.OGe
+                    | _ -> failwith $"Unknown float comparison predicate: {predName}"
+                pCmpF resultSSA fcmpPred lhsSSA rhsSSA lhsType
+            | _ ->
+                let icmpPred =
+                    match predName with
+                    | "eq" -> ICmpPred.Eq
+                    | "ne" -> ICmpPred.Ne
+                    | "lt" -> ICmpPred.Slt
+                    | "le" -> ICmpPred.Sle
+                    | "gt" -> ICmpPred.Sgt
+                    | "ge" -> ICmpPred.Sge
+                    | _ -> failwith $"Unknown int comparison predicate: {predName}"
+                pCmpI resultSSA icmpPred lhsSSA rhsSSA lhsType
 
         return (lhsLoadOps @ rhsLoadOps @ [op], TRValue { SSA = resultSSA; Type = TInt I1 })  // Comparisons always return i1
     }
@@ -210,7 +231,7 @@ let pUnaryNot (nodeId: NodeId)
         // Emit constant 1 for boolean NOT
         let constOp = MLIROp.ArithOp (ArithOp.ConstI (constSSA, 1L, TInt I1))
         // Emit XOR operation
-        let! xorOp = pXorI resultSSA operandSSA constSSA
+        let! xorOp = pXorI resultSSA operandSSA constSSA operandType
 
         return (loadOps @ [constOp; xorOp], TRValue { SSA = resultSSA; Type = operandType })
     }

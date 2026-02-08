@@ -72,7 +72,8 @@ let pStringFromBuffer (nodeId: NodeId) (bufferSSA: SSA) (bufferType: MLIRType) :
 /// Create substring from buffer pointer and length (FNCS NativeStr.fromPointer contract)
 /// FNCS contract (Intrinsics.fs:372): "creates a new memref<?xi8> with specified length"
 /// This is NOT a cast - it's a substring extraction via allocate + memcpy.
-/// SSA extracted from coeffects via nodeId (7 total):
+/// When srcOffset is Some, the source pointer is adjusted by adding the offset (for NativePtr.add fusion).
+/// SSA extracted from coeffects via nodeId (7 minimum, 8 when srcOffset provided):
 ///   [0] = resultBufferSSA (allocated memref<?xi8> with actual length)
 ///   [1] = srcPtrSSA (extract pointer from source buffer)
 ///   [2] = destPtrSSA (extract pointer from result buffer)
@@ -80,10 +81,12 @@ let pStringFromBuffer (nodeId: NodeId) (bufferSSA: SSA) (bufferType: MLIRType) :
 ///   [4] = destPtrWord (cast dest ptr to platform word)
 ///   [5] = lenWord (cast length to platform word)
 ///   [6] = memcpyResultSSA (result of memcpy call)
-let pStringFromPointerWithLength (nodeId: NodeId) (bufferSSA: SSA) (lengthSSA: SSA) (bufferType: MLIRType) : PSGParser<MLIROp list * TransferResult> =
+///   [7] = adjustedSrcPtrSSA (base ptr + offset, only when srcOffset is Some)
+let pStringFromPointerWithLength (nodeId: NodeId) (bufferSSA: SSA) (lengthSSA: SSA) (bufferType: MLIRType) (srcOffset: SSA option) : PSGParser<MLIROp list * TransferResult> =
     parser {
         let! ssas = getNodeSSAs nodeId
-        do! ensure (ssas.Length >= 7) $"pStringFromPointerWithLength: Expected 7 SSAs, got {ssas.Length}"
+        let minSSAs = match srcOffset with Some _ -> 8 | None -> 7
+        do! ensure (ssas.Length >= minSSAs) $"pStringFromPointerWithLength: Expected {minSSAs} SSAs, got {ssas.Length}"
 
         let! state = getUserState
         let platformWordTy = state.Platform.PlatformWordType
@@ -104,8 +107,19 @@ let pStringFromPointerWithLength (nodeId: NodeId) (bufferSSA: SSA) (lengthSSA: S
         let! extractSrcPtr = pExtractBasePtr srcPtrSSA bufferSSA bufferType
         let! extractDestPtr = pExtractBasePtr destPtrSSA resultBufferSSA resultTy
 
+        // 2b. If srcOffset provided, adjust source pointer: adjusted = base_ptr + offset
+        // This handles NativePtr.add(buf, startPos) where we need to copy from buf[startPos]
+        let (effectiveSrcPtrSSA, adjustOps) =
+            match srcOffset with
+            | Some offsetSSA ->
+                let adjustedSSA = ssas.[7]
+                let adjustOp = MLIROp.ArithOp (ArithOp.AddI (adjustedSSA, srcPtrSSA, offsetSSA, TIndex))
+                (adjustedSSA, [adjustOp])
+            | None ->
+                (srcPtrSSA, [])
+
         // 3. Cast pointers to platform words for memcpy FFI
-        let! castSrc = pIndexCastS srcPtrWord srcPtrSSA platformWordTy
+        let! castSrc = pIndexCastS srcPtrWord effectiveSrcPtrSSA platformWordTy
         let! castDest = pIndexCastS destPtrWord destPtrSSA platformWordTy
 
         // 4. Cast length to platform word for memcpy FFI (index → platform word)
@@ -119,6 +133,7 @@ let pStringFromPointerWithLength (nodeId: NodeId) (bufferSSA: SSA) (lengthSSA: S
         let ops =
             [allocOp] @
             [extractSrcPtr; extractDestPtr] @
+            adjustOps @
             [castSrc; castDest; castLen] @
             copyOps
 

@@ -5,73 +5,56 @@
 module internal Alex.Elements.ArithElements
 
 open XParsec
-open XParsec.Parsers     // getUserState
 open XParsec.Combinators // parser { }
 open Alex.XParsec.PSGCombinators
 open Alex.Dialects.Core.Types
-open Alex.CodeGeneration.TypeMapping
-open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 
-// All Elements use XParsec state for platform/type context
+// All Elements take explicit operand types from the Pattern that calls them
 
 // ═══════════════════════════════════════════════════════════
 // INTEGER ARITHMETIC
 // ═══════════════════════════════════════════════════════════
 
 /// Emit AddI (integer addition)
-let pAddI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pAddI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.AddI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.AddI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit SubI (integer subtraction)
-let pSubI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pSubI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.SubI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.SubI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit MulI (integer multiplication)
-let pMulI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pMulI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.MulI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.MulI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit DivSI (signed integer division)
-let pDivSI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pDivSI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.DivSI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.DivSI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit DivUI (unsigned integer division)
-let pDivUI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pDivUI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.DivUI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.DivUI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit RemSI (signed integer remainder/modulo)
-let pRemSI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pRemSI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.RemSI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.RemSI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit RemUI (unsigned integer remainder/modulo)
-let pRemUI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pRemUI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.RemUI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.RemUI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit CmpI (integer comparison)
@@ -86,43 +69,33 @@ let pCmpI (ssa: SSA) (pred: ICmpPred) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType
 // ═══════════════════════════════════════════════════════════
 
 /// Emit AddF (floating-point addition)
-let pAddF (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pAddF (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.AddF (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.AddF (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit SubF (floating-point subtraction)
-let pSubF (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pSubF (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.SubF (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.SubF (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit MulF (floating-point multiplication)
-let pMulF (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pMulF (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.MulF (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.MulF (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit DivF (floating-point division)
-let pDivF (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pDivF (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.DivF (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.DivF (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit CmpF (floating-point comparison)
-let pCmpF (ssa: SSA) (pred: FCmpPred) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pCmpF (ssa: SSA) (pred: FCmpPred) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.CmpF (ssa, pred, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.CmpF (ssa, pred, lhs, rhs, operandTy))
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -164,11 +137,9 @@ let pFPToSI (ssa: SSA) (value: SSA) (fromTy: MLIRType) (toTy: MLIRType) : PSGPar
 // ═══════════════════════════════════════════════════════════
 
 /// Emit Select (conditional select)
-let pSelect (ssa: SSA) (cond: SSA) (trueVal: SSA) (falseVal: SSA) : PSGParser<MLIROp> =
+let pSelect (ssa: SSA) (cond: SSA) (trueVal: SSA) (falseVal: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.Select (ssa, cond, trueVal, falseVal, ty))
+        return MLIROp.ArithOp (ArithOp.Select (ssa, cond, trueVal, falseVal, operandTy))
     }
 
 // ═══════════════════════════════════════════════════════════
@@ -178,49 +149,37 @@ let pSelect (ssa: SSA) (cond: SSA) (trueVal: SSA) (falseVal: SSA) : PSGParser<ML
 // with standard MLIR Arith dialect operations for backend flexibility.
 
 /// Emit arith.andi (bitwise AND)
-let pAndI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pAndI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.AndI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.AndI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit arith.ori (bitwise OR)
-let pOrI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pOrI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.OrI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.OrI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit arith.xori (bitwise XOR)
-let pXorI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pXorI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.XorI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.XorI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit arith.shli (shift left)
-let pShLI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pShLI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.ShLI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.ShLI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit arith.shrui (logical shift right - unsigned)
-let pShRUI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pShRUI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.ShRUI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.ShRUI (ssa, lhs, rhs, operandTy))
     }
 
 /// Emit arith.shrsi (arithmetic shift right - signed)
-let pShRSI (ssa: SSA) (lhs: SSA) (rhs: SSA) : PSGParser<MLIROp> =
+let pShRSI (ssa: SSA) (lhs: SSA) (rhs: SSA) (operandTy: MLIRType) : PSGParser<MLIROp> =
     parser {
-        let! state = getUserState
-        let ty = mapNativeTypeForArch state.Platform.TargetArch state.Current.Type
-        return MLIROp.ArithOp (ArithOp.ShRSI (ssa, lhs, rhs, ty))
+        return MLIROp.ArithOp (ArithOp.ShRSI (ssa, lhs, rhs, operandTy))
     }

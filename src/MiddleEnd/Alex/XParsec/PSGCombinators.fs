@@ -534,20 +534,20 @@ type EmissionCategory =
 
 let classifyAtomicOp (info: IntrinsicInfo) : EmissionCategory =
     match info.Module, info.Operation with
-    // Arithmetic operators
-    | IntrinsicModule.Operators, "op_Addition" -> BinaryArith "addi"
-    | IntrinsicModule.Operators, "op_Subtraction" -> BinaryArith "subi"
-    | IntrinsicModule.Operators, "op_Multiply" -> BinaryArith "muli"
-    | IntrinsicModule.Operators, "op_Division" -> BinaryArith "divsi"
-    | IntrinsicModule.Operators, "op_Modulus" -> BinaryArith "remsi"
-    // Comparison operators
-    | IntrinsicModule.Operators, "op_LessThan" -> Comparison "slt"
-    | IntrinsicModule.Operators, "op_LessThanOrEqual" -> Comparison "sle"
-    | IntrinsicModule.Operators, "op_GreaterThan" -> Comparison "sgt"
-    | IntrinsicModule.Operators, "op_GreaterThanOrEqual" -> Comparison "sge"
+    // Arithmetic operators — type-agnostic; the PATTERN pulls operand types and selects int/float Element
+    | IntrinsicModule.Operators, "op_Addition" -> BinaryArith "add"
+    | IntrinsicModule.Operators, "op_Subtraction" -> BinaryArith "sub"
+    | IntrinsicModule.Operators, "op_Multiply" -> BinaryArith "mul"
+    | IntrinsicModule.Operators, "op_Division" -> BinaryArith "div"
+    | IntrinsicModule.Operators, "op_Modulus" -> BinaryArith "rem"
+    // Comparison operators — type-agnostic; pattern selects cmpi vs cmpf based on operand type
+    | IntrinsicModule.Operators, "op_LessThan" -> Comparison "lt"
+    | IntrinsicModule.Operators, "op_LessThanOrEqual" -> Comparison "le"
+    | IntrinsicModule.Operators, "op_GreaterThan" -> Comparison "gt"
+    | IntrinsicModule.Operators, "op_GreaterThanOrEqual" -> Comparison "ge"
     | IntrinsicModule.Operators, "op_Equality" -> Comparison "eq"
     | IntrinsicModule.Operators, "op_Inequality" -> Comparison "ne"
-    // Boolean logical operators (bitwise on i1)
+    // Boolean logical operators (always integer/bitwise)
     | IntrinsicModule.Operators, "op_BooleanAnd" -> BinaryArith "andi"
     | IntrinsicModule.Operators, "op_BooleanOr" -> BinaryArith "ori"
     | IntrinsicModule.Operators, "not" -> UnaryArith "xori"
