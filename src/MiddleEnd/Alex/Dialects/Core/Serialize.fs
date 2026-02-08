@@ -223,7 +223,6 @@ let rec opToString (op: MLIROp) : string =
     | MLIROp.FuncOp fop ->
         match fop with
         | FuncDef (name, args, retTy, body, _visibility) ->
-            printfn "[DEBUG] Serializing FuncDef %s with %d body ops" name (List.length body)
             let argsStr = args |> List.map (fun (ssa, ty) -> sprintf "%s: %s" (ssaToString ssa) (typeToString ty)) |> String.concat ", "
             let bodyStr = body |> List.map opToString |> String.concat "\n    "
             sprintf "func.func @%s(%s) -> %s {\n    %s\n}" name argsStr (typeToString retTy) bodyStr

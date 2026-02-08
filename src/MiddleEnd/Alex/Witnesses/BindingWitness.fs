@@ -43,8 +43,13 @@ let private witnessBinding (ctx: WitnessContext) (node: SemanticNode) : WitnessO
                     // Binding node is structural (name association), return TRVoid per Domain Responsibility Principle
                     { InlineOps = []; TopLevelOps = []; Result = TRVoid }
                 | _ ->
+                    // Check if this binding holds a partial application (curry flattening)
+                    if Set.contains node.Id ctx.Coeffects.CurryFlattening.PartialAppBindings then
+                        // Partial application binding - no MLIR emitted
+                        // Saturated call sites use the coeffect to emit direct calls
+                        { InlineOps = []; TopLevelOps = []; Result = TRVoid }
                     // Check if binding is mutable
-                    if isMut then
+                    elif isMut then
                         // MUTABLE BINDING: Allocate memref and initialize
                         match MLIRAccumulator.recallNode valueId ctx.Accumulator with
                         | Some (initSSA, elemType) ->

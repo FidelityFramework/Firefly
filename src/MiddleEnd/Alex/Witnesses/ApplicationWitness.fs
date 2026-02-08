@@ -73,6 +73,67 @@ let private resolveFunctionNode funcId graph =
 let private witnessApplication (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
     match tryMatch pApplication ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((funcId, argIds), _) ->
+        // ═══════════════════════════════════════════════════════════
+        // CURRY FLATTENING: Check for saturated call or partial app
+        // ═══════════════════════════════════════════════════════════
+        let curryResult = ctx.Coeffects.CurryFlattening
+        match Map.tryFind node.Id curryResult.SaturatedCalls with
+        | Some satInfo ->
+            // Saturated call: emit direct call to flattened function with ALL args
+            let funcName =
+                match SemanticGraph.tryGetNode satInfo.TargetBindingId ctx.Graph with
+                | Some bindingNode ->
+                    match bindingNode.Kind with
+                    | SemanticKind.Binding (bindName, _, _, _) ->
+                        match bindingNode.Parent with
+                        | Some parentId ->
+                            match SemanticGraph.tryGetNode parentId ctx.Graph with
+                            | Some parentNode ->
+                                match parentNode.Kind with
+                                | SemanticKind.ModuleDef (moduleName, _) ->
+                                    sprintf "%s.%s" moduleName bindName
+                                | _ -> bindName
+                            | None -> bindName
+                        | None -> bindName
+                    | _ -> sprintf "saturated_%d" (NodeId.value node.Id)
+                | None -> sprintf "saturated_%d" (NodeId.value node.Id)
+
+            let argsResult =
+                satInfo.AllArgNodes
+                |> List.map (fun argId -> MLIRAccumulator.recallNode argId ctx.Accumulator)
+            let allWitnessed = argsResult |> List.forall Option.isSome
+            if not allWitnessed then
+                let unwitnessedArgs =
+                    List.zip satInfo.AllArgNodes argsResult
+                    |> List.filter (fun (_, r) -> Option.isNone r)
+                    |> List.map fst
+                WitnessOutput.error $"Saturated call to {funcName}: some args not witnessed: {unwitnessedArgs}"
+            else
+                let args = argsResult |> List.choose id
+                let arch = ctx.Coeffects.Platform.TargetArch
+                let retType = mapNativeTypeForArch arch node.Type
+
+                // Retrieve deferred InlineOps for partial app arguments
+                // These ops were suppressed at their original scope (e.g. module level)
+                // and must be re-emitted here at the saturated call site (inside a function)
+                let deferredOps =
+                    satInfo.AllArgNodes
+                    |> List.collect (fun argId -> MLIRAccumulator.getDeferredInlineOps argId ctx.Accumulator)
+
+                match tryMatch (pDirectCall node.Id funcName args retType) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                | Some ((ops, result), _) -> { InlineOps = deferredOps @ ops; TopLevelOps = []; Result = result }
+                | None -> WitnessOutput.error $"Saturated call to {funcName}: pattern emission failed"
+        | None ->
+        match Map.tryFind node.Id curryResult.PartialApplications with
+        | Some _ ->
+            // Partial application: no MLIR emitted, args captured for saturated call site
+            { InlineOps = []; TopLevelOps = []; Result = TRVoid }
+        | None ->
+
+        // ═══════════════════════════════════════════════════════════
+        // STANDARD APPLICATION HANDLING
+        // ═══════════════════════════════════════════════════════════
+
         // Resolve actual function node (unwrap TypeAnnotation if present)
         match resolveFunctionNode funcId ctx.Graph with
         | Some funcNode when funcNode.Kind.ToString().StartsWith("Intrinsic") ->

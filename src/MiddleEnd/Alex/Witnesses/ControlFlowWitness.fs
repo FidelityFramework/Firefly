@@ -11,6 +11,10 @@
 /// all registered witnesses.
 module Alex.Witnesses.ControlFlowWitness
 
+/// Set to true for detailed control flow traversal tracing
+let mutable private traceEnabled = false
+let private trace fmt = Printf.kprintf (fun s -> if traceEnabled then printfn "%s" s) fmt
+
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Types
 open FSharp.Native.Compiler.PSGSaturation.SemanticGraph.Core
 open FSharp.Native.Compiler.NativeTypedTree.NativeTypes
@@ -39,7 +43,7 @@ open Alex.Elements.SCFElements
 /// Collects operations from the branch while using the SAME accumulator for bindings/errors
 /// Combinator passed through from top-level via Y-combinator fixed point
 let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) (combinator: WitnessContext -> SemanticNode -> WitnessOutput) : MLIROp list =
-    printfn "[ControlFlowWitness] witnessBranchScope: Starting visitation of branch root node %A" (NodeId.value rootId)
+    trace "[ControlFlowWitness] witnessBranchScope: Starting visitation of branch root node %A" (NodeId.value rootId)
 
     // SCOPE-AWARE ACCUMULATION: Create child scope for branch operations
     // Operations witness during branch traversal naturally accumulate into this child scope
@@ -50,13 +54,13 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) (combinato
     // Accumulator and GlobalVisited remain shared (errors and bindings are global)
     match SemanticGraph.tryGetNode rootId ctx.Graph with
     | Some branchNode ->
-        printfn "[ControlFlowWitness] witnessBranchScope: Found branch node %A (kind: %s)"
+        trace "[ControlFlowWitness] witnessBranchScope: Found branch node %A (kind: %s)"
             (NodeId.value rootId)
             (branchNode.Kind.ToString().Split('\n').[0])
 
         match focusOn rootId ctx.Zipper with
         | Some branchZipper ->
-            printfn "[ControlFlowWitness] witnessBranchScope: Successfully focused on node %A, calling visitAllNodes" (NodeId.value rootId)
+            trace "[ControlFlowWitness] witnessBranchScope: Successfully focused on node %A, calling visitAllNodes" (NodeId.value rootId)
             // Create context with child scope - operations will accumulate into branchScope
             let branchCtx = { ctx with
                                 Zipper = branchZipper
@@ -65,13 +69,13 @@ let private witnessBranchScope (rootId: NodeId) (ctx: WitnessContext) (combinato
             visitAllNodes combinator branchCtx branchNode ctx.GlobalVisited
 
             let branchOps = ScopeContext.getOps !branchScope
-            printfn "[ControlFlowWitness] witnessBranchScope: Completed visitation of node %A - extracted %d ops from child scope"
+            trace "[ControlFlowWitness] witnessBranchScope: Completed visitation of node %A - extracted %d ops from child scope"
                 (NodeId.value rootId)
                 (List.length branchOps)
         | None ->
-            printfn "[ControlFlowWitness] witnessBranchScope: Failed to focus on node %A" (NodeId.value rootId)
+            trace "[ControlFlowWitness] witnessBranchScope: Failed to focus on node %A" (NodeId.value rootId)
     | None ->
-        printfn "[ControlFlowWitness] witnessBranchScope: Node %A not found in graph" (NodeId.value rootId)
+        trace "[ControlFlowWitness] witnessBranchScope: Node %A not found in graph" (NodeId.value rootId)
 
     // Extract operations from child scope (already in correct order)
     ScopeContext.getOps !branchScope
@@ -88,7 +92,7 @@ let private witnessControlFlowWith (getCombinator: unit -> (WitnessContext -> Se
 
     match tryMatch pIfThenElse ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((condId, thenId, elseIdOpt), _) ->
-        printfn "[ControlFlowWitness] Handling IfThenElse node %A (cond=%A, then=%A, else=%A)"
+        trace "[ControlFlowWitness] Handling IfThenElse node %A (cond=%A, then=%A, else=%A)"
             (NodeId.value node.Id)
             (NodeId.value condId)
             (NodeId.value thenId)
@@ -98,33 +102,33 @@ let private witnessControlFlowWith (getCombinator: unit -> (WitnessContext -> Se
         // IfThenElse condition operations accumulate into parent scope (before scf.if)
         // Only branch BODIES (then/else) are isolated child scopes for scf.if regions.
         // Since IfThenElse is a scope boundary, children aren't auto-visited - we must visit condition explicitly.
-        printfn "[ControlFlowWitness] IfThenElse: Visiting condition %A in current scope (not branch scope)" (NodeId.value condId)
+        trace "[ControlFlowWitness] IfThenElse: Visiting condition %A in current scope (not branch scope)" (NodeId.value condId)
         match SemanticGraph.tryGetNode condId ctx.Graph with
         | Some condNode ->
             // Visit condition in CURRENT scope - ops accumulate into parent, not isolated child
             visitAllNodes combinator ctx condNode ctx.GlobalVisited
         | None ->
-            printfn "[ControlFlowWitness] IfThenElse: ERROR - Condition node %A not found" (NodeId.value condId)
+            trace "[ControlFlowWitness] IfThenElse: ERROR - Condition node %A not found" (NodeId.value condId)
 
         // Recall the condition result (now available from current scope visitation)
         match MLIRAccumulator.recallNode condId ctx.Accumulator with
         | None ->
-            printfn "[ControlFlowWitness] IfThenElse: ERROR - Condition %A witnessed but no result" (NodeId.value condId)
+            trace "[ControlFlowWitness] IfThenElse: ERROR - Condition %A witnessed but no result" (NodeId.value condId)
             WitnessOutput.error "IfThenElse: Condition witnessed but no result"
         | Some (condSSA, _) ->
-            printfn "[ControlFlowWitness] IfThenElse: Visiting then branch %A" (NodeId.value thenId)
+            trace "[ControlFlowWitness] IfThenElse: Visiting then branch %A" (NodeId.value thenId)
             let thenOps = witnessBranchScope thenId ctx combinator
 
             let elseOps =
                 match elseIdOpt with
                 | Some elseId ->
-                    printfn "[ControlFlowWitness] IfThenElse: Visiting else branch %A" (NodeId.value elseId)
+                    trace "[ControlFlowWitness] IfThenElse: Visiting else branch %A" (NodeId.value elseId)
                     Some (witnessBranchScope elseId ctx combinator)
                 | None ->
-                    printfn "[ControlFlowWitness] IfThenElse: No else branch"
+                    trace "[ControlFlowWitness] IfThenElse: No else branch"
                     None
 
-            printfn "[ControlFlowWitness] IfThenElse: Building MLIR (then has %d ops, else has %d ops)"
+            trace "[ControlFlowWitness] IfThenElse: Building MLIR (then has %d ops, else has %d ops)"
                 (List.length thenOps)
                 (elseOps |> Option.map List.length |> Option.defaultValue 0)
 
@@ -136,10 +140,10 @@ let private witnessControlFlowWith (getCombinator: unit -> (WitnessContext -> Se
 
                 match tryMatch (pBuildIfThenElse condSSA thenOpsWithYield elseOpsWithYield) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some (ops, _) ->
-                    printfn "[ControlFlowWitness] IfThenElse: Successfully built MLIR with %d ops" (List.length ops)
+                    trace "[ControlFlowWitness] IfThenElse: Successfully built MLIR with %d ops" (List.length ops)
                     { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
                 | None ->
-                    printfn "[ControlFlowWitness] IfThenElse: ERROR - Pattern emission failed"
+                    trace "[ControlFlowWitness] IfThenElse: ERROR - Pattern emission failed"
                     WitnessOutput.error "IfThenElse pattern emission failed"
             | None ->
                 WitnessOutput.error "IfThenElse: pSCFYield failed"
@@ -147,18 +151,18 @@ let private witnessControlFlowWith (getCombinator: unit -> (WitnessContext -> Se
     | None ->
         match tryMatch pWhileLoop ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
         | Some ((condId, bodyId), _) ->
-            printfn "[ControlFlowWitness] WhileLoop: Visiting condition branch %A" (NodeId.value condId)
+            trace "[ControlFlowWitness] WhileLoop: Visiting condition branch %A" (NodeId.value condId)
             let condOps = witnessBranchScope condId ctx combinator
-            printfn "[ControlFlowWitness] WhileLoop: Visiting body branch %A" (NodeId.value bodyId)
+            trace "[ControlFlowWitness] WhileLoop: Visiting body branch %A" (NodeId.value bodyId)
             let bodyOps = witnessBranchScope bodyId ctx combinator
 
             // Recall condition result to build scf.condition terminator
             match MLIRAccumulator.recallNode condId ctx.Accumulator with
             | None ->
-                printfn "[ControlFlowWitness] WhileLoop: ERROR - Condition %A witnessed but no result" (NodeId.value condId)
+                trace "[ControlFlowWitness] WhileLoop: ERROR - Condition %A witnessed but no result" (NodeId.value condId)
                 WitnessOutput.error "WhileLoop: Condition witnessed but no result"
             | Some (condSSA, _) ->
-                printfn "[ControlFlowWitness] WhileLoop: Building scf.while with condition SSA %A" condSSA
+                trace "[ControlFlowWitness] WhileLoop: Building scf.while with condition SSA %A" condSSA
                 // Build scf.condition and scf.yield terminators
                 match tryMatch (pSCFCondition condSSA []) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                 | Some (condTerminator, _) ->
@@ -170,7 +174,7 @@ let private witnessControlFlowWith (getCombinator: unit -> (WitnessContext -> Se
 
                         match tryMatch (pBuildWhileLoop condOpsWithTerminator bodyOpsWithTerminator) ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
                         | Some (ops, _) ->
-                            printfn "[ControlFlowWitness] WhileLoop: Successfully built scf.while"
+                            trace "[ControlFlowWitness] WhileLoop: Successfully built scf.while"
                             { InlineOps = ops; TopLevelOps = []; Result = TRVoid }
                         | None -> WitnessOutput.error "WhileLoop pattern emission failed"
                     | None -> WitnessOutput.error "WhileLoop: pSCFYield failed"

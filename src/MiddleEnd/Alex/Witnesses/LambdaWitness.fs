@@ -38,6 +38,19 @@ open XParsec.Combinators
 // and creating a proper fixed point where witnesses can recursively invoke themselves.
 
 // ═══════════════════════════════════════════════════════════
+// CURRY FLATTENING SUPPORT
+// ═══════════════════════════════════════════════════════════
+
+/// Unroll through N levels of TFun to find the innermost return type.
+/// For a flattened Lambda with N params: TFun(t1, TFun(t2, ... TFun(tN, retType)...)) → retType
+let rec private unrollReturnType (nParams: int) (ty: NativeType) : NativeType =
+    if nParams <= 0 then ty
+    else
+        match ty with
+        | NativeType.TFun (_, inner) -> unrollReturnType (nParams - 1) inner
+        | _ -> ty
+
+// ═══════════════════════════════════════════════════════════
 // CATEGORY-SELECTIVE WITNESS (Private)
 // ═══════════════════════════════════════════════════════════
 
@@ -91,11 +104,11 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
             let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
 
             // Determine return type from Lambda type signature
+            // For flattened Lambdas with N params, unroll N levels of TFun
             let arch = ctx.Coeffects.Platform.TargetArch
+            let innerReturnNativeType = unrollReturnType (List.length params') node.Type
             let expectedReturnType =
-                match node.Type with
-                | NativeType.TFun (_, retType) -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch retType
-                | _ -> TInt I32  // Fallback
+                Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch innerReturnNativeType
 
             // Handle bodyResult based on return type
             let returnSSA, returnType =
@@ -103,15 +116,28 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
                 | Some (ssa, ty) -> (Some ssa, ty)
                 | None ->
                     // Check if Lambda returns unit - if so, None is expected (TRVoid)
-                    match node.Type with
-                    | NativeType.TFun (_, NativeType.TApp ({ NTUKind = Some NTUunit }, [])) ->
+                    match innerReturnNativeType with
+                    | NativeType.TApp ({ NTUKind = Some NTUunit }, []) ->
                         // Unit-returning function - no result SSA is expected
                         (None, expectedReturnType)
                     | _ ->
                         // Non-unit function should have produced a result
+                        let bodyNodeKindStr =
+                            match SemanticGraph.tryGetNode actualValueNode ctx.Graph with
+                            | Some bodyNode ->
+                                let kindStr = sprintf "%A" bodyNode.Kind |> fun s -> s.Split('\n').[0]
+                                let typeStr = sprintf "%A" bodyNode.Type
+                                sprintf "Body node %d is %s (type: %s)" (NodeId.value actualValueNode) kindStr typeStr
+                            | None ->
+                                sprintf "Body node %d not found in graph" (NodeId.value actualValueNode)
+                        let hint =
+                            match SemanticGraph.tryGetNode actualValueNode ctx.Graph with
+                            | Some bodyNode when bodyNode.Kind.ToString().StartsWith("Lambda") ->
+                                " [HINT: Body is a nested Lambda — Lambda produces TRVoid (emits FuncDef as side-effect). " +
+                                "Returning a function value (currying/thunk) is not yet implemented]"
+                            | _ -> ""
                         let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some "Entry point return")
-                                    (sprintf "Body (node %d, actual value node %d) produced no result - fix upstream witness" 
-                                             (NodeId.value bodyId) (NodeId.value actualValueNode))
+                                    (sprintf "%s — produced no result.%s" bodyNodeKindStr hint)
                         MLIRAccumulator.addError err ctx.Accumulator
                         (None, expectedReturnType)
 
@@ -217,10 +243,10 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
                     []  // Return empty list - will cause compilation to fail with proper error
 
             // Determine return type from Lambda type signature
+            // For flattened Lambdas with N params, unroll N levels of TFun
+            let innerReturnNativeType2 = unrollReturnType (List.length params') node.Type
             let returnType =
-                match node.Type with
-                | NativeType.TFun (_, retType) -> Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch retType
-                | _ -> TInt I32  // Fallback
+                Alex.CodeGeneration.TypeMapping.mapNativeTypeForArch arch innerReturnNativeType2
 
             // Handle bodyResult based on return type
             let returnSSA =
@@ -228,15 +254,29 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
                 | Some (ssa, _) -> Some ssa
                 | None ->
                     // Check if Lambda returns unit - if so, None is expected (TRVoid)
-                    match node.Type with
-                    | NativeType.TFun (_, NativeType.TApp ({ NTUKind = Some NTUunit }, [])) ->
+                    match innerReturnNativeType2 with
+                    | NativeType.TApp ({ NTUKind = Some NTUunit }, []) ->
                         // Unit-returning function - no result SSA is expected
                         None
                     | _ ->
                         // Non-unit function should have produced a result
+                        // Enrich diagnostic with body node kind to diagnose nested-lambda / currying gaps
+                        let bodyNodeKindStr =
+                            match SemanticGraph.tryGetNode actualValueNode ctx.Graph with
+                            | Some bodyNode ->
+                                let kindStr = sprintf "%A" bodyNode.Kind |> fun s -> s.Split('\n').[0]
+                                let typeStr = sprintf "%A" bodyNode.Type
+                                sprintf "Body node %d is %s (type: %s)" (NodeId.value actualValueNode) kindStr typeStr
+                            | None ->
+                                sprintf "Body node %d not found in graph" (NodeId.value actualValueNode)
+                        let hint =
+                            match SemanticGraph.tryGetNode actualValueNode ctx.Graph with
+                            | Some bodyNode when bodyNode.Kind.ToString().StartsWith("Lambda") ->
+                                " [HINT: Body is a nested Lambda — Lambda produces TRVoid (emits FuncDef as side-effect). " +
+                                "Returning a function value (currying/thunk) is not yet implemented]"
+                            | _ -> ""
                         let err = Diagnostic.error (Some node.Id) (Some "Lambda") (Some (sprintf "%s return" funcName))
-                                    (sprintf "Body (node %d, actual value node %d) produced no result - fix upstream witness" 
-                                             (NodeId.value bodyId) (NodeId.value actualValueNode))
+                                    (sprintf "%s — produced no result.%s" bodyNodeKindStr hint)
                         MLIRAccumulator.addError err ctx.Accumulator
                         None
 

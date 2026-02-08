@@ -47,6 +47,9 @@ let private isScopeBoundary (node: SemanticNode) : bool =
     | SemanticKind.TryWith _ -> true
     | _ -> false
 
+/// Debug tracing flag for visitAllNodes — set to true for detailed traversal logging
+let mutable private traceTraversal = false
+
 /// Visit all nodes in post-order (children before parents)
 /// PUBLIC: Used by Lambda/ControlFlow witnesses for sub-graph traversal
 /// Post-order ensures children's SSA bindings are available when parent witnesses
@@ -59,7 +62,6 @@ let rec visitAllNodes
 
     // Check if already visited
     if Set.contains currentNode.Id !visited then
-        printfn "[visitAllNodes] Node %A already visited - skipping" currentNode.Id
         ()
     else
         // Mark as visited
@@ -71,16 +73,15 @@ let rec visitAllNodes
             printfn "[visitAllNodes] WARNING: Failed to focus zipper on node %A" currentNode.Id
             ()
         | Some focusedZipper ->
-            printfn "[visitAllNodes] Successfully focused on node %A" currentNode.Id
+            if traceTraversal then printfn "[visitAllNodes] Focused on node %A" currentNode.Id
             // Shadow context with focused zipper
             let focusedCtx = { visitedCtx with Zipper = focusedZipper }
 
             // POST-ORDER Phase 1: Visit children FIRST (tree edges)
             // This ensures children's SSA bindings are available when parent witnesses
             if not (isScopeBoundary currentNode) then
-                printfn "[visitAllNodes] Node %A is NOT a scope boundary - visiting %d children" currentNode.Id currentNode.Children.Length
+                if traceTraversal then printfn "[visitAllNodes] Node %A: visiting %d children" currentNode.Id currentNode.Children.Length
                 for childId in currentNode.Children do
-                    printfn "[visitAllNodes] Visiting child %A of parent %A" childId currentNode.Id
                     match SemanticGraph.tryGetNode childId visitedCtx.Graph with
                     | Some childNode -> visitAllNodes witness focusedCtx childNode visited
                     | None ->
@@ -97,32 +98,37 @@ let rec visitAllNodes
             | _ -> ()
 
             // THEN witness current node (after ALL dependencies - children AND references)
-            printfn "[visitAllNodes] Invoking witness on node %A" currentNode.Id
             let output = witness focusedCtx currentNode
-            printfn "[visitAllNodes] Witness returned %A for node %A" output.Result currentNode.Id
+            if traceTraversal then printfn "[visitAllNodes] Node %A: witness returned %A" currentNode.Id output.Result
 
             // Add operations to appropriate scope contexts (principled accumulation)
             // InlineOps go to current scope (may be nested function body)
-            let updatedCurrentScope = ScopeContext.addOps output.InlineOps !focusedCtx.ScopeContext
-            focusedCtx.ScopeContext := updatedCurrentScope
+            // EXCEPTION: Deferred arg nodes (partial app arguments) have their InlineOps
+            // stored in the accumulator for re-emission at the saturated call site.
+            // This prevents MLIR region isolation violations when partial app is at module
+            // scope but saturated call is inside a function body.
+            let isDeferredArg = Set.contains currentNode.Id focusedCtx.Coeffects.CurryFlattening.DeferredArgNodes
+            if isDeferredArg && not (List.isEmpty output.InlineOps) then
+                MLIRAccumulator.deferInlineOps currentNode.Id output.InlineOps focusedCtx.Accumulator
+            else
+                let updatedCurrentScope = ScopeContext.addOps output.InlineOps !focusedCtx.ScopeContext
+                focusedCtx.ScopeContext := updatedCurrentScope
 
             // TopLevelOps go to ROOT scope (module level: GlobalString, nested FuncDef)
             if not (List.isEmpty output.TopLevelOps) then
-                let funcDefCount = output.TopLevelOps |> List.filter (fun op -> match op with MLIROp.FuncOp (FuncOp.FuncDef (name, _, _, _, _)) -> true | _ -> false) |> List.length
-                printfn "[DEBUG] Node %d: Adding %d TopLevelOps (%d FuncDefs) to RootScopeContext" (NodeId.value currentNode.Id) (List.length output.TopLevelOps) funcDefCount
+                if traceTraversal then
+                    let funcDefCount = output.TopLevelOps |> List.filter (fun op -> match op with MLIROp.FuncOp (FuncOp.FuncDef (name, _, _, _, _)) -> true | _ -> false) |> List.length
+                    printfn "[visitAllNodes] Node %d: Adding %d TopLevelOps (%d FuncDefs) to RootScopeContext" (NodeId.value currentNode.Id) (List.length output.TopLevelOps) funcDefCount
                 let updatedRootScope = ScopeContext.addOps output.TopLevelOps !focusedCtx.RootScopeContext
                 focusedCtx.RootScopeContext := updatedRootScope
 
             // Bind result if value (global binding)
-            printfn "[visitAllNodes] About to match on output.Result for node %A - Result is: %A" currentNode.Id output.Result
             match output.Result with
             | TRValue v ->
                 MLIRAccumulator.bindNode currentNode.Id v.SSA v.Type focusedCtx.Accumulator
             | TRVoid -> ()
             | TRError diag ->
-                printfn "[visitAllNodes] Handling TRError for node %A: %s" currentNode.Id diag.Message
                 MLIRAccumulator.addError diag focusedCtx.Accumulator
-                printfn "[visitAllNodes] After addError, accumulator has %d errors" (List.length focusedCtx.Accumulator.Errors)
             | TRSkip -> ()  // Should never reach here (combineWitnesses filters out TRSkip)
 
 /// REMOVED: witnessSubgraph and witnessSubgraphWithResult
@@ -214,7 +220,28 @@ let private combineWitnesses (nanopasses: Nanopass list) : (WitnessContext -> Se
                 // This prevents silent gaps where nodes are skipped without any witness
                 // processing them, which leads to empty MLIR output.
                 // Structural nodes (ModuleDef, Sequential) should have transparent witnesses.
-                WitnessOutput.error (sprintf "No witness handled node %A (%A)" node.Id node.Kind)
+                //
+                // Enrich the error with contextual information to aid diagnosis:
+                let kindStr = sprintf "%A" node.Kind
+                let typeStr = sprintf "%A" node.Type
+                let contextInfo =
+                    match node.Kind with
+                    | SemanticKind.VarRef (name, Some bindingId) ->
+                        // For VarRef: show what the binding resolves to
+                        match SemanticGraph.tryGetNode bindingId ctx.Graph with
+                        | Some bindingNode ->
+                            let bindingChildKind =
+                                bindingNode.Children
+                                |> List.tryHead
+                                |> Option.bind (fun cid -> SemanticGraph.tryGetNode cid ctx.Graph)
+                                |> Option.map (fun cn -> sprintf "%A" cn.Kind |> fun s -> s.Split('\n').[0])
+                                |> Option.defaultValue "no children"
+                            sprintf "VarRef '%s' -> Binding %d (child: %s). Type: %s" name (NodeId.value bindingId) bindingChildKind typeStr
+                        | None ->
+                            sprintf "VarRef '%s' -> Binding %d (not found in graph). Type: %s" name (NodeId.value bindingId) typeStr
+                    | _ ->
+                        sprintf "Kind: %s. Type: %s" (kindStr.Split('\n').[0]) typeStr
+                WitnessOutput.error (sprintf "No witness handled node %A — %s" node.Id contextInfo)
             | nanopass :: rest ->
                 let result = nanopass.Witness ctx node
                 match result.Result with
@@ -255,7 +282,7 @@ let runAllNanopasses
                     | _ -> false  // Inside a scope (Lambda, If, etc.)
                 | None -> false
         if node.IsReachable && not (Set.contains nodeId !globalVisited) && isTopLevel then
-            printfn "[DEBUG] Processing top-level node %d (%A)" (NodeId.value nodeId) node.Kind
+            if traceTraversal then printfn "[DEBUG] Processing top-level node %d (%A)" (NodeId.value nodeId) node.Kind
             match PSGZipper.create graph nodeId with
             | None -> ()
             | Some initialZipper ->
@@ -291,7 +318,7 @@ let executeNanopasses
         // Create root scope for operation accumulation
         let rootScope = ref (ScopeContext.root())
 
-        printfn "[Alex] Single-phase execution: %d registered nanopasses" (List.length registry.Nanopasses)
+        if traceTraversal then printfn "[Alex] Single-phase execution: %d registered nanopasses" (List.length registry.Nanopasses)
 
         // Run all nanopasses together in single traversal
         runAllNanopasses registry.Nanopasses graph coeffects sharedAcc rootScope globalVisited
@@ -307,7 +334,7 @@ let executeNanopasses
 
         // Extract operations from root scope and add to accumulator (Phase 7)
         let rootOps = ScopeContext.getOps !rootScope
-        printfn "[DEBUG] Extracted %d operations from rootScope" (List.length rootOps)
+        if traceTraversal then printfn "[DEBUG] Extracted %d operations from rootScope" (List.length rootOps)
         MLIRAccumulator.addOps rootOps sharedAcc
 
         sharedAcc

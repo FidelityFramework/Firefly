@@ -32,6 +32,7 @@ module StringCollect = PSGElaboration.StringCollection
 module PatternAnalysis = PSGElaboration.PatternBindingAnalysis
 module YieldStateIndices = PSGElaboration.YieldStateIndices
 module EscapeAnalysis = PSGElaboration.EscapeAnalysis
+module CurryFlat = PSGElaboration.CurryFlattening
 
 // ═══════════════════════════════════════════════════════════════════════════
 // TRANSFER COEFFECTS (Pre-computed, Immutable)
@@ -46,6 +47,7 @@ type TransferCoeffects = {
     Strings: StringCollect.StringTable
     YieldStates: YieldStateIndices.YieldStateCoeffect
     EscapeAnalysis: EscapeAnalysis.EscapeAnalysisResult
+    CurryFlattening: CurryFlat.CurryFlatteningResult
     EntryPointLambdaIds: Set<int>
 }
 
@@ -206,11 +208,13 @@ type MLIRAccumulator() =
     member val EmittedGlobals: Set<string> = Set.empty with get, set              // Track emitted global strings (by symbol name)
     // NOTE: Function declarations now handled by MLIR Declaration Collection Pass (no coordination needed)
 
+    // Deferred InlineOps: Partial app arguments whose InlineOps are suppressed at their
+    // original scope and re-emitted at the saturated call site (MLIR region isolation)
+    member val DeferredInlineOps: System.Collections.Generic.Dictionary<int, MLIROp list> = System.Collections.Generic.Dictionary<int, MLIROp list>() with get
+
 module MLIRAccumulator =
     let empty () : MLIRAccumulator =
-        let acc = MLIRAccumulator()
-        printfn "[MLIRAccumulator.empty] Created new accumulator instance (hash: %d)" (acc.GetHashCode())
-        acc
+        MLIRAccumulator()
 
     /// Add a single operation to the flat stream
     let addOp (op: MLIROp) (acc: MLIRAccumulator) =
@@ -218,14 +222,11 @@ module MLIRAccumulator =
 
     /// Add multiple operations to the flat stream
     let addOps (ops: MLIROp list) (acc: MLIRAccumulator) =
-        let funcDefs = ops |> List.filter (fun op -> match op with MLIROp.FuncOp (FuncOp.FuncDef (name, _, _, _, _)) -> printfn "[DEBUG] addOps: Adding FuncDef %s" name; true | _ -> false)
         acc.AllOps <- List.rev ops @ acc.AllOps
 
     /// Add an error diagnostic
     let addError (err: Diagnostic) (acc: MLIRAccumulator) =
-        printfn "[MLIRAccumulator.addError] Adding error to accumulator (hash: %d): %s" (acc.GetHashCode()) err.Message
         acc.Errors <- err :: acc.Errors
-        printfn "[MLIRAccumulator.addError] Accumulator (hash: %d) now has %d errors" (acc.GetHashCode()) (List.length acc.Errors)
 
     /// Bind a PSG node to its SSA value (global binding)
     let bindNode (nodeId: NodeId) (ssa: SSA) (ty: MLIRType) (acc: MLIRAccumulator) =
@@ -247,6 +248,18 @@ module MLIRAccumulator =
         else
             acc.EmittedGlobals <- Set.add name acc.EmittedGlobals
             Some (MLIROp.GlobalString (name, content, byteLength))
+
+    /// Store deferred InlineOps for a node (suppressed at original scope, re-emitted at saturated call site)
+    let deferInlineOps (nodeId: NodeId) (ops: MLIROp list) (acc: MLIRAccumulator) =
+        let key = NodeId.value nodeId
+        acc.DeferredInlineOps.[key] <- ops
+
+    /// Retrieve deferred InlineOps for a node (returns empty list if none)
+    let getDeferredInlineOps (nodeId: NodeId) (acc: MLIRAccumulator) : MLIROp list =
+        let key = NodeId.value nodeId
+        match acc.DeferredInlineOps.TryGetValue(key) with
+        | true, ops -> ops
+        | false, _ -> []
 
     /// NOTE: Function declaration coordination removed - now handled by MLIR Declaration Collection Pass
     /// This eliminates "first witness wins" race condition and separates concerns:

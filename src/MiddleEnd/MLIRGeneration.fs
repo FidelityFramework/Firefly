@@ -49,21 +49,32 @@ let generate
         | Core.Types.Dialects.OutputKind.Library -> PSGElaboration.PlatformConfig.Console
         | Core.Types.Dialects.OutputKind.Embedded -> PSGElaboration.PlatformConfig.Freestanding
 
-    // Compute coeffects (PSGElaboration)
-    let ssaAssignment = PSGElaboration.SSAAssignment.assignSSA arch graph
-    let mutability = PSGElaboration.MutabilityAnalysis.analyze graph
-    let yieldStates = PSGElaboration.YieldStateIndices.run graph
-    let patternBindings = PSGElaboration.PatternBindingAnalysis.analyze graph
-    let strings = PSGElaboration.StringCollection.collect graph
-    let platformResolution = PSGElaboration.PlatformBindingResolution.analyze graph runtimeMode os arch
-    let escapeAnalysis = PSGElaboration.EscapeAnalysis.analyzeGraph graph
+    // Phase 0: Flatten curried lambdas (graph normalization BEFORE coeffect analysis)
+    // Merges Lambda(a) → Lambda(b) → body into Lambda(a,b) → body
+    // and identifies partial application / saturated call patterns
+    let (flattenedGraph, absorbedLambdas) = PSGElaboration.CurryFlattening.flatten graph
+    let curryFlatteningResult = PSGElaboration.CurryFlattening.analyze flattenedGraph absorbedLambdas
+
+    // Compute effective arg counts for saturated calls (SSAAssignment needs correct SSA counts)
+    let saturatedCallArgCounts =
+        curryFlatteningResult.SaturatedCalls
+        |> Map.map (fun _ info -> List.length info.AllArgNodes)
+
+    // Compute coeffects on flattened graph (SSAs reflect flattened parameter structure)
+    let ssaAssignment = PSGElaboration.SSAAssignment.assignSSA arch flattenedGraph saturatedCallArgCounts
+    let mutability = PSGElaboration.MutabilityAnalysis.analyze flattenedGraph
+    let yieldStates = PSGElaboration.YieldStateIndices.run flattenedGraph
+    let patternBindings = PSGElaboration.PatternBindingAnalysis.analyze flattenedGraph
+    let strings = PSGElaboration.StringCollection.collect flattenedGraph
+    let platformResolution = PSGElaboration.PlatformBindingResolution.analyze flattenedGraph runtimeMode os arch
+    let escapeAnalysis = PSGElaboration.EscapeAnalysis.analyzeGraph flattenedGraph
 
     // Serialize coeffects if keeping intermediates
     match intermediatesDir with
     | Some dir ->
         PSGElaboration.PreprocessingSerializer.serializeAll
             dir ssaAssignment mutability yieldStates patternBindings strings
-            ssaAssignment.EntryPointLambdas graph
+            ssaAssignment.EntryPointLambdas flattenedGraph
     | None -> ()
 
     // Build TransferCoeffects
@@ -75,14 +86,15 @@ let generate
         Strings = strings
         YieldStates = yieldStates
         EscapeAnalysis = escapeAnalysis
+        CurryFlattening = curryFlatteningResult
         EntryPointLambdaIds = ssaAssignment.EntryPointLambdas
     }
 
     // Execute Alex transfer (parallel nanopasses)
-    match graph.EntryPoints with
+    match flattenedGraph.EntryPoints with
     | [] -> Result.Error "No entry points found in PSG"
     | entryId :: _ ->
-        match transfer graph entryId coeffects intermediatesDir with
+        match transfer flattenedGraph entryId coeffects intermediatesDir with
         | Result.Ok (topLevelOps, _) ->
             // Apply MLIR nanopasses (MLIR→MLIR transformations)
             // This is the integration point for dual witness infrastructure:

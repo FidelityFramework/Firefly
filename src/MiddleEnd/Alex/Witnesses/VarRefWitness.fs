@@ -28,14 +28,8 @@ open XParsec.Combinators
 
 /// Witness variable reference nodes - forwards binding's SSA
 let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOutput =
-    printfn "[VarRefWitness] Attempting to witness node %A (kind: %s)"
-        (NodeId.value node.Id)
-        (node.Kind.ToString().Split('\n').[0])
     match tryMatch pVarRef ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
     | Some ((name, bindingIdOpt), _) ->
-        printfn "[VarRefWitness] Successfully matched VarRef '%s' with binding %A"
-            name
-            (bindingIdOpt |> Option.map NodeId.value)
         match bindingIdOpt with
         | Some bindingId ->
             // Check if the binding references a function (Lambda node)
@@ -69,8 +63,13 @@ let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                         |> Option.defaultValue false
 
                     if isFunctionBinding then
-                        // Function reference - ApplicationWitness handles this
-                        WitnessOutput.skip
+                        // Function reference - structural node, no SSA value produced
+                        // ApplicationWitness navigates to VarRef for name resolution independently
+                        { InlineOps = []; TopLevelOps = []; Result = TRVoid }
+                    elif Set.contains bindingId ctx.Coeffects.CurryFlattening.PartialAppBindings then
+                        // Partial application binding - no value SSA available
+                        // ApplicationWitness handles saturated calls through the coeffect
+                        { InlineOps = []; TopLevelOps = []; Result = TRVoid }
                     else
                         // Value binding - post-order: binding already witnessed, recall its SSA
                         match MLIRAccumulator.recallNode bindingId ctx.Accumulator with
@@ -84,9 +83,7 @@ let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                             // - Set operations to use memref directly (no load needed)
                             // - Expression contexts to load from memref when needed
                             // - No context-dependent behavior in VarRef itself
-                            printfn "[VarRefWitness] Forwarding binding %A with type %A"
-                                (NodeId.value bindingId) ty
-                            { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
+                                { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
                         | None ->
                             WitnessOutput.error $"VarRef '{name}': Binding not yet witnessed"
 
@@ -97,9 +94,6 @@ let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
         | None ->
             WitnessOutput.error $"VarRef '{name}': No binding ID (unresolved reference)"
     | None ->
-        printfn "[VarRefWitness] pVarRef FAILED to match node %A (kind: %s)"
-            (NodeId.value node.Id)
-            (node.Kind.ToString().Split('\n').[0])
         WitnessOutput.skip
 
 // ═══════════════════════════════════════════════════════════
