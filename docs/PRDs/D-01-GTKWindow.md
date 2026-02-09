@@ -90,20 +90,20 @@ Fidelity closures with no captures can be passed as C function pointers.
 ### 4.1 External Function Declaration
 
 ```fsharp
+// NOTE: This pseudocode uses the old push-model emit pattern.
+// Actual implementation will use Element/Pattern/Witness architecture
+// with XParsec combinators returning codata (ops + result).
 let witnessExternFunction z name library paramTypes returnType =
-    // Emit LLVM function declaration
-    let paramStr = paramTypes |> List.map toLLVMType |> String.concat ", "
-    emit $"llvm.func @{name}({paramStr}) -> {toLLVMType returnType}"
-    emit $"  attributes {{ \"link\" = \"{library}\" }}"
+    // Emit func.func private declaration
+    // func.func private @{name}({paramTypes as MLIR}) -> {returnType as MLIR}
+    //   attributes { "link" = "{library}" }
 ```
 
 ### 4.2 External Call
 
 ```fsharp
 let witnessExternCall z funcName args =
-    let argStr = args |> List.map (sprintf "%%%s") |> String.concat ", "
-    let resultSSA = freshSSA ()
-    emit $"  %%{resultSSA} = llvm.call @{funcName}({argStr})"
+    // func.call @{funcName}({args}) : ({paramTypes}) -> {returnType}
     TRValue { SSA = resultSSA; Type = returnType }
 ```
 
@@ -113,9 +113,8 @@ For callbacks, extract the code pointer from closure:
 
 ```fsharp
 let witnessClosureToFuncPtr z closureSSA =
-    // If closure has no captures, code pointer is directly usable
-    let codePtr = freshSSA ()
-    emit $"  %%{codePtr} = llvm.extractvalue %%{closureSSA}[0]"
+    // If closure has no captures, code pointer (index) is directly usable
+    // memref.reinterpret_cast closure to extract code_ptr at offset 0
     TRValue { SSA = codePtr; Type = TFunctionPointer }
 ```
 
@@ -126,15 +125,17 @@ let witnessClosureToFuncPtr z closureSSA =
 ### 5.1 External Function Declarations
 
 ```mlir
-// GTK function declarations
-llvm.func @gtk_init() attributes { "link" = "gtk-4" }
-llvm.func @gtk_window_new() -> !llvm.ptr attributes { "link" = "gtk-4" }
-llvm.func @gtk_window_set_title(!llvm.ptr, !llvm.ptr) attributes { "link" = "gtk-4" }
-llvm.func @gtk_window_set_default_size(!llvm.ptr, i32, i32) attributes { "link" = "gtk-4" }
-llvm.func @gtk_widget_show(!llvm.ptr) attributes { "link" = "gtk-4" }
-llvm.func @gtk_main() attributes { "link" = "gtk-4" }
-llvm.func @gtk_main_quit() attributes { "link" = "gtk-4" }
-llvm.func @g_signal_connect_data(!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, i32) -> i64
+// GTK function declarations — FFI uses opaque pointer type (index)
+// NOTE: At the MLIR level, FFI pointer parameters use index type.
+// The MLIR→LLVM lowering pass converts index to !llvm.ptr at the backend boundary.
+func.func private @gtk_init() attributes { "link" = "gtk-4" }
+func.func private @gtk_window_new() -> index attributes { "link" = "gtk-4" }
+func.func private @gtk_window_set_title(index, index) attributes { "link" = "gtk-4" }
+func.func private @gtk_window_set_default_size(index, i32, i32) attributes { "link" = "gtk-4" }
+func.func private @gtk_widget_show(index) attributes { "link" = "gtk-4" }
+func.func private @gtk_main() attributes { "link" = "gtk-4" }
+func.func private @gtk_main_quit() attributes { "link" = "gtk-4" }
+func.func private @g_signal_connect_data(index, index, index, index, index, i32) -> i64
     attributes { "link" = "gobject-2.0" }
 ```
 
@@ -142,34 +143,38 @@ llvm.func @g_signal_connect_data(!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !ll
 
 ```mlir
 // gtk_init()
-llvm.call @gtk_init() : () -> ()
+func.call @gtk_init() : () -> ()
 
 // let window = gtk_window_new()
-%window = llvm.call @gtk_window_new() : () -> !llvm.ptr
+%window = func.call @gtk_window_new() : () -> index
 
 // gtk_window_set_title(window, "Hello GTK")
-%title = llvm.mlir.addressof @str_hello_gtk : !llvm.ptr
-llvm.call @gtk_window_set_title(%window, %title) : (!llvm.ptr, !llvm.ptr) -> ()
+%title = memref.get_global @str_hello_gtk : memref<9xi8>
+%title_ptr = memref.extract_aligned_pointer_as_index %title : memref<9xi8> -> index
+func.call @gtk_window_set_title(%window, %title_ptr) : (index, index) -> ()
 
 // gtk_window_set_default_size(window, 400, 300)
-llvm.call @gtk_window_set_default_size(%window, %c400, %c300) : (!llvm.ptr, i32, i32) -> ()
+%c400 = arith.constant 400 : i32
+%c300 = arith.constant 300 : i32
+func.call @gtk_window_set_default_size(%window, %c400, %c300) : (index, i32, i32) -> ()
 ```
 
 ### 5.3 Signal Connection
 
 ```mlir
 // g_signal_connect(window, "destroy", quit_callback, 0)
-// user_data=0 means no data, destroy_notify=0 means no cleanup function
-%destroy_str = llvm.mlir.addressof @str_destroy : !llvm.ptr
-%callback = llvm.mlir.addressof @on_destroy : !llvm.ptr
-%user_data_zero = llvm.mlir.zero : !llvm.ptr
-%destroy_notify_zero = llvm.mlir.zero : !llvm.ptr
-llvm.call @g_signal_connect_data(%window, %destroy_str, %callback, %user_data_zero, %destroy_notify_zero, %c0)
+%destroy_str = memref.get_global @str_destroy : memref<7xi8>
+%destroy_ptr = memref.extract_aligned_pointer_as_index %destroy_str : memref<7xi8> -> index
+%callback_ptr = arith.constant 0 : index  // placeholder: @on_destroy function pointer
+%null = arith.constant 0 : index
+%c0 = arith.constant 0 : i32
+func.call @g_signal_connect_data(%window, %destroy_ptr, %callback_ptr, %null, %null, %c0)
+    : (index, index, index, index, index, i32) -> i64
 
 // Callback function
-llvm.func @on_destroy(%widget: !llvm.ptr, %data: !llvm.ptr) {
-    llvm.call @gtk_main_quit() : () -> ()
-    llvm.return
+func.func @on_destroy(%widget: index, %data: index) {
+    func.call @gtk_main_quit() : () -> ()
+    func.return
 }
 ```
 

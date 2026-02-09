@@ -113,25 +113,26 @@ let threadEntryWrapper (arg: nativeptr<byte>) : nativeptr<byte> =
 ### 4.3 Thread.create Witness
 
 ```fsharp
+// NOTE: This pseudocode uses the old push-model emit pattern.
+// Actual implementation will use Element/Pattern/Witness architecture
+// with XParsec combinators returning codata (ops + result).
+// ThreadHandle is memref<Nxi8> (flat byte buffer: os_handle + result_slot + closure).
+
 let witnessThreadCreate z closureSSA =
     let handleSSA = freshSSA ()
 
-    // Allocate ThreadHandle struct
-    emit $"  %%{handleSSA} = llvm.alloca 1 x !thread_handle"
+    // Allocate ThreadHandle — memref<Nxi8> flat buffer
+    // %%{handleSSA} = memref.alloca() : memref<Nxi8>
 
-    // Store closure
-    emit $"  %%closure_slot = llvm.getelementptr %%{handleSSA}[0, 2]"
-    emit $"  llvm.store %%{closureSSA}, %%closure_slot"
+    // Store closure at offset (via memref.view)
+    // memref.store %%{closureSSA}, %%closure_ref[%%c0]
 
     // Allocate result slot
-    emit $"  %%result_slot = llvm.alloca 1 x {resultType}"
-    emit $"  %%result_slot_ptr = llvm.getelementptr %%{handleSSA}[0, 1]"
-    emit $"  llvm.store %%result_slot, %%result_slot_ptr"
+    // %%result_slot = memref.alloca() : memref<Mxi8>
+    // memref.store %%result_slot ptr at handle offset via memref.view
 
     // pthread_create (attr=0 means default attributes)
-    emit $"  %%os_handle_ptr = llvm.getelementptr %%{handleSSA}[0, 0]"
-    emit $"  %%attr_zero = llvm.mlir.zero : !llvm.ptr"
-    emit $"  llvm.call @pthread_create(%%os_handle_ptr, %%attr_zero, @thread_entry, %%{handleSSA})"
+    // func.call @pthread_create(%%os_handle_ref, %%null, @thread_entry, %%{handleSSA})
 
     TRValue { SSA = handleSSA; Type = TThread resultType }
 ```
@@ -142,18 +143,15 @@ let witnessThreadCreate z closureSSA =
 let witnessThreadJoin z handleSSA =
     let resultSSA = freshSSA ()
 
-    // Get OS handle
-    emit $"  %%os_handle_ptr = llvm.getelementptr %%{handleSSA}[0, 0]"
-    emit "  %os_handle = llvm.load %os_handle_ptr : i64"
+    // Get OS handle — memref.view into ThreadHandle at offset 0
+    // %%os_handle = memref.load %%handle_ref[%%c0] : i64
 
     // pthread_join (retval=0 means don't retrieve thread return value)
-    emit "  %retval_zero = llvm.mlir.zero : !llvm.ptr"
-    emit "  llvm.call @pthread_join(%os_handle, %retval_zero)"
+    // %%null = arith.constant 0 : index
+    // func.call @pthread_join(%%os_handle, %%null)
 
-    // Read result
-    emit $"  %%result_slot_ptr = llvm.getelementptr %%{handleSSA}[0, 1]"
-    emit "  %result_slot = llvm.load %result_slot_ptr : !llvm.ptr"
-    emit $"  %%{resultSSA} = llvm.load %%result_slot"
+    // Read result — memref.view into ThreadHandle at result slot offset
+    // %%{resultSSA} = memref.load %%result_ref[%%c0]
 
     TRValue { SSA = resultSSA; Type = resultType }
 ```
@@ -163,34 +161,38 @@ let witnessThreadJoin z handleSSA =
 ### 5.1 Thread Handle Type
 
 ```mlir
-!thread_handle = !llvm.struct<(
-    i64,         // OS handle (pthread_t)
-    ptr,         // result slot pointer
-    !closure_type // closure to run
-)>
+// ThreadHandle is memref<Nxi8> (flat byte buffer):
+//   offset 0: os_handle (i64 — pthread_t)
+//   offset 8: result_slot (index — pointer to result memref)
+//   offset 16: closure (closure bytes — code_ptr + captures)
 ```
 
 ### 5.2 Thread Entry Wrapper
 
 ```mlir
-llvm.func @thread_entry(%arg: !llvm.ptr) -> !llvm.ptr {
-    // Load closure from handle
-    %closure_ptr = llvm.getelementptr %arg[0, 2]
-    %closure = llvm.load %closure_ptr : !closure_type
+func.func @thread_entry(%arg: index) -> index {
+    // arg is pointer to ThreadHandle byte buffer
+    // Reinterpret as memref to access fields
+    %handle = memref.view ... // view arg as memref<Nxi8>
 
-    // Extract and call
-    %code = llvm.extractvalue %closure[0]
-    %env = llvm.extractvalue %closure[1]
-    %result = llvm.call %code(%env) : (!llvm.ptr) -> i32
+    // Load closure code_ptr from handle (at closure offset)
+    %closure_ref = memref.view %handle[%closure_offset][] : memref<Nxi8> to memref<closure_size x i8>
+    %code_ref = memref.reinterpret_cast %closure_ref to offset: [0], sizes: [1], strides: [1]
+        : memref<closure_size x i8> to memref<1xindex>
+    %code = memref.load %code_ref[%c0] : memref<1xindex>
 
-    // Store result
-    %result_slot_ptr = llvm.getelementptr %arg[0, 1]
-    %result_slot = llvm.load %result_slot_ptr : !llvm.ptr
-    llvm.store %result, %result_slot
+    // Load env/captures from closure and call
+    %result = func.call_indirect %code(...) : (...) -> i32
+
+    // Store result at result_slot
+    %result_slot_ref = memref.view %handle[%c8][] : memref<Nxi8> to memref<1xindex>
+    %result_slot_ptr = memref.load %result_slot_ref[%c0] : memref<1xindex>
+    // Write result to result slot memref
+    // ... memref.store %result ...
 
     // pthread requires ptr return (0 = no meaningful value)
-    %ret_zero = llvm.mlir.zero : !llvm.ptr
-    llvm.return %ret_zero : !llvm.ptr
+    %ret_zero = arith.constant 0 : index
+    func.return %ret_zero : index
 }
 ```
 
@@ -198,21 +200,27 @@ llvm.func @thread_entry(%arg: !llvm.ptr) -> !llvm.ptr {
 
 ```mlir
 // let thread = Thread.create myFunc
-%handle = llvm.alloca 1 x !thread_handle
 
-// Store closure
-%closure_slot = llvm.getelementptr %handle[0, 2]
-llvm.store %myFunc_closure, %closure_slot
+// Allocate ThreadHandle byte buffer on stack
+%handle = memref.alloca() : memref<Nxi8>
+
+// Store closure at closure offset
+%closure_ref = memref.view %handle[%closure_offset][] : memref<Nxi8> to memref<closure_size x i8>
+// ... memref.store code_ptr, captures into closure_ref ...
 
 // Allocate result slot
-%result_slot = llvm.alloca 1 x i32
-%result_ptr = llvm.getelementptr %handle[0, 1]
-llvm.store %result_slot, %result_ptr
+%result_slot = memref.alloca() : memref<1xi32>
+%result_slot_idx = memref.extract_aligned_pointer_as_index %result_slot : memref<1xi32> -> index
+%result_ptr_ref = memref.view %handle[%c8][] : memref<Nxi8> to memref<1xindex>
+memref.store %result_slot_idx, %result_ptr_ref[%c0] : memref<1xindex>
 
 // Create thread (attr=0 means default attributes)
-%os_handle_ptr = llvm.getelementptr %handle[0, 0]
-%attr_zero = llvm.mlir.zero : !llvm.ptr
-llvm.call @pthread_create(%os_handle_ptr, %attr_zero, @thread_entry, %handle)
+%os_handle_ref = memref.view %handle[%c0][] : memref<Nxi8> to memref<1xi64>
+%handle_idx = memref.extract_aligned_pointer_as_index %handle : memref<Nxi8> -> index
+%attr_zero = arith.constant 0 : index
+%entry_ptr = arith.constant 0 : index  // placeholder: @thread_entry function address
+func.call @pthread_create(%os_handle_ref, %attr_zero, %entry_ptr, %handle_idx)
+    : (memref<1xi64>, index, index, index) -> i32
 ```
 
 ## 6. Validation

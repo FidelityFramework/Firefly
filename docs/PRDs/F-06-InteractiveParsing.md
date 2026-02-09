@@ -90,15 +90,15 @@ The `float` function converts int to float:
     NativeType.TFun(env.Globals.IntType, env.Globals.Float64Type)
 ```
 
-**MLIR**: `llvm.sitofp` (signed int to floating point)
+**MLIR**: `arith.sitofp` (signed int to floating point)
 
 ### 3.4 Multiple Console Reads
 
 Each `Console.readlnFrom` call gets independent SSA:
 
 ```mlir
-%input1 = llvm.call @console_readln_from(%arena)
-%input2 = llvm.call @console_readln_from(%arena)
+%input1 = func.call @Console.readln() : () -> memref<?xi8>
+%input2 = func.call @Console.readln() : () -> memref<?xi8>
 // %input1 and %input2 are distinct SSA values
 ```
 
@@ -187,28 +187,35 @@ ModuleOrNamespace: AddNumbersInteractive
 
 ```mlir
 // parseNumber function
-llvm.func @parseNumber(%s: !llvm.ptr, %s_len: i64) -> !number_t {
-  // Check for decimal point
-  %dot = llvm.mlir.constant(46 : i8)  // '.'
-  %has_dot = llvm.call @string_contains(%s, %s_len, %dot)
+// String is memref<?xi8>. Number DU is memref<9xi8> (1 tag + 8 payload).
+func.func @parseNumber(%s: memref<?xi8>) -> memref<9xi8> {
+  // Check for decimal point — String.contains is a byte-scan loop (Alex pattern)
+  %c46_i8 = arith.constant 46 : i8  // '.'
+  // ... (scf.while loop scanning %s for %c46_i8, produces %has_dot : i1)
 
-  llvm.cond_br %has_dot, ^float_case, ^int_case
-
-^float_case:
-  %f = llvm.call @parse_float(%s, %s_len)
-  %fbits = llvm.bitcast %f : f64 to i64
-  // Construct FloatVal
-  ...
-  llvm.br ^return(%floatval)
-
-^int_case:
-  %i = llvm.call @parse_int(%s, %s_len)
-  // Construct IntVal
-  ...
-  llvm.br ^return(%intval)
-
-^return(%result: !number_t):
-  llvm.return %result
+  // Expression-valued scf.if — returns the DU memref
+  %result = scf.if %has_dot -> memref<9xi8> {
+    %f = func.call @Parse.float(%s) : (memref<?xi8>) -> f64
+    // Construct FloatVal: tag=1, payload=f64
+    %du = memref.alloca() : memref<9xi8>
+    %c1_tag = arith.constant 1 : i8
+    %tag_ref = memref.reinterpret_cast %du to offset: [0], sizes: [1], strides: [1] : memref<9xi8> to memref<1xi8>
+    memref.store %c1_tag, %tag_ref[%c0] : memref<1xi8>
+    %payload_ref = memref.view %du[%c1][] : memref<9xi8> to memref<1xf64>
+    memref.store %f, %payload_ref[%c0] : memref<1xf64>
+    scf.yield %du : memref<9xi8>
+  } else {
+    %i = func.call @Parse.int(%s) : (memref<?xi8>) -> i64
+    // Construct IntVal: tag=0, payload=i64
+    %du = memref.alloca() : memref<9xi8>
+    %c0_tag = arith.constant 0 : i8
+    %tag_ref = memref.reinterpret_cast %du to offset: [0], sizes: [1], strides: [1] : memref<9xi8> to memref<1xi8>
+    memref.store %c0_tag, %tag_ref[%c0] : memref<1xi8>
+    %payload_ref = memref.view %du[%c1][] : memref<9xi8> to memref<1xi64>
+    memref.store %i, %payload_ref[%c0] : memref<1xi64>
+    scf.yield %du : memref<9xi8>
+  }
+  func.return %result : memref<9xi8>
 }
 ```
 

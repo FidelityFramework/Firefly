@@ -175,17 +175,18 @@ No new coeffects introduced. This sample relies on:
 The normalized PSG produces straightforward MLIR:
 
 ```mlir
-// greet function
-llvm.func @greet(%name: !llvm.ptr, %name_len: i64) {
+// greet function — string is memref<?xi8>, no separate length parameter
+func.func @greet(%name: memref<?xi8>) {
   // Build interpolated string
   // Call Console.writeln directly (no pipe indirection)
 }
 
 // main
-llvm.func @main() -> i32 {
-  %name = llvm.call @console_readln_from(...)
-  llvm.call @greet(%name, %name_len)  // Direct call, no pipe
-  llvm.return %zero
+func.func @main() -> i32 {
+  %name = func.call @Console.readln() : () -> memref<?xi8>
+  func.call @greet(%name) : (memref<?xi8>) -> ()  // Direct call, no pipe
+  %zero = arith.constant 0 : i32
+  func.return %zero : i32
 }
 ```
 

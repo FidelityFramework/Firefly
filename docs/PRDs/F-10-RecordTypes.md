@@ -91,7 +91,7 @@ RecordDef {
 
 ### 3.3 Field Access
 
-Field access uses LLVM GEP (GetElementPtr):
+Field access uses memref operations (reinterpret_cast for same-type, view for different-type):
 
 ```fsharp
 p.Name  // Access field at offset 0
@@ -100,13 +100,14 @@ p.Age   // Access field at offset 16
 
 **MLIR**:
 ```mlir
-// p.Name
-%name_ptr = llvm.getelementptr %person[0, 0] : !person_t
-%name = llvm.load %name_ptr : !string_t
+// Record is memref<Nxi8> (flat byte buffer, like DU representation)
+// p.Name — string field at offset 0
+%name_ref = memref.view %person[%c0][] : memref<24xi8> to memref<?xi8>
+%name = memref.load %name_ref[%c0] : memref<?xi8>
 
-// p.Age
-%age_ptr = llvm.getelementptr %person[0, 1] : !person_t
-%age = llvm.load %age_ptr : i64
+// p.Age — i64 field at offset 16
+%age_ref = memref.view %person[%c16][] : memref<24xi8> to memref<1xi64>
+%age = memref.load %age_ref[%c0] : memref<1xi64>
 ```
 
 ### 3.4 Record Construction
@@ -115,12 +116,17 @@ p.Age   // Access field at offset 16
 { Name = "Alice"; Age = 30 }
 ```
 
-Constructs a struct in field order:
+Constructs a record in field order using a flat byte buffer:
 
 ```mlir
-%person = llvm.mlir.undef : !person_t
-%person1 = llvm.insertvalue %name, %person[0]
-%person2 = llvm.insertvalue %age, %person1[1]
+// Record is memref<Nxi8> — fields at known byte offsets
+%person = memref.alloca() : memref<Nxi8>
+// Store Name field (memref<?xi8>) at offset 0
+%name_ref = memref.view %person[%c0][] : memref<Nxi8> to memref<1xindex>
+memref.store %name, %name_ref[%c0] : memref<1xindex>
+// Store Age field (i64) at offset after Name
+%age_ref = memref.view %person[%name_end][] : memref<Nxi8> to memref<1xi64>
+memref.store %age, %age_ref[%c0] : memref<1xi64>
 ```
 
 ### 3.5 Copy-and-Update
@@ -132,14 +138,17 @@ Constructs a struct in field order:
 Copies all fields except the updated ones:
 
 ```mlir
-// Copy alice
-%new = llvm.mlir.undef : !person_t
-// Copy Name from alice
-%name = llvm.extractvalue %alice[0]
-%new1 = llvm.insertvalue %name, %new[0]
+// Allocate new record
+%new = memref.alloca() : memref<Nxi8>
+// Copy Name from alice (read then write at same offset)
+%alice_name_ref = memref.view %alice[%c0][] : memref<Nxi8> to memref<1xindex>
+%name = memref.load %alice_name_ref[%c0] : memref<1xindex>
+%new_name_ref = memref.view %new[%c0][] : memref<Nxi8> to memref<1xindex>
+memref.store %name, %new_name_ref[%c0] : memref<1xindex>
 // Insert new Age
-%new_age = llvm.mlir.constant(31 : i64)
-%new2 = llvm.insertvalue %new_age, %new1[1]
+%new_age = arith.constant 31 : i64
+%new_age_ref = memref.view %new[%name_end][] : memref<Nxi8> to memref<1xi64>
+memref.store %new_age, %new_age_ref[%c0] : memref<1xi64>
 ```
 
 ### 3.6 Nested Records
@@ -220,10 +229,11 @@ city
 **MLIR**:
 ```mlir
 // Access nested field: c.Address.City
-%addr_ptr = llvm.getelementptr %contact[0, 1] : !contact_t
-%addr = llvm.load %addr_ptr : !address_t
-%city_ptr = llvm.getelementptr %addr[0, 1] : !address_t
-%city = llvm.load %city_ptr : !string_t
+// View Address field within Contact (at Address byte offset)
+%addr_ref = memref.view %contact[%addr_offset][] : memref<Nxi8> to memref<Mxi8>
+// View City field within Address (at City byte offset within Address)
+%city_ref = memref.view %addr_ref[%city_offset][] : memref<Mxi8> to memref<1xindex>
+%city = memref.load %city_ref[%c0] : memref<1xindex>
 ```
 
 #### Wildcard with Partial Extraction
@@ -282,16 +292,19 @@ ModuleOrNamespace: RecordTest
 ## 5. MLIR Type Definitions
 
 ```mlir
-// String type
-!string_t = !llvm.struct<(ptr, i64)>
-
-// Person type
-!person_t = !llvm.struct<(struct<(ptr, i64)>, i64)>
-
-// Contact type (nested)
-!address_t = !llvm.struct<(struct<(ptr, i64)>, struct<(ptr, i64)>)>
-!contact_t = !llvm.struct<(struct<(struct<(ptr, i64)>, i64)>,
-                           struct<(struct<(ptr, i64)>, struct<(ptr, i64)>)>)>
+// All record/struct types are flat byte buffers (memref<Nxi8>).
+// Fields are accessed at known byte offsets via memref.view.
+// Strings are memref<?xi8>. Integers are i32/i64. Nested records are inlined.
+//
+// Person: memref<Nxi8> where N = sizeof(index) + sizeof(i64)
+//   offset 0: Name (index — pointer to memref<?xi8>)
+//   offset 8: Age (i64)
+//
+// Address: memref<Mxi8> where M = 2 * sizeof(index)
+//   offset 0: Street (index)
+//   offset 8: City (index)
+//
+// Contact: memref<Kxi8> where K = N + M (Person + Address inlined)
 ```
 
 ---

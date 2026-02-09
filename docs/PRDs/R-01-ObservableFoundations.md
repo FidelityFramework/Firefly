@@ -119,36 +119,37 @@ type Observer<'T> = {
 
 **MLIR Representation**:
 ```mlir
-!observer_t = !llvm.struct<(
-  struct<(ptr, ...)>,   // onNext closure
-  struct<(ptr, ...)>,   // onError closure
-  struct<(ptr, ...)>    // onCompleted closure
-)>
+// Observer is memref<Nxi8> (flat byte buffer containing closures)
+// Each closure field accessed via memref.view at computed offsets
+// onNext: offset 0, onError: offset K, onCompleted: offset 2K
 ```
 
 ### 4.2 Multicast Emission
 
 ```mlir
 // emit(observable, value)
-llvm.func @observable_emit(%obs: !observable_t, %value: !T) {
-  %count = llvm.extractvalue %obs[0]
-  %zero = llvm.mlir.constant(0 : i32)
-  llvm.br ^loop(%zero)
+// Observable is memref<Nxi8> with count at offset 0, observers at subsequent offsets
+func.func @observable_emit(%obs: memref<?xi8>, %value: memref<?xi8>) {
+  // Extract observer count
+  %count_ref = memref.reinterpret_cast %obs to offset: [0], sizes: [1], strides: [1]
+      : memref<?xi8> to memref<1xi32>
+  %count = memref.load %count_ref[%c0] : memref<1xi32>
+  %zero = arith.constant 0 : i32
 
-^loop(%i: i32):
-  %done = llvm.icmp "sge" %i, %count
-  llvm.cond_br %done, ^exit, ^dispatch
-
-^dispatch:
-  %observer = llvm.extractvalue %obs[1 + %i]  // Computed offset
-  %onNext = llvm.extractvalue %observer[0]
-  // Invoke closure (per C-01 calling convention)
-  llvm.call @invoke_closure(%onNext, %value)
-  %next = llvm.add %i, 1
-  llvm.br ^loop(%next)
-
-^exit:
-  llvm.return
+  // Loop over observers using scf.while
+  scf.while (%i = %zero) : (i32) -> () {
+    %done = arith.cmpi sge, %i, %count : i32
+    %not_done = arith.xori %done, %true : i1
+    scf.condition(%not_done)
+  } do {
+  ^bb0(%i: i32):
+    // Extract observer[i] via computed offset into flat buffer
+    // Get onNext closure, invoke per C-01 calling convention
+    // func.call @invoke_closure(%onNext, %value)
+    %next = arith.addi %i, %c1_i32 : i32
+    scf.yield %next : i32
+  }
+  func.return
 }
 ```
 

@@ -214,8 +214,8 @@ This document catalogs every major F# language feature against FNCS (F# Native C
 | `NativePtr.add`, `NativePtr.sub` | ✅ | Pointer arithmetic |
 | `NativePtr.toNativeInt` | ✅ | Convert to address |
 | `NativePtr.ofNativeInt` | ✅ | Convert from address |
-| `NativePtr.copy` | ✅ | Maps to `llvm.memcpy` |
-| `NativePtr.fill` | ✅ | Maps to `llvm.memset` |
+| `NativePtr.copy` | ✅ | Byte-copy via memref ops |
+| `NativePtr.fill` | ✅ | Byte-fill via memref ops |
 | `&&expr` (address-of) | ✅ | Byref generation |
 | `fixed` expression | 🚧 | Partial support |
 

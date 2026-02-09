@@ -697,144 +697,134 @@ let forEachSSACost : int =
 ### 6.1 Simple Sequence: `seq { yield 1; yield 2; yield 3 }`
 
 ```mlir
-// Sequence struct type (no captures)
-!seq_int_0 = !llvm.struct<(i32, i32, ptr)>
+// Sequence struct is memref<Nxi8> (flat byte buffer)
+// Layout: [state: i32, current: i32, code_ptr: index]
+// No captures for this simple sequence.
 
-// MoveNext function
-llvm.func @seq_123_moveNext(%self: !llvm.ptr) -> i1 {
-    // Load current state
-    %state_ptr = llvm.getelementptr %self[0, 0] : !llvm.ptr
-    %state = llvm.load %state_ptr : i32
+// MoveNext function — takes seq struct as memref, returns i1
+func.func @seq_123_moveNext(%self: memref<?xi8>) -> i1 {
+    // Load current state via memref.view at offset 0
+    %state_ref = memref.reinterpret_cast %self to offset: [0], sizes: [1], strides: [4]
+        : memref<?xi8> to memref<1xi32>
+    %state = memref.load %state_ref[%c0] : memref<1xi32>
 
-    // Switch on state
-    llvm.switch %state : i32 [
-        0: ^state0,
-        1: ^state1,
-        2: ^state2
-    ], ^done
+    // Current value field at offset 4
+    %curr_ref = memref.view %self[%c4][] : memref<?xi8> to memref<1xi32>
 
-^state0:  // Initial -> yield 1
-    %curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr
-    %c1 = arith.constant 1 : i32
-    llvm.store %c1, %curr_ptr : i32
-    %s1 = arith.constant 1 : i32
-    llvm.store %s1, %state_ptr : i32
-    %true = arith.constant true
-    llvm.return %true : i1
-
-^state1:  // After yield 1 -> yield 2
-    %curr_ptr_1 = llvm.getelementptr %self[0, 1] : !llvm.ptr
-    %c2 = arith.constant 2 : i32
-    llvm.store %c2, %curr_ptr_1 : i32
-    %s2 = arith.constant 2 : i32
-    llvm.store %s2, %state_ptr : i32
-    %true1 = arith.constant true
-    llvm.return %true1 : i1
-
-^state2:  // After yield 2 -> yield 3
-    %curr_ptr_2 = llvm.getelementptr %self[0, 1] : !llvm.ptr
-    %c3 = arith.constant 3 : i32
-    llvm.store %c3, %curr_ptr_2 : i32
-    %s3 = arith.constant 3 : i32
-    llvm.store %s3, %state_ptr : i32
-    %true2 = arith.constant true
-    llvm.return %true2 : i1
-
-^done:
-    %neg1 = arith.constant -1 : i32
-    llvm.store %neg1, %state_ptr : i32
-    %false = arith.constant false
-    llvm.return %false : i1
+    // State machine via nested scf.if (or scf.index_switch when available)
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c2_i32 = arith.constant 2 : i32
+    %is_s0 = arith.cmpi eq, %state, %c0_i32 : i32
+    %result = scf.if %is_s0 -> i1 {
+        // state0: yield 1
+        %c1 = arith.constant 1 : i32
+        memref.store %c1, %curr_ref[%c0] : memref<1xi32>
+        memref.store %c1_i32, %state_ref[%c0] : memref<1xi32>
+        scf.yield %true : i1
+    } else {
+        %is_s1 = arith.cmpi eq, %state, %c1_i32 : i32
+        %r1 = scf.if %is_s1 -> i1 {
+            // state1: yield 2
+            %c2 = arith.constant 2 : i32
+            memref.store %c2, %curr_ref[%c0] : memref<1xi32>
+            memref.store %c2_i32, %state_ref[%c0] : memref<1xi32>
+            scf.yield %true : i1
+        } else {
+            %is_s2 = arith.cmpi eq, %state, %c2_i32 : i32
+            %r2 = scf.if %is_s2 -> i1 {
+                // state2: yield 3
+                %c3 = arith.constant 3 : i32
+                memref.store %c3, %curr_ref[%c0] : memref<1xi32>
+                %c3_state = arith.constant 3 : i32
+                memref.store %c3_state, %state_ref[%c0] : memref<1xi32>
+                scf.yield %true : i1
+            } else {
+                // done
+                %neg1 = arith.constant -1 : i32
+                memref.store %neg1, %state_ref[%c0] : memref<1xi32>
+                scf.yield %false : i1
+            }
+            scf.yield %r2 : i1
+        }
+        scf.yield %r1 : i1
+    }
+    func.return %result : i1
 }
-
-// Creation
-%zero = arith.constant 0 : i32
-%undef = llvm.mlir.undef : !seq_int_0
-%s0 = llvm.insertvalue %zero, %undef[0] : !seq_int_0
-%code_ptr = llvm.mlir.addressof @seq_123_moveNext : !llvm.ptr
-%seq_val = llvm.insertvalue %code_ptr, %s0[2] : !seq_int_0
 ```
 
 ### 6.2 Sequence with Captures: `seq { for i in 1..n do yield i * factor }`
 
 ```mlir
-// Sequence struct type (captures n: i32, factor: i32, plus mutable i)
-!seq_int_3 = !llvm.struct<(i32, i32, ptr, i32, i32, i32)>
-// Fields: state, current, code_ptr, n, factor, i
+// Sequence struct is memref<Nxi8> (flat byte buffer with captures)
+// Layout: [state: i32, current: i32, code_ptr: index, n: i32, factor: i32, i: i32]
+// Captures: n, factor. Mutable loop state: i.
 
 // MoveNext function
-llvm.func @seq_factors_moveNext(%self: !llvm.ptr) -> i1 {
-    // Load state
-    %state_ptr = llvm.getelementptr %self[0, 0] : !llvm.ptr
-    %state = llvm.load %state_ptr : i32
+func.func @seq_factors_moveNext(%self: memref<?xi8>) -> i1 {
+    // Load state via memref.view at offset 0
+    %state_ref = memref.view %self[%c0][] : memref<?xi8> to memref<1xi32>
+    %state = memref.load %state_ref[%c0] : memref<1xi32>
 
-    // Load captures (n, factor) and mutable (i)
-    %n_ptr = llvm.getelementptr %self[0, 3] : !llvm.ptr
-    %n = llvm.load %n_ptr : i32
-    %factor_ptr = llvm.getelementptr %self[0, 4] : !llvm.ptr
-    %factor = llvm.load %factor_ptr : i32
-    %i_ptr = llvm.getelementptr %self[0, 5] : !llvm.ptr
-    %i = llvm.load %i_ptr : i32
+    // Load captures and mutable state via memref.view at computed offsets
+    %n_ref = memref.view %self[%off_n][] : memref<?xi8> to memref<1xi32>
+    %n = memref.load %n_ref[%c0] : memref<1xi32>
+    %factor_ref = memref.view %self[%off_factor][] : memref<?xi8> to memref<1xi32>
+    %factor = memref.load %factor_ref[%c0] : memref<1xi32>
+    %i_ref = memref.view %self[%off_i][] : memref<?xi8> to memref<1xi32>
+    %curr_ref = memref.view %self[%c4][] : memref<?xi8> to memref<1xi32>
 
-    llvm.switch %state : i32 [
-        0: ^state0,
-        1: ^state1
-    ], ^done
+    // State machine: init (state 0) or advance (state 1), then check + yield
+    %c0_i32 = arith.constant 0 : i32
+    %is_init = arith.cmpi eq, %state, %c0_i32 : i32
+    scf.if %is_init {
+        %one = arith.constant 1 : i32
+        memref.store %one, %i_ref[%c0] : memref<1xi32>
+    } else {
+        %i_val = memref.load %i_ref[%c0] : memref<1xi32>
+        %one = arith.constant 1 : i32
+        %i_next = arith.addi %i_val, %one : i32
+        memref.store %i_next, %i_ref[%c0] : memref<1xi32>
+    }
 
-^state0:  // Initial: i = 1
-    %one = arith.constant 1 : i32
-    llvm.store %one, %i_ptr : i32
-    llvm.br ^check
-
-^state1:  // After yield: i <- i + 1
-    %i_val = llvm.load %i_ptr : i32
-    %i_plus_1 = arith.addi %i_val, %one : i32
-    llvm.store %i_plus_1, %i_ptr : i32
-    llvm.br ^check
-
-^check:
-    %i_current = llvm.load %i_ptr : i32
+    // Check: i > n?
+    %i_current = memref.load %i_ref[%c0] : memref<1xi32>
     %done_cond = arith.cmpi sgt, %i_current, %n : i32
-    llvm.cond_br %done_cond, ^done, ^yield
-
-^yield:
-    %i_for_yield = llvm.load %i_ptr : i32
-    %product = arith.muli %i_for_yield, %factor : i32
-    %curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr
-    llvm.store %product, %curr_ptr : i32
-    %s1 = arith.constant 1 : i32
-    llvm.store %s1, %state_ptr : i32
-    %true = arith.constant true
-    llvm.return %true : i1
-
-^done:
-    %neg1 = arith.constant -1 : i32
-    llvm.store %neg1, %state_ptr : i32
-    %false = arith.constant false
-    llvm.return %false : i1
+    %result = scf.if %done_cond -> i1 {
+        // Done
+        %neg1 = arith.constant -1 : i32
+        memref.store %neg1, %state_ref[%c0] : memref<1xi32>
+        scf.yield %false : i1
+    } else {
+        // Yield: current = i * factor
+        %product = arith.muli %i_current, %factor : i32
+        memref.store %product, %curr_ref[%c0] : memref<1xi32>
+        %c1_i32 = arith.constant 1 : i32
+        memref.store %c1_i32, %state_ref[%c0] : memref<1xi32>
+        scf.yield %true : i1
+    }
+    func.return %result : i1
 }
 ```
 
 ### 6.3 For-Each Loop: `for x in numbers do ...`
 
 ```mlir
-// Allocate seq struct on stack
-%seq_alloca = llvm.alloca 1 x !seq_int_0 : !llvm.ptr
-llvm.store %seq_val, %seq_alloca : !seq_int_0
+// Allocate seq struct on stack — memref<Nxi8> flat buffer
+%seq_buf = memref.alloca() : memref<Nxi8>
+// Initialize state=0 via memref.store at offset 0
 
-llvm.br ^loop_check
-
-^loop_check:
-    %has_next = llvm.call @seq_123_moveNext(%seq_alloca) : (!llvm.ptr) -> i1
-    llvm.cond_br %has_next, ^loop_body, ^loop_done
-
-^loop_body:
-    %curr_ptr = llvm.getelementptr %seq_alloca[0, 1] : !llvm.ptr
-    %x = llvm.load %curr_ptr : i32
+// Iteration via scf.while
+scf.while : () -> () {
+    %has_next = func.call @seq_123_moveNext(%seq_buf) : (memref<?xi8>) -> i1
+    scf.condition(%has_next)
+} do {
+    // Extract current value via memref.view at current field offset
+    %curr_ref = memref.view %seq_buf[%c4][] : memref<Nxi8> to memref<1xi32>
+    %x = memref.load %curr_ref[%c0] : memref<1xi32>
     // ... loop body using %x ...
-    llvm.br ^loop_check
-
-^loop_done:
+    scf.yield
+}
 ```
 
 ## 7. Validation

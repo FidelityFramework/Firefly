@@ -65,9 +65,10 @@ UTF-8 Fat Pointer
 Linux x86_64 implementation:
 
 ```mlir
-// Sys.write(fd=1, buffer=ptr, length=len)
-%fd = llvm.mlir.constant(1 : i32) : i32
-%result = llvm.call @write(%fd, %ptr, %len) : (i32, !llvm.ptr, i64) -> i64
+// Sys.write(fd=1, buffer=str, length=len)
+%fd = arith.constant 1 : i32
+%len = memref.dim %str, %c0 : memref<?xi8>
+%written = func.call @Sys.write(%fd, %str) : (i32, memref<?xi8>) -> i64
 ```
 
 The syscall is wrapped with newline handling for `writeln`.
@@ -77,11 +78,12 @@ The syscall is wrapped with newline handling for `writeln`.
 Alex generates the native entry point:
 
 ```mlir
-llvm.func @main() -> i32 {
+func.func @main() -> i32 {
   // Module initialization
   // Call user's entry point (module-level statements)
   // Return 0
-  llvm.return %zero : i32
+  %zero = arith.constant 0 : i32
+  func.return %zero : i32
 }
 ```
 
@@ -90,7 +92,7 @@ llvm.func @main() -> i32 {
 String literals are emitted as global constants:
 
 ```mlir
-llvm.mlir.global private constant @str_0("Hello, World!\0A\00") : !llvm.array<15 x i8>
+memref.global private constant @str_0 : memref<15xi8> = dense<[72,101,108,108,111,44,32,87,111,114,108,100,33,10,0]>
 ```
 
 ---
@@ -129,18 +131,17 @@ This sample establishes the fundamental coeffect pattern: metadata computed befo
 
 ```mlir
 module {
-  llvm.mlir.global private constant @str_0("Hello, World!\0A\00") : !llvm.array<15 x i8>
+  memref.global private constant @str_0 : memref<14xi8> = dense<[72,101,108,108,111,44,32,87,111,114,108,100,33,10]>
 
-  llvm.func @main() -> i32 {
-    %0 = llvm.mlir.addressof @str_0 : !llvm.ptr
-    %1 = llvm.mlir.constant(14 : i64) : i64
-    %2 = llvm.mlir.constant(1 : i32) : i32
-    %3 = llvm.call @write(%2, %0, %1) : (i32, !llvm.ptr, i64) -> i64
-    %4 = llvm.mlir.constant(0 : i32) : i32
-    llvm.return %4 : i32
+  func.func @main() -> i32 {
+    %str = memref.get_global @str_0 : memref<14xi8>
+    %fd = arith.constant 1 : i32
+    %written = func.call @Sys.write(%fd, %str) : (i32, memref<14xi8>) -> i64
+    %zero = arith.constant 0 : i32
+    func.return %zero : i32
   }
 
-  llvm.func @write(i32, !llvm.ptr, i64) -> i64
+  func.func private @Sys.write(i32, memref<?xi8>) -> i64
 }
 ```
 

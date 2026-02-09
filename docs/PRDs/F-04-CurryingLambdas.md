@@ -169,25 +169,25 @@ The ClosureLayout coeffect exists but contains no captures - this sample has no 
 
 ```mlir
 // greet_stage2: receives pre-filled salutation, takes name
-llvm.func @greet_stage2(%salutation: !llvm.ptr, %sal_len: i64,
-                        %name: !llvm.ptr, %name_len: i64) {
+// Strings are memref<?xi8> — no separate length parameter
+func.func @greet_stage2(%salutation: memref<?xi8>, %name: memref<?xi8>) {
   // Build interpolated string
   // Call Console.writeln
 }
 
 // sayHello thunk creation
-llvm.func @main() -> i32 {
+func.func @main() -> i32 {
   // Create thunk with pre-filled "Hello"
-  %hello_ptr = llvm.mlir.addressof @str_hello
-  %hello_len = llvm.mlir.constant(5 : i64)
+  %hello = memref.get_global @str_hello : memref<5xi8>
 
   // Read name
-  %name = llvm.call @console_readln_from(...)
+  %name = func.call @Console.readln() : () -> memref<?xi8>
 
   // Apply thunk (call greet_stage2 with both args)
-  llvm.call @greet_stage2(%hello_ptr, %hello_len, %name, %name_len)
+  func.call @greet_stage2(%hello, %name) : (memref<?xi8>, memref<?xi8>) -> ()
 
-  llvm.return %zero
+  %zero = arith.constant 0 : i32
+  func.return %zero : i32
 }
 ```
 

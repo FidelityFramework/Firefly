@@ -105,7 +105,7 @@ From the spec audit, these constraints MUST be honored:
 3. **Escaping Closure Classification** (closure-representation.md §8.3): Mappers/predicates are escaping (passed as values), use closure struct not parameter-passing
 4. **Struct Pointer Passing** (lazy-representation.md §4.1): MoveNext receives pointer to containing struct
 5. **Module-Level Exclusion** (lazy-representation.md §5.1): Module-level bindings are NOT captured
-6. **Backend-Specific Operations** (backend-lowering.md §3): Taking function address requires `llvm.mlir.addressof`, struct manipulation requires `llvm.insertvalue`/`llvm.extractvalue`
+6. **Backend-Specific Operations** (backend-lowering.md §3): Taking function address uses `index` type; struct/record fields accessed via `memref.view`/`memref.load`/`memref.store` on flat byte buffers
 
 ### Spec Gap Identified and Addressed
 
@@ -277,12 +277,24 @@ let mapped = Seq.map mapper innerSeq
 The wrapper struct creation performs **value copies**:
 
 ```mlir
-// Create map wrapper struct - COPIES both inner and mapper
-%undef = llvm.mlir.undef : !map_seq_type
-%s0 = llvm.insertvalue %zero, %undef[0] : !map_seq_type     // state = 0
-%s1 = llvm.insertvalue %code_ptr, %s0[2] : !map_seq_type    // code_ptr
-%s2 = llvm.insertvalue %inner_seq_VAL, %s1[3] : !map_seq_type  // COPY inner seq
-%s3 = llvm.insertvalue %mapper_VAL, %s2[4] : !map_seq_type     // COPY mapper closure
+// Create map wrapper — memref<Nxi8> flat byte buffer
+// Fields stored at known byte offsets via memref.view + memref.store
+%wrapper = memref.alloca() : memref<Nxi8>
+
+// state = 0 (at offset 0)
+%state_ref = memref.reinterpret_cast %wrapper to offset: [0], sizes: [1], strides: [1] : memref<Nxi8> to memref<1xi32>
+%zero = arith.constant 0 : i32
+memref.store %zero, %state_ref[%c0] : memref<1xi32>
+
+// MoveNext code_ptr (at offset 8)
+%moveNext_ref = memref.view %wrapper[%c8][] : memref<Nxi8> to memref<1xindex>
+memref.store %code_ptr, %moveNext_ref[%c0] : memref<1xindex>
+
+// COPY inner seq bytes (at inner_offset)
+// ... memref byte copy from inner_seq into wrapper at inner_offset ...
+
+// COPY mapper closure bytes (at mapper_offset)
+// ... memref byte copy from mapper into wrapper at mapper_offset ...
 ```
 
 **Why this matters:**
@@ -290,22 +302,26 @@ The wrapper struct creation performs **value copies**:
 2. **Iteration**: Multiple iterations of the same wrapper are independent
 3. **No aliasing**: No shared mutable state between wrappers
 
-**Consequence for closure invocation**: When invoking the mapper/predicate closure, we extract the flat closure value and pass captures as arguments:
+**Consequence for closure invocation**: When invoking the mapper/predicate closure, we view the flat closure within the wrapper's byte buffer and extract code_ptr + captures:
 
 ```mlir
-// Extract mapper closure (value copy in struct)
-%mapper_ptr = llvm.getelementptr %self[0, 4] : !llvm.ptr
-%mapper = llvm.load %mapper_ptr : !mapper_closure_type
+// View mapper closure within wrapper (at mapper_offset)
+%mapper_ref = memref.view %self[%mapper_offset][] : memref<Nxi8> to memref<closure_size x i8>
 
-// Extract code_ptr and captures (if any)
-%code_ptr = llvm.extractvalue %mapper[0] : !mapper_closure_type
-%cap0 = llvm.extractvalue %mapper[1] : !mapper_closure_type  // if captures exist
+// Load code_ptr (at offset 0 within closure)
+%code_ref = memref.reinterpret_cast %mapper_ref to offset: [0], sizes: [1], strides: [1]
+    : memref<closure_size x i8> to memref<1xindex>
+%code_ptr = memref.load %code_ref[%c0] : memref<1xindex>
+
+// Load captures (at successive byte offsets within closure)
+%cap0_ref = memref.view %mapper_ref[%cap0_offset][] : memref<closure_size x i8> to memref<1x!cap0_type>
+%cap0 = memref.load %cap0_ref[%c0] : memref<1x!cap0_type>
 
 // Invoke: code_ptr(captures..., value)
-%result = llvm.call %code_ptr(%cap0, %inner_val) : (...) -> !output_type
+%result = func.call_indirect %code_ptr(%cap0, %inner_val) : (index, ...) -> !output_type
 ```
 
-**Critical**: The closure is stored **by value** in the wrapper struct. When invoking, we extract the code pointer and captures from the inlined closure, not from a pointer indirection.
+**Critical**: The closure is stored **by value** (bytes copied) in the wrapper's byte buffer. When invoking, we view the code pointer and captures from the inlined closure bytes, not from a pointer indirection.
 
 ## 4. FNCS Layer Implementation
 
@@ -459,39 +475,40 @@ let mapSeqStructType (outElemType: MLIRType) (innerSeqType: MLIRType) (mapperTyp
 /// 5. Store in self.current
 /// 6. Return true
 let emitMapMoveNext (layout: MapSeqLayout) : MLIROp list =
-    // MoveNext signature: (ptr) -> i1
+    // MoveNext signature: (memref<Nxi8>) -> i1
+    // Seq layout: memref<Nxi8> flat byte buffer
+    //   [0..] state tag, [tag_size..] current slot, [current_end..] inner seq, [inner_end..] mapper closure
 
     mlir {
-        // Get pointer to inner sequence (inlined at fixed offset)
-        yield "%inner_ptr = llvm.getelementptr %self[0, 3] : !llvm.ptr"
+        // View inner sequence within self (at fixed byte offset)
+        yield "%inner_ref = memref.view %self[%inner_offset][] : memref<Nxi8> to memref<Mxi8>"
 
         // Call inner's MoveNext
-        yield "%inner_moveNext_ptr = llvm.getelementptr %inner_ptr[0, 2] : !llvm.ptr"
-        yield "%inner_moveNext = llvm.load %inner_moveNext_ptr : !llvm.ptr"
-        yield "%has_next = llvm.call %inner_moveNext(%inner_ptr) : (!llvm.ptr) -> i1"
-        yield "llvm.cond_br %has_next, ^transform, ^done"
+        yield "%has_next = func.call @inner_MoveNext(%inner_ref) : (memref<Mxi8>) -> i1"
 
-        // Transform block
-        yield "^transform:"
-        // Get inner's current value
-        yield "%inner_curr_ptr = llvm.getelementptr %inner_ptr[0, 1] : !llvm.ptr"
-        yield "%inner_val = llvm.load %inner_curr_ptr"
+        // Conditionally transform
+        yield "%result = scf.if %has_next -> (i1) {"
+
+        // Get inner's current value (view into inner seq's current slot)
+        yield "  %inner_curr_ref = memref.view %inner_ref[%curr_offset][] : memref<Mxi8> to memref<1x!elem_type>"
+        yield "  %inner_val = memref.load %inner_curr_ref[%c0] : memref<1x!elem_type>"
 
         // === MAPPER CLOSURE INVOCATION (Flat Closure Pattern) ===
-        // The mapper is stored as a flat closure: {code_ptr, cap₀, cap₁, ...}
-        // We extract code_ptr and each capture, then call with captures prepended
+        // The mapper is stored as a flat closure in the seq's byte buffer.
+        // View it, extract code_ptr and each capture, then call with captures prepended.
 
-        // Get mapper closure (inlined at offset 4)
-        yield "%mapper_ptr = llvm.getelementptr %self[0, 4] : !llvm.ptr"
-        yield "%mapper = llvm.load %mapper_ptr : !mapper_closure_type"
+        // View mapper closure (at mapper offset within self)
+        yield "  %mapper_ref = memref.view %self[%mapper_offset][] : memref<Nxi8> to memref<closure_size x i8>"
 
-        // Extract code_ptr (always at index 0)
-        yield "%mapper_code = llvm.extractvalue %mapper[0] : !mapper_closure_type"
+        // Load code_ptr (at byte offset 0 within mapper closure)
+        yield "  %code_ref = memref.reinterpret_cast %mapper_ref to offset: [0], sizes: [1], strides: [1] : memref<closure_size x i8> to memref<1xindex>"
+        yield "  %mapper_code = memref.load %code_ref[%c0] : memref<1xindex>"
 
-        // Extract captures (indices 1, 2, 3, ... based on MapperLayout.Captures)
-        // For each capture at index i (1-based in closure struct):
+        // Load captures (at successive byte offsets within closure)
+        // For each capture at index i:
         for i, cap in layout.MapperLayout.Captures |> List.indexed do
-            yield sprintf "%%cap_%d = llvm.extractvalue %%mapper[%d] : !mapper_closure_type" i (i + 1)
+            yield sprintf "  %%cap_%d_ref = memref.view %%mapper_ref[%%cap_%d_offset][] : memref<closure_size x i8> to memref<1x!cap_%d_type>" i i i
+            yield sprintf "  %%cap_%d = memref.load %%cap_%d_ref[%%c0] : memref<1x!cap_%d_type>" i i i
 
         // Call mapper: code_ptr(cap₀, cap₁, ..., inner_val) -> B
         // Following flat closure calling convention from C-01:
@@ -499,30 +516,29 @@ let emitMapMoveNext (layout: MapSeqLayout) : MLIROp list =
         // - Original parameters come LAST
         let capArgs = layout.MapperLayout.Captures |> List.mapi (fun i _ -> sprintf "%%cap_%d" i) |> String.concat ", "
         let callArgs = if capArgs = "" then "%inner_val" else sprintf "%s, %%inner_val" capArgs
-        yield sprintf "%%result = llvm.call %%mapper_code(%s) : (...) -> !output_elem_type" callArgs
+        yield sprintf "  %%result_val = func.call_indirect %%mapper_code(%s) : (index, ...) -> !output_elem_type" callArgs
 
-        // Store transformed value
-        yield "%curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr"
-        yield "llvm.store %result, %curr_ptr"
-        yield "%true = arith.constant true"
-        yield "llvm.return %true : i1"
-
-        // Done block
-        yield "^done:"
-        yield "%false = arith.constant false"
-        yield "llvm.return %false : i1"
+        // Store transformed value into self's current slot
+        yield "  %curr_ref = memref.view %self[%curr_offset][] : memref<Nxi8> to memref<1x!output_elem_type>"
+        yield "  memref.store %result_val, %curr_ref[%c0] : memref<1x!output_elem_type>"
+        yield "  %true = arith.constant true"
+        yield "  scf.yield %true : i1"
+        yield "} else {"
+        yield "  %false = arith.constant false"
+        yield "  scf.yield %false : i1"
+        yield "}"
+        yield "func.return %result : i1"
     }
 ```
 
 **Mapper Invocation SSA Breakdown** (for N captures):
 | SSA | Purpose |
 |-----|---------|
-| 1 | GEP to mapper location |
-| 1 | Load mapper closure |
-| 1 | Extract code_ptr |
-| N | Extract each capture |
-| 1 | Call mapper |
-| **Total** | **4 + N** |
+| 1 | View to mapper location |
+| 1 | Load code_ptr via reinterpret_cast |
+| N | View + load each capture |
+| 1 | Call mapper (func.call_indirect) |
+| **Total** | **3 + 2N** |
 
 ### 5.3 Seq.filter MoveNext Implementation
 
@@ -536,38 +552,49 @@ let emitMapMoveNext (layout: MapSeqLayout) : MLIROp list =
 /// 5. If true: store in self.current, return true
 /// 6. If false: continue loop
 let emitFilterMoveNext (layout: FilterSeqLayout) : MLIROp list =
+    // Seq layout: memref<Nxi8> flat byte buffer
+    //   [0..] state, [..] current slot, [..] inner seq, [..] predicate closure
     mlir {
-        yield "llvm.br ^loop"
+        // Loop: keep calling inner MoveNext until predicate matches or exhausted
+        yield "%result = scf.while (%dummy = %c0) : (index) -> i1 {"
 
-        yield "^loop:"
         // Call inner MoveNext
-        yield "%inner_ptr = llvm.getelementptr %self[0, 3] : !llvm.ptr"
-        yield "%inner_moveNext_ptr = llvm.getelementptr %inner_ptr[0, 2] : !llvm.ptr"
-        yield "%inner_moveNext = llvm.load %inner_moveNext_ptr : !llvm.ptr"
-        yield "%has_next = llvm.call %inner_moveNext(%inner_ptr) : (!llvm.ptr) -> i1"
-        yield "llvm.cond_br %has_next, ^check, ^done"
+        yield "  %inner_ref = memref.view %self[%inner_offset][] : memref<Nxi8> to memref<Mxi8>"
+        yield "  %has_next = func.call @inner_MoveNext(%inner_ref) : (memref<Mxi8>) -> i1"
 
-        yield "^check:"
-        // Get inner current
-        yield "%inner_curr_ptr = llvm.getelementptr %inner_ptr[0, 1] : !llvm.ptr"
-        yield "%val = llvm.load %inner_curr_ptr"
+        // If no more elements, exit loop with false
+        yield "  %check = scf.if %has_next -> (i1) {"
+
+        // Get inner current value
+        yield "    %inner_curr_ref = memref.view %inner_ref[%curr_offset][] : memref<Mxi8> to memref<1x!elem_type>"
+        yield "    %val = memref.load %inner_curr_ref[%c0] : memref<1x!elem_type>"
 
         // Apply predicate (flat closure)
-        yield "%pred_ptr = llvm.getelementptr %self[0, 4] : !llvm.ptr"
-        yield "%pred = llvm.load %pred_ptr"
-        yield "%pred_code = llvm.extractvalue %pred[0]"
-        yield "%matches = llvm.call %pred_code(..., %val) : (...) -> i1"
-        yield "llvm.cond_br %matches, ^yield, ^loop"
+        yield "    %pred_ref = memref.view %self[%pred_offset][] : memref<Nxi8> to memref<pred_size x i8>"
+        yield "    %pred_code_ref = memref.reinterpret_cast %pred_ref to offset: [0], sizes: [1], strides: [1] : ... to memref<1xindex>"
+        yield "    %pred_code = memref.load %pred_code_ref[%c0] : memref<1xindex>"
+        yield "    %matches = func.call_indirect %pred_code(..., %val) : (...) -> i1"
 
-        yield "^yield:"
-        yield "%curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr"
-        yield "llvm.store %val, %curr_ptr"
-        yield "%true = arith.constant true"
-        yield "llvm.return %true : i1"
+        yield "    %matched = scf.if %matches -> (i1) {"
+        // Store matched value in self's current slot
+        yield "      %curr_ref = memref.view %self[%curr_offset][] : memref<Nxi8> to memref<1x!elem_type>"
+        yield "      memref.store %val, %curr_ref[%c0] : memref<1x!elem_type>"
+        yield "      %true = arith.constant true"
+        yield "      scf.yield %true : i1"
+        yield "    } else {"
+        yield "      %false_inner = arith.constant false"
+        yield "      scf.yield %false_inner : i1"  // Continue loop
+        yield "    }"
+        yield "    scf.yield %matched : i1"
+        yield "  } else {"
+        yield "    %false = arith.constant false"
+        yield "    scf.yield %false : i1"
+        yield "  }"
 
-        yield "^done:"
-        yield "%false = arith.constant false"
-        yield "llvm.return %false : i1"
+        // condition: continue while check is false (not yet matched and not exhausted)
+        yield "  scf.condition %check"
+        yield "}"
+        yield "func.return %result : i1"
     }
 ```
 
@@ -584,40 +611,44 @@ let emitFilterMoveNext (layout: FilterSeqLayout) : MLIROp list =
 /// 6. Decrement remaining
 /// 7. Return true
 let emitTakeMoveNext (layout: TakeSeqLayout) : MLIROp list =
+    // Seq layout: memref<Nxi8> flat byte buffer
+    //   [0..] state, [..] current slot, [..] inner seq, [..] remaining count (i32)
     mlir {
-        // Check remaining
-        yield "%remaining_ptr = llvm.getelementptr %self[0, 4] : !llvm.ptr"
-        yield "%remaining = llvm.load %remaining_ptr : i32"
+        // Load remaining count
+        yield "%remaining_ref = memref.view %self[%remaining_offset][] : memref<Nxi8> to memref<1xi32>"
+        yield "%remaining = memref.load %remaining_ref[%c0] : memref<1xi32>"
         yield "%zero = arith.constant 0 : i32"
         yield "%has_remaining = arith.cmpi sgt, %remaining, %zero : i32"
-        yield "llvm.cond_br %has_remaining, ^try_inner, ^done"
 
-        yield "^try_inner:"
-        // Call inner MoveNext
-        yield "%inner_ptr = llvm.getelementptr %self[0, 3] : !llvm.ptr"
-        yield "%inner_moveNext_ptr = llvm.getelementptr %inner_ptr[0, 2] : !llvm.ptr"
-        yield "%inner_moveNext = llvm.load %inner_moveNext_ptr : !llvm.ptr"
-        yield "%has_next = llvm.call %inner_moveNext(%inner_ptr) : (!llvm.ptr) -> i1"
-        yield "llvm.cond_br %has_next, ^yield, ^done"
+        yield "%result = scf.if %has_remaining -> (i1) {"
+        // Try inner MoveNext
+        yield "  %inner_ref = memref.view %self[%inner_offset][] : memref<Nxi8> to memref<Mxi8>"
+        yield "  %has_next = func.call @inner_MoveNext(%inner_ref) : (memref<Mxi8>) -> i1"
 
-        yield "^yield:"
-        // Copy current
-        yield "%inner_curr_ptr = llvm.getelementptr %inner_ptr[0, 1] : !llvm.ptr"
-        yield "%val = llvm.load %inner_curr_ptr"
-        yield "%curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr"
-        yield "llvm.store %val, %curr_ptr"
+        yield "  %inner_result = scf.if %has_next -> (i1) {"
+        // Copy current value from inner to self
+        yield "    %inner_curr_ref = memref.view %inner_ref[%curr_offset][] : memref<Mxi8> to memref<1x!elem_type>"
+        yield "    %val = memref.load %inner_curr_ref[%c0] : memref<1x!elem_type>"
+        yield "    %curr_ref = memref.view %self[%curr_offset][] : memref<Nxi8> to memref<1x!elem_type>"
+        yield "    memref.store %val, %curr_ref[%c0] : memref<1x!elem_type>"
 
         // Decrement remaining
-        yield "%one = arith.constant 1 : i32"
-        yield "%new_remaining = arith.subi %remaining, %one : i32"
-        yield "llvm.store %new_remaining, %remaining_ptr"
+        yield "    %one = arith.constant 1 : i32"
+        yield "    %new_remaining = arith.subi %remaining, %one : i32"
+        yield "    memref.store %new_remaining, %remaining_ref[%c0] : memref<1xi32>"
 
-        yield "%true = arith.constant true"
-        yield "llvm.return %true : i1"
-
-        yield "^done:"
-        yield "%false = arith.constant false"
-        yield "llvm.return %false : i1"
+        yield "    %true = arith.constant true"
+        yield "    scf.yield %true : i1"
+        yield "  } else {"
+        yield "    %false_inner = arith.constant false"
+        yield "    scf.yield %false_inner : i1"
+        yield "  }"
+        yield "  scf.yield %inner_result : i1"
+        yield "} else {"
+        yield "  %false = arith.constant false"
+        yield "  scf.yield %false : i1"
+        yield "}"
+        yield "func.return %result : i1"
     }
 ```
 
@@ -636,43 +667,40 @@ let witnessSeqFold
     : (MLIROp list * TransferResult) =
 
     mlir {
-        // Allocate seq on stack for mutation
-        yield "%seq_alloca = llvm.alloca 1 x !seq_type : !llvm.ptr"
-        yield "llvm.store %seq_val, %seq_alloca"
+        // Allocate accumulator on stack (mutable slot)
+        yield "%acc_ref = memref.alloca() : memref<1x!state_type>"
+        yield "memref.store %initial_val, %acc_ref[%c0] : memref<1x!state_type>"
 
-        // Allocate accumulator
-        yield "%acc_alloca = llvm.alloca 1 x !state_type : !llvm.ptr"
-        yield "llvm.store %initial_val, %acc_alloca"
+        // Loop: call MoveNext until exhausted
+        yield "scf.while () : () -> () {"
 
-        yield "llvm.br ^loop"
+        // Call MoveNext on source sequence
+        yield "  %has_next = func.call @seq_MoveNext(%seq_ref) : (memref<Nxi8>) -> i1"
+        yield "  scf.condition %has_next"
 
-        yield "^loop:"
-        // Call MoveNext
-        yield "%moveNext_ptr = llvm.getelementptr %seq_alloca[0, 2] : !llvm.ptr"
-        yield "%moveNext = llvm.load %moveNext_ptr : !llvm.ptr"
-        yield "%has_next = llvm.call %moveNext(%seq_alloca) : (!llvm.ptr) -> i1"
-        yield "llvm.cond_br %has_next, ^body, ^done"
+        yield "} do {"
 
-        yield "^body:"
-        // Get current element
-        yield "%curr_ptr = llvm.getelementptr %seq_alloca[0, 1] : !llvm.ptr"
-        yield "%elem = llvm.load %curr_ptr"
+        // Get current element from sequence's current slot
+        yield "  %curr_ref = memref.view %seq_ref[%curr_offset][] : memref<Nxi8> to memref<1x!elem_type>"
+        yield "  %elem = memref.load %curr_ref[%c0] : memref<1x!elem_type>"
 
         // Get current accumulator
-        yield "%acc = llvm.load %acc_alloca"
+        yield "  %acc = memref.load %acc_ref[%c0] : memref<1x!state_type>"
 
-        // Apply folder (flat closure)
-        yield "%folder_code = llvm.extractvalue %folder[0]"
-        // ... extract captures ...
-        yield "%new_acc = llvm.call %folder_code(..., %acc, %elem)"
+        // Apply folder (flat closure — extract code_ptr and captures via memref ops)
+        yield "  %folder_code_ref = memref.reinterpret_cast %folder_ref to offset: [0], sizes: [1], strides: [1] : ... to memref<1xindex>"
+        yield "  %folder_code = memref.load %folder_code_ref[%c0] : memref<1xindex>"
+        // ... load captures via memref.view at successive offsets ...
+        yield "  %new_acc = func.call_indirect %folder_code(..., %acc, %elem) : (...) -> !state_type"
 
         // Store new accumulator
-        yield "llvm.store %new_acc, %acc_alloca"
-        yield "llvm.br ^loop"
+        yield "  memref.store %new_acc, %acc_ref[%c0] : memref<1x!state_type>"
+        yield "  scf.yield"
+        yield "}"
 
-        yield "^done:"
-        yield "%result = llvm.load %acc_alloca"
-        yield "llvm.return %result"
+        // Return final accumulator
+        yield "%result = memref.load %acc_ref[%c0] : memref<1x!state_type>"
+        yield "func.return %result : !state_type"
     }
 ```
 
@@ -781,103 +809,115 @@ take.MoveNext calls map.MoveNext calls filter.MoveNext calls inner.MoveNext
 // Source: Seq.map (fun x -> x * 2) numbers
 // where numbers: seq { yield 1; yield 2; yield 3 }
 
-// Inner seq type (from C-06)
-!inner_seq = !llvm.struct<(i32, i32, ptr)>
-
-// Mapper closure type (no captures - just code_ptr)
-!mapper = !llvm.struct<(ptr)>
-
-// MapSeq wrapper type
-!map_seq = !llvm.struct<(i32, i32, ptr, !inner_seq, !mapper)>
+// All seq types are flat byte buffers: memref<Nxi8>
+// Inner seq (from C-06): memref<inner_size x i8>
+//   [0..3] state (i32), [4..7] current (i32), [8..15] moveNext code_ptr (index)
+// Mapper closure: memref<mapper_size x i8>
+//   [0..7] code_ptr (index), [8..] captures (if any)
+// MapSeq wrapper: memref<map_size x i8>
+//   [0..3] state, [4..7] current, [8..15] moveNext, [16..] inner_seq bytes, [...] mapper bytes
 
 // Map MoveNext function
-llvm.func @map_double_moveNext(%self: !llvm.ptr) -> i1 {
-    // Get inner seq pointer
-    %inner_ptr = llvm.getelementptr %self[0, 3] : !llvm.ptr
+func.func @map_double_moveNext(%self: memref<map_size x i8>) -> i1 {
+    // View inner seq within self (at inner_offset)
+    %inner_ref = memref.view %self[%inner_offset][] : memref<map_size x i8> to memref<inner_size x i8>
 
     // Call inner MoveNext
-    %inner_moveNext_ptr = llvm.getelementptr %inner_ptr[0, 2] : !llvm.ptr
-    %inner_moveNext = llvm.load %inner_moveNext_ptr : !llvm.ptr
-    %has_next = llvm.call %inner_moveNext(%inner_ptr) : (!llvm.ptr) -> i1
-    llvm.cond_br %has_next, ^transform, ^done
+    %has_next = func.call @inner_MoveNext(%inner_ref) : (memref<inner_size x i8>) -> i1
 
-^transform:
-    // Get inner current
-    %inner_curr_ptr = llvm.getelementptr %inner_ptr[0, 1] : !llvm.ptr
-    %inner_val = llvm.load %inner_curr_ptr : i32
+    %result = scf.if %has_next -> (i1) {
+        // Get inner current (view into inner seq's current slot)
+        %inner_curr_ref = memref.view %inner_ref[%c4][] : memref<inner_size x i8> to memref<1xi32>
+        %inner_val = memref.load %inner_curr_ref[%c0] : memref<1xi32>
 
-    // Apply mapper (x * 2)
-    %two = arith.constant 2 : i32
-    %result = arith.muli %inner_val, %two : i32
+        // Apply mapper (x * 2)
+        %two = arith.constant 2 : i32
+        %mapped = arith.muli %inner_val, %two : i32
 
-    // Store result
-    %curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr
-    llvm.store %result, %curr_ptr : i32
+        // Store result in self's current slot
+        %curr_ref = memref.view %self[%c4][] : memref<map_size x i8> to memref<1xi32>
+        memref.store %mapped, %curr_ref[%c0] : memref<1xi32>
 
-    %true = arith.constant true
-    llvm.return %true : i1
-
-^done:
-    %false = arith.constant false
-    llvm.return %false : i1
+        %true = arith.constant true
+        scf.yield %true : i1
+    } else {
+        %false = arith.constant false
+        scf.yield %false : i1
+    }
+    func.return %result : i1
 }
 
 // Creation: Seq.map (fun x -> x * 2) numbers
-// 1. Create inner seq (numbers)
-%inner_seq = ... // from C-06
+// 1. Create inner seq (numbers) — from C-06
+%inner_seq = ... // memref<inner_size x i8>
 
-// 2. Create mapper closure (just code_ptr for no-capture lambda)
-%mapper_code = llvm.mlir.addressof @double_func : !llvm.ptr
-%mapper_undef = llvm.mlir.undef : !mapper
-%mapper = llvm.insertvalue %mapper_code, %mapper_undef[0] : !mapper
+// 2. Allocate map wrapper
+%wrapper = memref.alloca() : memref<map_size x i8>
 
-// 3. Create map wrapper
+// 3. Initialize: state = 0
+%state_ref = memref.reinterpret_cast %wrapper to offset: [0], sizes: [1], strides: [1]
+    : memref<map_size x i8> to memref<1xi32>
 %zero = arith.constant 0 : i32
-%undef = llvm.mlir.undef : !map_seq
-%s0 = llvm.insertvalue %zero, %undef[0] : !map_seq
-%moveNext_ptr = llvm.mlir.addressof @map_double_moveNext : !llvm.ptr
-%s1 = llvm.insertvalue %moveNext_ptr, %s0[2] : !map_seq
-%s2 = llvm.insertvalue %inner_seq, %s1[3] : !map_seq
-%map_seq_val = llvm.insertvalue %mapper, %s2[4] : !map_seq
+memref.store %zero, %state_ref[%c0] : memref<1xi32>
+
+// 4. Store MoveNext code_ptr
+%moveNext_ref = memref.view %wrapper[%c8][] : memref<map_size x i8> to memref<1xindex>
+// ... store @map_double_moveNext address ...
+
+// 5. Copy inner seq bytes into wrapper
+// ... memref byte copy from %inner_seq into wrapper at inner_offset ...
+
+// 6. Store mapper closure (just code_ptr for no-capture lambda)
+%mapper_ref = memref.view %wrapper[%mapper_offset][] : memref<map_size x i8> to memref<1xindex>
+// ... store @double_func address ...
 ```
 
 ### 6.2 Seq.filter Example
 
 ```mlir
 // Source: Seq.filter (fun x -> x % 2 = 0) numbers
+// FilterSeq wrapper: memref<filter_size x i8>
+//   [0..3] state, [4..7] current, [8..15] moveNext, [16..] inner_seq, [...] predicate
 
-!filter_seq = !llvm.struct<(i32, i32, ptr, !inner_seq, !predicate)>
+func.func @filter_even_moveNext(%self: memref<filter_size x i8>) -> i1 {
+    %inner_ref = memref.view %self[%inner_offset][] : memref<filter_size x i8> to memref<inner_size x i8>
 
-llvm.func @filter_even_moveNext(%self: !llvm.ptr) -> i1 {
-    llvm.br ^loop
+    // Loop: keep calling inner MoveNext until predicate matches or exhausted
+    %result = scf.while (%found = %false_init) : (i1) -> i1 {
+        %has_next = func.call @inner_MoveNext(%inner_ref) : (memref<inner_size x i8>) -> i1
 
-^loop:
-    %inner_ptr = llvm.getelementptr %self[0, 3] : !llvm.ptr
-    %inner_moveNext_ptr = llvm.getelementptr %inner_ptr[0, 2] : !llvm.ptr
-    %inner_moveNext = llvm.load %inner_moveNext_ptr : !llvm.ptr
-    %has_next = llvm.call %inner_moveNext(%inner_ptr) : (!llvm.ptr) -> i1
-    llvm.cond_br %has_next, ^check, ^done
+        %check = scf.if %has_next -> (i1) {
+            // Get inner current
+            %inner_curr_ref = memref.view %inner_ref[%c4][] : memref<inner_size x i8> to memref<1xi32>
+            %val = memref.load %inner_curr_ref[%c0] : memref<1xi32>
 
-^check:
-    %inner_curr_ptr = llvm.getelementptr %inner_ptr[0, 1] : !llvm.ptr
-    %val = llvm.load %inner_curr_ptr : i32
+            // Check x % 2 == 0
+            %two = arith.constant 2 : i32
+            %rem = arith.remsi %val, %two : i32
+            %zero = arith.constant 0 : i32
+            %is_even = arith.cmpi eq, %rem, %zero : i32
 
-    // Check x % 2 == 0
-    %two = arith.constant 2 : i32
-    %rem = arith.remsi %val, %two : i32
-    %zero = arith.constant 0 : i32
-    %is_even = arith.cmpi eq, %rem, %zero : i32
-    llvm.cond_br %is_even, ^yield, ^loop
-
-^yield:
-    %curr_ptr = llvm.getelementptr %self[0, 1] : !llvm.ptr
-    llvm.store %val, %curr_ptr : i32
-    %true = arith.constant true
-    llvm.return %true : i1
-
-^done:
-    %false = arith.constant false
-    llvm.return %false : i1
+            %matched = scf.if %is_even -> (i1) {
+                // Store matched value in self's current slot
+                %curr_ref = memref.view %self[%c4][] : memref<filter_size x i8> to memref<1xi32>
+                memref.store %val, %curr_ref[%c0] : memref<1xi32>
+                %true = arith.constant true
+                scf.yield %true : i1
+            } else {
+                %not_yet = arith.constant false
+                scf.yield %not_yet : i1  // continue loop
+            }
+            scf.yield %matched : i1
+        } else {
+            %exhausted = arith.constant false
+            scf.yield %exhausted : i1
+        }
+        scf.condition %check
+    } do {
+        ^bb0(%prev: i1):
+        scf.yield %prev : i1
+    }
+    func.return %result : i1
 }
 ```
 
@@ -886,37 +926,32 @@ llvm.func @filter_even_moveNext(%self: !llvm.ptr) -> i1 {
 ```mlir
 // Source: Seq.fold (fun acc x -> acc + x) 0 numbers
 
-llvm.func @fold_sum(%folder: !folder_closure, %initial: i32, %seq_val: !seq_type) -> i32 {
-    // Allocate seq for mutation
-    %one = arith.constant 1 : i64
-    %seq_alloca = llvm.alloca %one x !seq_type : !llvm.ptr
-    llvm.store %seq_val, %seq_alloca : !seq_type
+func.func @fold_sum(%seq_ref: memref<Nxi8>, %initial: i32) -> i32 {
+    // Allocate accumulator on stack (mutable slot)
+    %acc_ref = memref.alloca() : memref<1xi32>
+    memref.store %initial, %acc_ref[%c0] : memref<1xi32>
 
-    // Accumulator
-    %acc_alloca = llvm.alloca %one x i32 : !llvm.ptr
-    llvm.store %initial, %acc_alloca : i32
+    // Loop: call MoveNext until exhausted
+    scf.while () : () -> () {
+        %has_next = func.call @seq_MoveNext(%seq_ref) : (memref<Nxi8>) -> i1
+        scf.condition %has_next
+    } do {
+        // Get current element from sequence's current slot
+        %curr_ref = memref.view %seq_ref[%c4][] : memref<Nxi8> to memref<1xi32>
+        %elem = memref.load %curr_ref[%c0] : memref<1xi32>
 
-    llvm.br ^loop
+        // Get current accumulator
+        %acc = memref.load %acc_ref[%c0] : memref<1xi32>
 
-^loop:
-    %moveNext_ptr = llvm.getelementptr %seq_alloca[0, 2] : !llvm.ptr
-    %moveNext = llvm.load %moveNext_ptr : !llvm.ptr
-    %has_next = llvm.call %moveNext(%seq_alloca) : (!llvm.ptr) -> i1
-    llvm.cond_br %has_next, ^body, ^done
+        // acc + x
+        %new_acc = arith.addi %acc, %elem : i32
+        memref.store %new_acc, %acc_ref[%c0] : memref<1xi32>
+        scf.yield
+    }
 
-^body:
-    %curr_ptr = llvm.getelementptr %seq_alloca[0, 1] : !llvm.ptr
-    %elem = llvm.load %curr_ptr : i32
-    %acc = llvm.load %acc_alloca : i32
-
-    // acc + x
-    %new_acc = arith.addi %acc, %elem : i32
-    llvm.store %new_acc, %acc_alloca : i32
-    llvm.br ^loop
-
-^done:
-    %result = llvm.load %acc_alloca : i32
-    llvm.return %result : i32
+    // Return final accumulator
+    %result = memref.load %acc_ref[%c0] : memref<1xi32>
+    func.return %result : i32
 }
 ```
 

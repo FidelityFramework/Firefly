@@ -80,26 +80,25 @@ No new Alex machinery needed beyond D-01.
 ### 5.1 WebKit Function Declarations
 
 ```mlir
-llvm.func @webkit_web_view_new() -> !llvm.ptr
-    attributes { "link" = "webkitgtk-6.0" }
-
-llvm.func @webkit_web_view_load_uri(!llvm.ptr, !llvm.ptr)
-    attributes { "link" = "webkitgtk-6.0" }
-
-llvm.func @webkit_web_view_load_html(!llvm.ptr, !llvm.ptr, !llvm.ptr)
-    attributes { "link" = "webkitgtk-6.0" }
+// NOTE: At the MLIR level, FFI pointer parameters use index type.
+// The MLIR→LLVM lowering pass converts index to !llvm.ptr at the backend boundary.
+func.func private @webkit_web_view_new() -> index attributes { "link" = "webkitgtk-6.0" }
+func.func private @webkit_web_view_load_uri(index, index) attributes { "link" = "webkitgtk-6.0" }
+func.func private @webkit_web_view_load_html(index, index, index) attributes { "link" = "webkitgtk-6.0" }
 ```
 
 ### 5.2 WebView Creation and Loading
 
 ```mlir
 // let webview = webkit_web_view_new()
-%webview = llvm.call @webkit_web_view_new() : () -> !llvm.ptr
+%webview = func.call @webkit_web_view_new() : () -> index
 
 // webkit_web_view_load_html(webview, html, "about:blank")
-%html = llvm.mlir.addressof @html_content : !llvm.ptr
-%base = llvm.mlir.addressof @about_blank : !llvm.ptr
-llvm.call @webkit_web_view_load_html(%webview, %html, %base)
+%html_ref = memref.get_global @html_content : memref<...xi8>
+%html = memref.extract_aligned_pointer_as_index %html_ref : memref<...xi8> -> index
+%base_ref = memref.get_global @about_blank : memref<11xi8>
+%base = memref.extract_aligned_pointer_as_index %base_ref : memref<11xi8> -> index
+func.call @webkit_web_view_load_html(%webview, %html, %base) : (index, index, index) -> ()
 ```
 
 ## 6. Validation

@@ -45,8 +45,11 @@ Console.writeln $"Restored: {restored}"
 **Implementation**: Byte swap on little-endian architectures (x86_64), no-op on big-endian.
 
 ```mlir
-// htons implementation (x86_64)
-%swapped = llvm.intr.bswap(%value) : i16
+// htons implementation (x86_64) — decomposed to portable shift + mask + or
+%c8 = arith.constant 8 : i16
+%hi = arith.shrui %value, %c8 : i16
+%lo = arith.shli %value, %c8 : i16
+%swapped = arith.ori %hi, %lo : i16
 ```
 
 ### 3.2 Bit Reinterpretation Intrinsics
@@ -58,11 +61,11 @@ Console.writeln $"Restored: {restored}"
 | `Bits.float64ToInt64Bits` | `float64 -> int64` | Double to int64 pattern |
 | `Bits.int64BitsToFloat64` | `int64 -> float64` | Int64 pattern to double |
 
-**Implementation**: LLVM `bitcast` - zero cost, no computation.
+**Implementation**: `arith.bitcast` - zero cost, no computation.
 
 ```mlir
-%bits = llvm.bitcast %float_val : f64 to i64
-%restored = llvm.bitcast %bits : i64 to f64
+%bits = arith.bitcast %float_val : f64 to i64
+%restored = arith.bitcast %bits : i64 to f64
 ```
 
 ### 3.3 FNCS Intrinsic Definitions
@@ -124,20 +127,24 @@ ModuleOrNamespace: BitsTest
 ### 5.1 Byte Swap
 
 ```mlir
-// Bits.htons
-%port = llvm.mlir.constant(8080 : i16) : i16
-%network_port = llvm.intr.bswap(%port) : i16
+// Bits.htons — portable byte swap via arith shift/mask operations
+%port = arith.constant 8080 : i16
+// Decompose to shift + mask + or (no llvm.intr.bswap in portable MLIR)
+%c8 = arith.constant 8 : i16
+%hi = arith.shrui %port, %c8 : i16
+%lo = arith.shli %port, %c8 : i16
+%network_port = arith.ori %hi, %lo : i16
 ```
 
 ### 5.2 Bitcast
 
 ```mlir
 // Bits.float64ToInt64Bits
-%f = llvm.mlir.constant(3.14 : f64) : f64
-%bits = llvm.bitcast %f : f64 to i64
+%f = arith.constant 3.14 : f64
+%bits = arith.bitcast %f : f64 to i64
 
 // Bits.int64BitsToFloat64
-%restored = llvm.bitcast %bits : i64 to f64
+%restored = arith.bitcast %bits : i64 to f64
 ```
 
 ---

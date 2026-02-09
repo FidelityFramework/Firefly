@@ -74,12 +74,15 @@ Option<T> Layout
 **Implementation**:
 
 ```mlir
-// Option.isSome
-%tag = llvm.extractvalue %opt[0] : !option_t
-%is_some = llvm.icmp "eq" %tag, 1 : i8
+// Option.isSome — Option is memref<9xi8> (1 tag + 8 payload)
+%tag_ref = memref.reinterpret_cast %opt to offset: [0], sizes: [1], strides: [1] : memref<9xi8> to memref<1xi8>
+%tag = memref.load %tag_ref[%c0] : memref<1xi8>
+%c1 = arith.constant 1 : i8
+%is_some = arith.cmpi eq, %tag, %c1 : i8
 
-// Option.get
-%value = llvm.extractvalue %opt[1] : !option_t
+// Option.get — extract payload via memref.view
+%payload_ref = memref.view %opt[%c1][] : memref<9xi8> to memref<1xi64>
+%value = memref.load %payload_ref[%c0] : memref<1xi64>
 ```
 
 ### 3.4 OptionRecipes in Baker
@@ -155,44 +158,53 @@ Match (opt)
 
 ## 6. MLIR Patterns
 
-### 6.1 Option Struct Type
+### 6.1 Option Type
+
+Option is represented as `memref<Nxi8>` (flat byte buffer: 1 byte tag + payload):
 
 ```mlir
-!option_i32 = !llvm.struct<(i8, i32)>
+// Option<i32> is memref<5xi8> (1 tag + 4 payload, assuming i32 alignment)
+// In practice with alignment: memref<9xi8> (1 tag + padding + 8 payload for i64)
 ```
 
 ### 6.2 Construction
 
 ```mlir
 // Some 42
-%tag_some = llvm.mlir.constant(1 : i8)
-%value = llvm.mlir.constant(42 : i32)
-%opt = llvm.mlir.undef : !option_i32
-%opt1 = llvm.insertvalue %tag_some, %opt[0]
-%opt2 = llvm.insertvalue %value, %opt1[1]
+%opt = memref.alloca() : memref<9xi8>
+%tag_ref = memref.reinterpret_cast %opt to offset: [0], sizes: [1], strides: [1] : memref<9xi8> to memref<1xi8>
+%tag_some = arith.constant 1 : i8
+memref.store %tag_some, %tag_ref[%c0] : memref<1xi8>
+%payload_ref = memref.view %opt[%c1][] : memref<9xi8> to memref<1xi32>
+%value = arith.constant 42 : i32
+memref.store %value, %payload_ref[%c0] : memref<1xi32>
 
 // None
-%tag_none = llvm.mlir.constant(0 : i8)
-%none = llvm.mlir.undef : !option_i32
-%none1 = llvm.insertvalue %tag_none, %none[0]
+%none = memref.alloca() : memref<9xi8>
+%none_tag_ref = memref.reinterpret_cast %none to offset: [0], sizes: [1], strides: [1] : memref<9xi8> to memref<1xi8>
+%tag_none = arith.constant 0 : i8
+memref.store %tag_none, %none_tag_ref[%c0] : memref<1xi8>
 // value slot left undefined
 ```
 
 ### 6.3 Pattern Dispatch
 
 ```mlir
-%tag = llvm.extractvalue %opt[0]
-%is_some = llvm.icmp "eq" %tag, 1
-llvm.cond_br %is_some, ^some_case, ^none_case
+%tag_ref = memref.reinterpret_cast %opt to offset: [0], sizes: [1], strides: [1] : memref<9xi8> to memref<1xi8>
+%tag = memref.load %tag_ref[%c0] : memref<1xi8>
+%c1_tag = arith.constant 1 : i8
+%is_some = arith.cmpi eq, %tag, %c1_tag : i8
 
-^some_case:
-  %x = llvm.extractvalue %opt[1]
+%result = scf.if %is_some -> (!result_type) {
+  // Some case — extract payload via memref.view
+  %payload_ref = memref.view %opt[%c1][] : memref<9xi8> to memref<1xi32>
+  %x = memref.load %payload_ref[%c0] : memref<1xi32>
   // use x
-  llvm.br ^merge
-
-^none_case:
+  scf.yield %some_result : !result_type
+} else {
   // None handling
-  llvm.br ^merge
+  scf.yield %none_result : !result_type
+}
 ```
 
 ---
