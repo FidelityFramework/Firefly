@@ -54,7 +54,7 @@ let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                     | Some ((ops, result), _) -> { InlineOps = ops; TopLevelOps = []; Result = result }
                     | None -> WitnessOutput.error $"VarRef '{name}': PatternBinding has no SSA in coeffects"
 
-                | SemanticKind.Binding _ ->
+                | SemanticKind.Binding (_, isMut, _, _) ->
                     // Check if binding's child is a Lambda (function binding)
                     let isFunctionBinding =
                         bindingNode.Children
@@ -75,21 +75,29 @@ let private witnessVarRef (ctx: WitnessContext) (node: SemanticNode) : WitnessOu
                         // Value binding - post-order: binding already witnessed, recall its SSA
                         match MLIRAccumulator.recallNode bindingId ctx.Accumulator with
                         | Some (ssa, ty) ->
-                            match ty with
-                            | TMemRef elemType ->
-                                // Mutable cell (semantic type TMemRef from pBuildMutableBinding):
-                                // auto-load value. VarRef has 2 pre-allocated SSAs (zero const + loaded value).
-                                // TMemRefStatic (buffers/stackalloc) are forwarded as-is — type distinction
-                                // flows through the monadic accumulator, not binding flags.
-                                let (NodeId nodeIdInt) = node.Id
-                                match tryMatch (pLoadMutableVariable nodeIdInt ssa elemType)
-                                              ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
-                                | Some ((ops, result), _) ->
-                                    { InlineOps = ops; TopLevelOps = []; Result = result }
+                            // Auto-load ONLY if the Binding is mutable (isMut from PSG).
+                            // Mutable bindings hold memref<1xT> cells that need memref.load.
+                            // Immutable bindings (including NativePtr.stackalloc results) forward as-is.
+                            if isMut then
+                                // Mutable cell — extract element type for auto-load
+                                let elemTypeOpt =
+                                    match ty with
+                                    | TMemRef elemType -> Some elemType
+                                    | TMemRefStatic (_, elemType) -> Some elemType
+                                    | _ -> None
+                                match elemTypeOpt with
+                                | Some elemType ->
+                                    let (NodeId nodeIdInt) = node.Id
+                                    match tryMatch (pLoadMutableVariable nodeIdInt ssa elemType)
+                                                  ctx.Graph node ctx.Zipper ctx.Coeffects ctx.Accumulator with
+                                    | Some ((ops, result), _) ->
+                                        { InlineOps = ops; TopLevelOps = []; Result = result }
+                                    | None ->
+                                        WitnessOutput.error $"VarRef '{name}': Mutable variable load failed"
                                 | None ->
-                                    WitnessOutput.error $"VarRef '{name}': Mutable variable load failed"
-                            | _ ->
-                                // Immutable value or buffer: forward directly
+                                    WitnessOutput.error $"VarRef '{name}': Mutable cell has unexpected type {ty}"
+                            else
+                                // Immutable value (including buffers): forward directly
                                 { InlineOps = []; TopLevelOps = []; Result = TRValue { SSA = ssa; Type = ty } }
                         | None ->
                             WitnessOutput.error $"VarRef '{name}': Binding not yet witnessed"

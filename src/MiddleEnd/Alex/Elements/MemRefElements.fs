@@ -46,7 +46,13 @@ let pLoadFrom (ssa: SSA) (memref: SSA) (indices: SSA list) (elemType: MLIRType) 
         let! state = getUserState
         match MLIRAccumulator.recallSSAType memref state.Accumulator with
         | Some memrefType ->
-            return MLIROp.MemRefOp (MemRefOp.Load (ssa, memref, indices, elemType, memrefType))
+            // Validate: memrefType must be a memref type (TMemRef or TMemRefStatic), not a scalar
+            match memrefType with
+            | TMemRef _ | TMemRefStatic _ ->
+                return MLIROp.MemRefOp (MemRefOp.Load (ssa, memref, indices, elemType, memrefType))
+            | _ ->
+                let ssaStr = match memref with | V n -> sprintf "%%v%d" n | Arg n -> sprintf "%%arg%d" n
+                return! fail (Message $"pLoadFrom: SSA {ssaStr} has type {memrefType} — expected memref type. This indicates an SSATypes scope leak (cross-function SSA collision).")
         | None ->
             return! fail (Message $"pLoadFrom: memref SSA {memref} has no registered type in accumulator (elemType={elemType})")
     }

@@ -236,7 +236,26 @@ module MLIRAccumulator =
         // Preserve physical SSA type if already registered by an Element (pAlloca, pAlloc, etc.)
         // Elements register physical types (TMemRefStatic from alloca); bindNode carries semantic types
         // (TMemRef for mutable cells). pLoad/pLoadFrom derive memrefType from SSATypes.
-        if not (Map.containsKey ssa acc.SSATypes) then
+        match Map.tryFind ssa acc.SSATypes with
+        | Some existingTy when existingTy <> ty ->
+            // Type collision detected — same SSA registered with different type.
+            // Benign case: TMemRefStatic(n, elem) vs TMemRef(elem) — physical vs semantic type.
+            // Elements (pAlloca) register physical TMemRefStatic; bindNode carries semantic TMemRef.
+            // Physical type is correct for pLoadFrom — preserve it silently.
+            // Real collision: fundamentally different types — indicates SSATypes scope leak.
+            let isBenignMemRefRefinement =
+                match existingTy, ty with
+                | TMemRefStatic (_, elemA), TMemRef elemB when elemA = elemB -> true
+                | TMemRef elemA, TMemRefStatic (_, elemB) when elemA = elemB -> true
+                | _ -> false
+            if not isBenignMemRefRefinement then
+                let ssaStr = match ssa with | V n -> sprintf "%%v%d" n | Arg n -> sprintf "%%arg%d" n
+                let diag = Diagnostic.errorWithDetails (Some nodeId) (Some "SSATypes") (Some "bindNode")
+                            (sprintf "SSA type collision: %s already registered as %A, new type %A (keeping existing)" ssaStr existingTy ty)
+                            (sprintf "%A" existingTy) (sprintf "%A" ty)
+                acc.Errors <- diag :: acc.Errors
+        | Some _ -> () // Same type — no conflict
+        | None ->
             acc.SSATypes <- Map.add ssa ty acc.SSATypes
 
     /// Recall the SSA binding for a PSG node (global lookup)

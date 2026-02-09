@@ -78,22 +78,33 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
 
         if isEntryPoint then
             // Entry point Lambda: generate func.func @main wrapper
+
+            // ═══ SSATypes SCOPING ═══
+            // SSA values (V n, Arg n) are per-function — different functions reuse the same SSA names.
+            // SSATypes is a global map, so we save/restore to isolate each function's type registrations.
+            let savedSSATypes = ctx.Accumulator.SSATypes
+            ctx.Accumulator.SSATypes <- Map.empty
+
+            // Register parameter SSA types for this function scope
+            let argvType = TMemRef (TInt I8)
+            MLIRAccumulator.registerSSAType (SSA.Arg 0) argvType ctx.Accumulator
+
             // Create child scope for function body (principled accumulation)
             let bodyScope = ScopeContext.createChild !ctx.ScopeContext FunctionLevel
             let bodyScopeRef = ref bodyScope
 
             // Witness body nodes with child scope context
-            // Errors and bindings accumulate in shared ctx.Accumulator (for SSA resolution)
-            // Operations accumulate in bodyScopeRef (isolated from parent)
             match SemanticGraph.tryGetNode bodyId ctx.Graph with
             | Some bodyNode ->
                 match focusOn bodyId ctx.Zipper with
                 | Some bodyZipper ->
-                    // Body context: uses child scope ref for operations
                     let bodyCtx = { ctx with Zipper = bodyZipper; ScopeContext = bodyScopeRef }
                     visitAllNodes combinator bodyCtx bodyNode ctx.GlobalVisited
                 | None -> ()
             | None -> ()
+
+            // Restore parent's SSATypes (isolate this function's registrations)
+            ctx.Accumulator.SSATypes <- savedSSATypes
 
             // Extract operations from child scope ref (NOT from parent!)
             let bodyOps = ScopeContext.getOps !bodyScopeRef
@@ -186,31 +197,6 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
                     | None -> sprintf "lambda_%d" nodeIdValue
                 | None -> sprintf "lambda_%d" nodeIdValue
 
-            // Create child scope for function body (principled accumulation)
-            let bodyScope = ScopeContext.createChild !ctx.ScopeContext FunctionLevel
-            let bodyScopeRef = ref bodyScope
-
-            // Witness body nodes with child scope context
-            // Errors and bindings accumulate in shared ctx.Accumulator (for SSA resolution)
-            // Operations accumulate in bodyScopeRef (isolated from parent)
-            match SemanticGraph.tryGetNode bodyId ctx.Graph with
-            | Some bodyNode ->
-                match focusOn bodyId ctx.Zipper with
-                | Some bodyZipper ->
-                    // Body context: uses child scope ref for operations
-                    let bodyCtx = { ctx with Zipper = bodyZipper; ScopeContext = bodyScopeRef }
-                    visitAllNodes combinator bodyCtx bodyNode ctx.GlobalVisited
-                | None -> ()
-            | None -> ()
-
-            // Extract operations from child scope ref (NOT from parent!)
-            let bodyOps = ScopeContext.getOps !bodyScopeRef
-
-            // Get body result for return value
-            // Traverse Sequential structure to find actual value-producing node
-            let actualValueNode = findLastValueNode bodyId ctx.Graph
-            let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
-
             // Map parameters to MLIR types and build parameter list with SSAs
             let arch = ctx.Coeffects.Platform.TargetArch
 
@@ -241,6 +227,40 @@ let private witnessLambdaWith (getCombinator: unit -> (WitnessContext -> Semanti
                     printfn "[ERROR] This indicates SSAAssignment nanopass failed to pre-allocate parameter SSAs"
                     printfn "[ERROR] Parameters: %A" params'
                     []  // Return empty list - will cause compilation to fail with proper error
+
+            // ═══ SSATypes SCOPING ═══
+            // SSA values (V n, Arg n) are per-function — different functions reuse the same SSA names.
+            // SSATypes is a global map, so we save/restore to isolate each function's type registrations.
+            let savedSSATypes = ctx.Accumulator.SSATypes
+            ctx.Accumulator.SSATypes <- Map.empty
+
+            // Register parameter SSA types for this function scope
+            for (paramSSA, mlirType) in mlirParams do
+                MLIRAccumulator.registerSSAType paramSSA mlirType ctx.Accumulator
+
+            // Create child scope for function body (principled accumulation)
+            let bodyScope = ScopeContext.createChild !ctx.ScopeContext FunctionLevel
+            let bodyScopeRef = ref bodyScope
+
+            // Witness body nodes with child scope context
+            match SemanticGraph.tryGetNode bodyId ctx.Graph with
+            | Some bodyNode ->
+                match focusOn bodyId ctx.Zipper with
+                | Some bodyZipper ->
+                    let bodyCtx = { ctx with Zipper = bodyZipper; ScopeContext = bodyScopeRef }
+                    visitAllNodes combinator bodyCtx bodyNode ctx.GlobalVisited
+                | None -> ()
+            | None -> ()
+
+            // Restore parent's SSATypes (isolate this function's registrations)
+            ctx.Accumulator.SSATypes <- savedSSATypes
+
+            // Extract operations from child scope ref (NOT from parent!)
+            let bodyOps = ScopeContext.getOps !bodyScopeRef
+
+            // Get body result for return value
+            let actualValueNode = findLastValueNode bodyId ctx.Graph
+            let bodyResult = MLIRAccumulator.recallNode actualValueNode ctx.Accumulator
 
             // Determine return type from Lambda type signature
             // For flattened Lambdas with N params, unroll N levels of TFun
